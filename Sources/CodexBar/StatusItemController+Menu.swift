@@ -703,6 +703,13 @@ extension StatusItemController {
             {
                 menu.addItem(.separator())
             }
+            if self.addZaiHourlyUsageMenuItemIfNeeded(
+                to: menu,
+                provider: context.currentProvider,
+                width: context.menuWidth)
+            {
+                menu.addItem(.separator())
+            }
         }
     }
 
@@ -1578,20 +1585,6 @@ extension StatusItemController {
     private func makeStorageBreakdownSubmenu(provider: UsageProvider) -> NSMenu? {
         guard self.store.storageFootprint(for: provider)?.components.isEmpty == false else { return nil }
         return self.makeHostedSubviewPlaceholderMenu(chartID: Self.storageBreakdownID, provider: provider)
-    }
-
-    private func isHostedSubviewMenu(_ menu: NSMenu) -> Bool {
-        let ids: Set = [
-            Self.usageBreakdownChartID,
-            Self.creditsHistoryChartID,
-            Self.costHistoryChartID,
-            Self.usageHistoryChartID,
-            Self.storageBreakdownID,
-        ]
-        return menu.items.contains { item in
-            guard let id = item.representedObject as? String else { return false }
-            return ids.contains(id)
-        }
     }
 
     private func isOpenAIWebSubviewMenu(_ menu: NSMenu) -> Bool {

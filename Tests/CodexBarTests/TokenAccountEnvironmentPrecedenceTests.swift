@@ -263,6 +263,52 @@ struct TokenAccountEnvironmentPrecedenceTests {
     }
 
     @Test
+    func `claude all accounts reroutes explicit CLI source per selected credential in CLI`() throws {
+        let accounts = ProviderTokenAccountData(
+            version: 1,
+            accounts: [
+                ProviderTokenAccount(
+                    id: UUID(),
+                    label: "OAuth",
+                    token: "Bearer sk-ant-oat-account-token",
+                    addedAt: 0,
+                    lastUsed: nil),
+                ProviderTokenAccount(
+                    id: UUID(),
+                    label: "Session",
+                    token: "sk-ant-session-token",
+                    addedAt: 0,
+                    lastUsed: nil),
+            ],
+            activeIndex: 0)
+        let config = CodexBarConfig(
+            providers: [
+                ProviderConfig(id: .claude, tokenAccounts: accounts),
+            ])
+        let tokenContext = try TokenAccountCLIContext(
+            selection: TokenAccountCLISelection(label: nil, index: nil, allAccounts: true),
+            config: config,
+            verbose: false)
+
+        let resolved = try tokenContext.resolvedAccounts(for: .claude)
+        #expect(resolved.map(\.label) == ["OAuth", "Session"])
+
+        let oauth = try #require(resolved.first)
+        let oauthSnapshot = try #require(tokenContext.settingsSnapshot(for: .claude, account: oauth)?.claude)
+        #expect(tokenContext.effectiveSourceMode(base: .cli, provider: .claude, account: oauth) == .oauth)
+        #expect(oauthSnapshot.usageDataSource == .oauth)
+        #expect(tokenContext.environment(base: [:], provider: .claude, account: oauth)[
+            ClaudeOAuthCredentialsStore.environmentTokenKey,
+        ] == "sk-ant-oat-account-token")
+
+        let session = try #require(resolved.dropFirst().first)
+        let sessionSnapshot = try #require(tokenContext.settingsSnapshot(for: .claude, account: session)?.claude)
+        #expect(tokenContext.effectiveSourceMode(base: .cli, provider: .claude, account: session) == .web)
+        #expect(sessionSnapshot.cookieSource == .manual)
+        #expect(sessionSnapshot.manualCookieHeader == "sessionKey=sk-ant-session-token")
+    }
+
+    @Test
     func `claude ambient explicit CLI source remains CLI in CLI`() throws {
         let config = CodexBarConfig(providers: [ProviderConfig(id: .claude)])
         let tokenContext = try TokenAccountCLIContext(

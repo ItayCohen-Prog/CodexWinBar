@@ -236,6 +236,61 @@ struct MiniMaxTokenPlanChangeTests {
     }
 
     @Test
+    func `web usage fetch preserves coding plan json auth failure`() async throws {
+        let transport = ProviderHTTPTransportStub { request in
+            let url = try #require(request.url)
+            #expect(url.path.contains("coding-plan"))
+            return Self.httpResponse(
+                url: url,
+                body: #"{"base_resp":{"status_code":1004,"status_msg":"cookie is missing, log in again"}}"#,
+                contentType: "application/json")
+        }
+
+        await #expect(throws: MiniMaxUsageError.invalidCredentials) {
+            try await MiniMaxUsageFetcher.fetchUsage(
+                cookieHeader: "HERTZ-SESSION=expired",
+                region: .chinaMainland,
+                environment: [:],
+                includeBillingHistory: false,
+                session: transport)
+        }
+        let requests = await transport.requests()
+        #expect(requests.count == 1)
+    }
+
+    @Test
+    func `web usage fetch preserves remains json auth failure`() async throws {
+        let transport = ProviderHTTPTransportStub { request in
+            let url = try #require(request.url)
+            if url.path.contains("coding-plan") {
+                return Self.httpResponse(
+                    url: url,
+                    body: "<html><main>Coding Plan</main></html>",
+                    contentType: "text/html")
+            }
+            #expect(url.path.contains("coding_plan/remains"))
+            return Self.httpResponse(
+                url: url,
+                body: #"{"base_resp":{"status_code":1004,"status_msg":"cookie is missing, log in again"}}"#,
+                contentType: "application/json")
+        }
+
+        await #expect(throws: MiniMaxUsageError.invalidCredentials) {
+            try await MiniMaxUsageFetcher.fetchUsage(
+                cookieHeader: "HERTZ-SESSION=expired",
+                region: .chinaMainland,
+                environment: [:],
+                includeBillingHistory: false,
+                session: transport)
+        }
+        let requests = await transport.requests()
+        #expect(requests.map { $0.url?.path } == [
+            "/user-center/payment/coding-plan",
+            "/v1/api/openplatform/coding_plan/remains",
+        ])
+    }
+
+    @Test
     func `api token fetch uses official token plan remains endpoint`() async throws {
         let now = Date(timeIntervalSince1970: 1_780_282_340)
         let transport = ProviderHTTPTransportStub { request in

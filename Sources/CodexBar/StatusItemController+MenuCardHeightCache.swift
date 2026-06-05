@@ -30,4 +30,13 @@ extension StatusItemController {
         self.menuCardHeightCache[key] = height
         return height
     }
+
+    func pruneVersionScopedMenuCardHeightCache() {
+        let currentVersionFingerprint = "version:\(self.menuContentVersion)"
+        for key in self.menuCardHeightCache.keys
+            where key.fingerprint.hasPrefix("version:") && key.fingerprint != currentVersionFingerprint
+        {
+            self.menuCardHeightCache.removeValue(forKey: key)
+        }
+    }
 }

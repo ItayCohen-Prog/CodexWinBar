@@ -552,7 +552,7 @@ extension StatusItemController {
                 heightCacheScope: row.provider.rawValue,
                 heightCacheFingerprint: row.model.heightFingerprint(
                     section: "overview",
-                    additional: ["storage=\(storageText ?? "")"]),
+                    additional: [UsageMenuCardView.Model.heightFingerprintField("storage", storageText)]),
                 submenu: submenu,
                 onClick: { [weak self, weak menu] in
                     guard let self, let menu else { return }
@@ -1292,7 +1292,7 @@ extension StatusItemController {
             id: "menuCardStorage",
             width: width,
             heightCacheScope: provider.rawValue,
-            heightCacheFingerprint: "storage=\(storageText)",
+            heightCacheFingerprint: UsageMenuCardView.Model.heightFingerprintField("storage", storageText),
             submenu: storageSubmenu))
         return true
     }

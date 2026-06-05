@@ -26,7 +26,7 @@ extension StatusMenuTests {
         let controller = StatusItemController(
             store: store,
             settings: settings,
-            account: UsageFetcher().loadAccountInfo(),
+            account: AccountInfo(email: nil, plan: nil),
             updater: DisabledUpdaterController(),
             preferencesSelection: PreferencesSelection(),
             statusBar: self.makeStatusBarForTesting())
@@ -140,6 +140,33 @@ extension StatusMenuTests {
     }
 
     @Test
+    func `menu invalidation prunes old version scoped height cache entries`() {
+        let controller = self.makeHeightCacheController()
+        defer { controller.releaseStatusItemsForTesting() }
+
+        _ = controller.cachedMenuCardHeight(
+            for: "versioned",
+            scope: UsageProvider.codex.rawValue,
+            width: 320)
+        {
+            42
+        }
+        _ = controller.cachedMenuCardHeight(
+            for: "fingerprinted",
+            scope: UsageProvider.codex.rawValue,
+            width: 320,
+            fingerprint: "content:stable")
+        {
+            99
+        }
+
+        controller.invalidateMenus()
+
+        #expect(controller.menuCardHeightCache.keys.allSatisfy { !$0.fingerprint.hasPrefix("version:") })
+        #expect(controller.menuCardHeightCache.keys.contains { $0.fingerprint == "content:stable" })
+    }
+
+    @Test
     func `menu card height cache scopes same row ids by provider`() {
         let previousMenuCardRendering = StatusItemController.menuCardRenderingEnabled
         StatusItemController.menuCardRenderingEnabled = true
@@ -160,7 +187,6 @@ extension StatusMenuTests {
                 enabled: provider == .codex || provider == .claude)
         }
 
-        let fetcher = UsageFetcher()
         let store = self.makeCodexStore(settings: settings, dashboardAuthorized: false)
         store._setSnapshotForTesting(
             UsageSnapshot(
@@ -181,7 +207,7 @@ extension StatusMenuTests {
         let controller = StatusItemController(
             store: store,
             settings: settings,
-            account: fetcher.loadAccountInfo(),
+            account: AccountInfo(email: nil, plan: nil),
             updater: DisabledUpdaterController(),
             preferencesSelection: PreferencesSelection(),
             statusBar: self.makeStatusBarForTesting())
@@ -205,7 +231,7 @@ extension StatusMenuTests {
         return StatusItemController(
             store: store,
             settings: settings,
-            account: UsageFetcher().loadAccountInfo(),
+            account: AccountInfo(email: nil, plan: nil),
             updater: DisabledUpdaterController(),
             preferencesSelection: PreferencesSelection(),
             statusBar: self.makeStatusBarForTesting())

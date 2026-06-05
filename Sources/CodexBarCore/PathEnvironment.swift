@@ -905,9 +905,11 @@ public enum PathBuilder {
 }
 
 enum LoginShellPathCapturer {
+    static let defaultTimeout: TimeInterval = 6.0
+
     static func capture(
         shell: String? = ProcessInfo.processInfo.environment["SHELL"],
-        timeout: TimeInterval = 2.0) -> [String]?
+        timeout: TimeInterval = Self.defaultTimeout) -> [String]?
     {
         let shellPath = (shell?.isEmpty == false) ? shell! : "/bin/zsh"
         let isCI = ["1", "true"].contains(ProcessInfo.processInfo.environment["CI"]?.lowercased())
@@ -957,7 +959,7 @@ public final class LoginShellPathCache: @unchecked Sendable {
 
     public func captureOnce(
         shell: String? = ProcessInfo.processInfo.environment["SHELL"],
-        timeout: TimeInterval = 2.0,
+        timeout: TimeInterval = 6.0,
         onFinish: (([String]?) -> Void)? = nil)
     {
         self.lock.lock()
@@ -992,5 +994,43 @@ public final class LoginShellPathCache: @unchecked Sendable {
 
             callbacks.forEach { $0(result) }
         }
+    }
+
+    public func currentOrCapture(
+        shell: String? = ProcessInfo.processInfo.environment["SHELL"],
+        timeout: TimeInterval = 6.0) -> [String]?
+    {
+        self.lock.lock()
+        if let captured {
+            self.lock.unlock()
+            return captured
+        }
+
+        if self.isCapturing {
+            let semaphore = DispatchSemaphore(value: 0)
+            var callbackResult: [String]?
+            self.callbacks.append { result in
+                callbackResult = result
+                semaphore.signal()
+            }
+            self.lock.unlock()
+            let deadline = DispatchTime.now() + timeout
+            _ = semaphore.wait(timeout: deadline)
+            return callbackResult ?? self.current
+        }
+
+        self.isCapturing = true
+        self.lock.unlock()
+
+        let result = LoginShellPathCapturer.capture(shell: shell, timeout: timeout)
+        self.lock.lock()
+        self.captured = result
+        self.isCapturing = false
+        let callbacks = self.callbacks
+        self.callbacks.removeAll()
+        self.lock.unlock()
+
+        callbacks.forEach { $0(result) }
+        return result
     }
 }

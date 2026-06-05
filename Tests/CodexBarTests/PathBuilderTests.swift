@@ -45,6 +45,30 @@ struct PathBuilderTests {
     }
 
     @Test
+    func `login shell cache retries after timed out nil capture`() throws {
+        let shell = try Self.makeLoginShellPathScript(
+            delay: 0.2,
+            path: "/login/bin:/usr/bin")
+        defer { try? FileManager.default.removeItem(at: shell) }
+
+        let cache = LoginShellPathCache()
+        let semaphore = DispatchSemaphore(value: 0)
+        var firstResult: [String]?
+        cache.captureOnce(shell: shell.path, timeout: 0.01) { result in
+            firstResult = result
+            semaphore.signal()
+        }
+
+        #expect(semaphore.wait(timeout: .now() + 2.0) == .success)
+        #expect(firstResult == nil)
+        #expect(cache.current == nil)
+
+        let recovered = cache.currentOrCapture(shell: shell.path, timeout: 2.0)
+        #expect(recovered == ["/login/bin", "/usr/bin"])
+        #expect(cache.current == ["/login/bin", "/usr/bin"])
+    }
+
+    @Test
     func `shell runner drains noisy stdout and stderr`() throws {
         let script = """
         i=0
@@ -625,6 +649,19 @@ struct PathBuilderTests {
 
     private static func shellSingleQuoted(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
+    private static func makeLoginShellPathScript(delay: TimeInterval, path: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codexbar-login-path-\(UUID().uuidString).sh")
+        let script = """
+        #!/bin/sh
+        sleep \(delay)
+        printf '__CODEXBAR_PATH__%s__CODEXBAR_PATH__' \(self.shellSingleQuoted(path))
+        """
+        try script.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        return url
     }
 }
 

@@ -269,18 +269,27 @@ enum ModelsDevModelIDNormalizer {
 
     static func stableIdentity(_ raw: String) -> String {
         let normalized = self.normalize(raw)
-        guard let atSign = normalized.firstIndex(of: "@") else { return normalized }
-
-        let base = String(normalized[..<atSign])
-        let suffix = String(normalized[normalized.index(after: atSign)...])
-        if suffix == "default" {
-            return base
+        if let atSign = normalized.firstIndex(of: "@") {
+            let base = String(normalized[..<atSign])
+            let suffix = String(normalized[normalized.index(after: atSign)...])
+            if suffix.range(of: #"^\d{8}$"#, options: .regularExpression) != nil {
+                return "\(self.canonicalAliasIdentity(base))-\(suffix)"
+            }
         }
-        guard suffix.range(of: #"^\d{8}$"#, options: .regularExpression) != nil else { return normalized }
-        return "\(base)-\(suffix)"
+
+        return self.canonicalAliasIdentity(normalized)
     }
 
-    static func candidates(_ raw: String) -> [String] {
+    private static func canonicalAliasIdentity(_ raw: String) -> String {
+        self.candidates(raw, preserveDatedSnapshots: true).reversed().lazy
+            .map { candidate in
+                guard candidate.hasSuffix("@default") else { return candidate }
+                return String(candidate.dropLast("@default".count))
+            }
+            .first { !$0.isEmpty } ?? self.normalize(raw)
+    }
+
+    static func candidates(_ raw: String, preserveDatedSnapshots: Bool = false) -> [String] {
         var candidates: [String] = []
 
         func append(_ value: String) {
@@ -323,11 +332,13 @@ enum ModelsDevModelIDNormalizer {
                 append("\(candidate)@default")
             }
 
-            if let dated = candidate.range(of: #"-\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) {
-                append(String(candidate[..<dated.lowerBound]))
-            }
-            if let compactDate = candidate.range(of: #"-\d{8}$"#, options: .regularExpression) {
-                append(String(candidate[..<compactDate.lowerBound]))
+            if !preserveDatedSnapshots {
+                if let dated = candidate.range(of: #"-\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) {
+                    append(String(candidate[..<dated.lowerBound]))
+                }
+                if let compactDate = candidate.range(of: #"-\d{8}$"#, options: .regularExpression) {
+                    append(String(candidate[..<compactDate.lowerBound]))
+                }
             }
             if let version = candidate.range(of: #"-v\d+:\d+$"#, options: .regularExpression) {
                 var base = candidate

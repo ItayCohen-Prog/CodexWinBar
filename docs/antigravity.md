@@ -51,13 +51,14 @@ When the Antigravity desktop app is running:
      probe timeout. `agy` is owned exclusively by the CLI HTTPS source below, which
      waits for real API readiness. The probe still classifies both kinds
      (`processInfo(scope: .ideAndCLI)` is used by `isRunning()` for status reporting):
-     - the **IDE** language server: process name `language_server_macos` plus Antigravity
-       markers (`--app_data_dir antigravity` OR path contains `/antigravity/`); or
+     - the **IDE** language server: process name `language_server*` or `language-server` plus
+       Antigravity markers (`--app_data_dir antigravity`, an Antigravity app bundle path,
+       or a path containing `/antigravity/`); or
      - the **CLI**: an `antigravity-cli` / `antigravity_cli` path segment, or the
        `agy` binary (path-anchored so unrelated arguments/binaries do not match).
    - Extract CLI flags:
      - `--csrf_token <token>`. Requirement depends on the match kind:
-       - **IDE** matches still require it — a tokenless IDE `language_server` match is
+       - **IDE** matches still require it — a tokenless IDE language-server match is
          skipped so a later valid IDE server can be found, otherwise `missingCSRFToken`
          is reported (unchanged behavior).
        - **CLI** matches accept an empty token, because the CLI's language server

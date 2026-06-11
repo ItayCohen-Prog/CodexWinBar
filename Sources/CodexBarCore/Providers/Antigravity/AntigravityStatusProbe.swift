@@ -703,7 +703,7 @@ public struct AntigravityStatusProbe: Sendable {
     }
 
     enum AntigravityProcessKind: Equatable {
-        /// IDE language server (`language_server*`). Requires a `--csrf_token`.
+        /// IDE language server (`language_server*` or `language-server`). Requires a `--csrf_token`.
         case ide
         /// CLI language server (`agy` / `antigravity-cli`). Needs no CSRF token.
         case cli
@@ -742,7 +742,7 @@ public struct AntigravityStatusProbe: Sendable {
     }
 
     private static func isLanguageServerCommandLine(_ lowerCommand: String) -> Bool {
-        let pattern = #"(^|[/\\])language_server(_macos|\.exe)?(\s|$)"#
+        let pattern = #"(^|[/\\])language(?:_|-)server(_macos|\.exe)?(\s|$)"#
         return lowerCommand.range(of: pattern, options: .regularExpression) != nil
     }
 
@@ -761,6 +761,7 @@ public struct AntigravityStatusProbe: Sendable {
 
     private static func isAntigravityCommandLine(_ command: String) -> Bool {
         if command.contains("--app_data_dir") && command.contains("antigravity") { return true }
+        if command.contains("antigravity.app/") || command.contains("antigravity.app\\") { return true }
         if command.contains("/antigravity/") || command.contains("\\antigravity\\") { return true }
         return false
     }

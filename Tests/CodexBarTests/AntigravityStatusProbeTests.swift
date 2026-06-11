@@ -43,6 +43,21 @@ struct AntigravityStatusProbeTests {
     }
 
     @Test
+    func `process detection accepts hyphenated language server from app bundle`() throws {
+        let command = """
+        /Applications/Google Antigravity.app/Contents/Resources/bin/language-server --standalone \
+        --csrf_token token --extension_server_port 64123
+        """
+
+        #expect(AntigravityStatusProbe.isAntigravityLanguageServerCommandLine(command))
+
+        let result = try AntigravityStatusProbe.processInfo(fromProcessListOutput: "  321 \(command)")
+        #expect(result.pid == 321)
+        #expect(result.csrfToken == "token")
+        #expect(result.extensionPort == 64123)
+    }
+
+    @Test
     func `process detection keeps ignoring non language server antigravity helpers`() {
         let helper = """
         /Applications/Antigravity.app/Contents/Frameworks/Antigravity Helper.app/Contents/MacOS/Antigravity Helper \

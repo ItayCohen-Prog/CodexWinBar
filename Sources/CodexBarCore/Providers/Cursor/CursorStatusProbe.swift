@@ -344,7 +344,13 @@ struct CursorAppAuthSession: Equatable {
     let accessToken: String
 
     var isUsable: Bool {
-        !self.accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard !self.accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              (try? self.userID()) != nil,
+              let expiresAt = try? self.expiresAt()
+        else {
+            return false
+        }
+        return expiresAt.timeIntervalSinceNow > 60
     }
 
     func cookieHeader() throws -> String {
@@ -352,19 +358,8 @@ struct CursorAppAuthSession: Equatable {
     }
 
     func userID() throws -> String {
-        let parts = self.accessToken.split(separator: ".", omittingEmptySubsequences: false)
-        guard parts.count >= 2 else {
-            throw CursorStatusProbeError.parseFailed("Cursor.app access token is not a JWT")
-        }
-
-        var payload = String(parts[1])
-            .replacingOccurrences(of: "-", with: "+")
-            .replacingOccurrences(of: "_", with: "/")
-        payload += String(repeating: "=", count: (4 - payload.count % 4) % 4)
-
-        guard let data = Data(base64Encoded: payload),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let subject = json["sub"] as? String,
+        let json = try self.payload()
+        guard let subject = json["sub"] as? String,
               let userID = subject.split(separator: "|", omittingEmptySubsequences: true).last.map(String.init),
               !userID.isEmpty
         else {
@@ -377,6 +372,34 @@ struct CursorAppAuthSession: Equatable {
         }
 
         return userID
+    }
+
+    private func expiresAt() throws -> Date {
+        let json = try self.payload()
+        guard let expiration = json["exp"] as? NSNumber else {
+            throw CursorStatusProbeError.parseFailed("Cursor.app access token is missing an expiration")
+        }
+        return Date(timeIntervalSince1970: expiration.doubleValue)
+    }
+
+    private func payload() throws -> [String: Any] {
+        let parts = self.accessToken.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count >= 2 else {
+            throw CursorStatusProbeError.parseFailed("Cursor.app access token is not a JWT")
+        }
+
+        var payload = String(parts[1])
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        payload += String(repeating: "=", count: (4 - payload.count % 4) % 4)
+
+        guard let data = Data(base64Encoded: payload),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            throw CursorStatusProbeError.parseFailed("Cursor.app access token has an invalid payload")
+        }
+
+        return json
     }
 }
 

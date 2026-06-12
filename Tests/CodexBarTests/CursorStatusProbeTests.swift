@@ -1304,6 +1304,34 @@ extension CursorStatusProbeTests {
         #expect(throws: CursorStatusProbeError.self) {
             _ = try session.cookieHeader()
         }
+        #expect(!session.isUsable)
+    }
+
+    @Test
+    func `expired Cursor app auth token is skipped before network access`() async throws {
+        defer {
+            CursorStatusProbeStubURLProtocol.reset()
+        }
+        CursorStatusProbeStubURLProtocol.reset()
+        CursorStatusProbeStubURLProtocol.setHandler { request in
+            Issue.record("Expired app auth unexpectedly requested \(request.url?.path ?? "<unknown>")")
+            throw URLError(.badURL)
+        }
+
+        let accessToken = try makeCursorAppAuthToken(expiration: Date(timeIntervalSinceNow: -60))
+        let baseURL = try #require(URL(string: "https://cursor-web.test"))
+        let probe = CursorStatusProbe(
+            baseURL: baseURL,
+            browserDetection: BrowserDetection(cacheTTL: 0),
+            browserCookieImportOrder: [],
+            urlSession: makeCursorStatusProbeSession(),
+            appAuthStore: CursorAppAuthSessionProviderStub(session: CursorAppAuthSession(
+                accessToken: accessToken)))
+
+        await #expect(throws: CursorStatusProbeError.self) {
+            _ = try await probe.fetch(allowCachedSessions: false)
+        }
+        #expect(CursorStatusProbeStubURLProtocol.requestCount == 0)
     }
 
     @Test
@@ -1368,8 +1396,16 @@ extension CursorStatusProbeTests {
     }
 }
 
-private func makeCursorAppAuthToken(subject: String = "auth0|user_test") throws -> String {
-    let payload = try JSONSerialization.data(withJSONObject: ["sub": subject], options: [.sortedKeys])
+private func makeCursorAppAuthToken(
+    subject: String = "auth0|user_test",
+    expiration: Date = Date(timeIntervalSinceNow: 3600)) throws -> String
+{
+    let payload = try JSONSerialization.data(
+        withJSONObject: [
+            "exp": Int(expiration.timeIntervalSince1970),
+            "sub": subject,
+        ],
+        options: [.sortedKeys])
     let encodedPayload = payload.base64EncodedString()
         .replacingOccurrences(of: "+", with: "-")
         .replacingOccurrences(of: "/", with: "_")

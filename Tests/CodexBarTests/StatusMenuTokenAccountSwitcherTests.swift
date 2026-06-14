@@ -381,6 +381,8 @@ final class StatusMenuTokenAccountSwitcherTests: XCTestCase {
         let store = UsageStore(fetcher: fetcher, browserDetection: BrowserDetection(cacheTTL: 0), settings: settings)
         store.snapshots[.claude] = self.snapshot(percent: 11)
         store.lastKnownResetSnapshots[.claude] = self.snapshot(percent: 11)
+        store.errors[.claude] = "primary-error"
+        store.lastSourceLabels[.claude] = "primary-cache"
         store.accountSnapshots[.claude] = [
             TokenAccountUsageSnapshot(
                 account: accounts[0],
@@ -412,6 +414,7 @@ final class StatusMenuTokenAccountSwitcherTests: XCTestCase {
 
         XCTAssertEqual(store.snapshot(for: .claude)?.primary?.usedPercent, 72)
         XCTAssertEqual(store.lastKnownResetSnapshots[.claude]?.primary?.usedPercent, 72)
+        XCTAssertNil(store.errors[.claude])
         XCTAssertEqual(store.sourceLabel(for: .claude), "secondary-cache")
 
         await blocker.waitUntilStarted(count: 1)
@@ -437,6 +440,8 @@ final class StatusMenuTokenAccountSwitcherTests: XCTestCase {
         let store = UsageStore(fetcher: fetcher, browserDetection: BrowserDetection(cacheTTL: 0), settings: settings)
         store.snapshots[.claude] = self.snapshot(percent: 11)
         store.lastKnownResetSnapshots[.claude] = self.snapshot(percent: 11)
+        store.errors[.claude] = "primary-error"
+        store.lastSourceLabels[.claude] = "primary-cache"
         store.accountSnapshots[.claude] = [
             TokenAccountUsageSnapshot(
                 account: accounts[0],
@@ -463,6 +468,8 @@ final class StatusMenuTokenAccountSwitcherTests: XCTestCase {
 
         XCTAssertNil(store.snapshot(for: .claude))
         XCTAssertNil(store.lastKnownResetSnapshots[.claude])
+        XCTAssertNil(store.errors[.claude])
+        XCTAssertNil(store.lastSourceLabels[.claude])
 
         await blocker.waitUntilStarted(count: 1)
         await blocker.resumeAll(with: .success(self.snapshot(percent: 45)))

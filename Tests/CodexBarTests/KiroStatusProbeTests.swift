@@ -33,11 +33,18 @@ struct KiroStatusProbeTests {
         fi
 
         if [ "$1" = "chat" ] && [ "$3" = "/usage" ]; then
-          /bin/sh -c '
-            trap "" HUP TERM
-            printf "%s" "$$" > "$CODEXBAR_TEST_CHILD_PID_FILE"
-            while true; do sleep 1; done
-          ' &
+          /usr/bin/python3 -c '
+        import os
+        import signal
+        import time
+
+        os.setsid()
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        with open(os.environ["CODEXBAR_TEST_CHILD_PID_FILE"], "w") as handle:
+            handle.write(str(os.getpid()))
+        time.sleep(30)
+        ' &
           for _ in {1..100}; do
             [ -s "$CODEXBAR_TEST_CHILD_PID_FILE" ] && break
             sleep 0.01

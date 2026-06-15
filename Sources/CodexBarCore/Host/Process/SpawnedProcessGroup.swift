@@ -36,13 +36,122 @@ package final class SpawnedProcessGroup: @unchecked Sendable {
         }
     }
 
+    private struct OutputPipeIdentity: Hashable {
+        #if canImport(Darwin)
+        let firstHandle: UInt64
+        let secondHandle: UInt64
+        #else
+        let inode: UInt64
+        #endif
+
+        static func resolve(fileDescriptor: Int32) -> OutputPipeIdentity? {
+            #if canImport(Darwin)
+            var info = pipe_fdinfo()
+            let byteCount = proc_pidfdinfo(
+                getpid(),
+                fileDescriptor,
+                PROC_PIDFDPIPEINFO,
+                &info,
+                Int32(MemoryLayout<pipe_fdinfo>.size))
+            guard byteCount == MemoryLayout<pipe_fdinfo>.size else { return nil }
+            let handles = [info.pipeinfo.pipe_handle, info.pipeinfo.pipe_peerhandle].sorted()
+            guard handles[0] != 0, handles[1] != 0 else { return nil }
+            return OutputPipeIdentity(firstHandle: handles[0], secondHandle: handles[1])
+            #else
+            var info = stat()
+            guard fstat(fileDescriptor, &info) == 0 else { return nil }
+            return OutputPipeIdentity(inode: UInt64(info.st_ino))
+            #endif
+        }
+
+        static func holderPIDs(for pipes: Set<OutputPipeIdentity>) -> Set<pid_t> {
+            guard !pipes.isEmpty else { return [] }
+            #if canImport(Darwin)
+            return Set(self.allPIDs().filter { self.process(pid: $0, holdsAny: pipes) })
+            #else
+            let targets = Set(pipes.map { "pipe:[\($0.inode)]" })
+            guard let entries = try? FileManager.default.contentsOfDirectory(atPath: "/proc") else { return [] }
+            return Set(entries.compactMap(pid_t.init).filter { pid in
+                let directory = "/proc/\(pid)/fd"
+                guard let descriptors = try? FileManager.default.contentsOfDirectory(atPath: directory) else {
+                    return false
+                }
+                return descriptors.contains { descriptor in
+                    let path = "\(directory)/\(descriptor)"
+                    guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: path) else {
+                        return false
+                    }
+                    return targets.contains(target)
+                }
+            })
+            #endif
+        }
+
+        #if canImport(Darwin)
+        private static func allPIDs() -> [pid_t] {
+            let requiredBytes = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
+            guard requiredBytes > 0 else { return [] }
+            let stride = MemoryLayout<pid_t>.stride
+            var pids = [pid_t](repeating: 0, count: Int(requiredBytes) / stride + 32)
+            let actualBytes = pids.withUnsafeMutableBytes { buffer in
+                proc_listpids(
+                    UInt32(PROC_ALL_PIDS),
+                    0,
+                    buffer.baseAddress,
+                    Int32(buffer.count))
+            }
+            guard actualBytes > 0 else { return [] }
+            return Array(pids.prefix(Int(actualBytes) / stride)).filter { $0 > 0 }
+        }
+
+        private static func process(pid: pid_t, holdsAny pipes: Set<OutputPipeIdentity>) -> Bool {
+            let requiredBytes = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+            guard requiredBytes > 0 else { return false }
+            let stride = MemoryLayout<proc_fdinfo>.stride
+            var descriptors = [proc_fdinfo](
+                repeating: proc_fdinfo(),
+                count: Int(requiredBytes) / stride + 8)
+            let actualBytes = descriptors.withUnsafeMutableBytes { buffer in
+                proc_pidinfo(
+                    pid,
+                    PROC_PIDLISTFDS,
+                    0,
+                    buffer.baseAddress,
+                    Int32(buffer.count))
+            }
+            guard actualBytes > 0 else { return false }
+
+            for descriptor in descriptors.prefix(Int(actualBytes) / stride)
+                where descriptor.proc_fdtype == PROX_FDTYPE_PIPE
+            {
+                var info = pipe_fdinfo()
+                let byteCount = proc_pidfdinfo(
+                    pid,
+                    descriptor.proc_fd,
+                    PROC_PIDFDPIPEINFO,
+                    &info,
+                    Int32(MemoryLayout<pipe_fdinfo>.size))
+                guard byteCount == MemoryLayout<pipe_fdinfo>.size else { continue }
+                let handles = [info.pipeinfo.pipe_handle, info.pipeinfo.pipe_peerhandle].sorted()
+                let identity = OutputPipeIdentity(firstHandle: handles[0], secondHandle: handles[1])
+                if pipes.contains(identity) {
+                    return true
+                }
+            }
+            return false
+        }
+        #endif
+    }
+
     package let pid: pid_t
     package let processGroup: pid_t
     private let termination = TerminationState()
+    private let outputPipes: Set<OutputPipeIdentity>
 
-    private init(pid: pid_t) {
+    private init(pid: pid_t, outputPipes: Set<OutputPipeIdentity>) {
         self.pid = pid
         self.processGroup = pid
+        self.outputPipes = outputPipes
         self.startWaiter()
     }
 
@@ -67,6 +176,8 @@ package final class SpawnedProcessGroup: @unchecked Sendable {
         let stdoutWrite = stdoutPipe.fileHandleForWriting.fileDescriptor
         let stderrRead = stderrPipe.fileHandleForReading.fileDescriptor
         let stderrWrite = stderrPipe.fileHandleForWriting.fileDescriptor
+        let outputPipes = Set(
+            [stdoutRead, stderrRead].compactMap(OutputPipeIdentity.resolve(fileDescriptor:)))
         var fileActionResults = [
             posix_spawn_file_actions_addopen(&fileActions, STDIN_FILENO, "/dev/null", O_RDONLY, 0),
             posix_spawn_file_actions_adddup2(&fileActions, stdoutWrite, STDOUT_FILENO),
@@ -127,7 +238,7 @@ package final class SpawnedProcessGroup: @unchecked Sendable {
         guard spawnResult == 0 else {
             throw LaunchError.spawnFailed(String(cString: strerror(spawnResult)))
         }
-        return SpawnedProcessGroup(pid: pid)
+        return SpawnedProcessGroup(pid: pid, outputPipes: outputPipes)
     }
 
     package var isRunning: Bool {
@@ -138,25 +249,29 @@ package final class SpawnedProcessGroup: @unchecked Sendable {
         self.termination.value
     }
 
+    package var hasResidualProcessGroup: Bool {
+        Self.processGroupExists(self.processGroup)
+    }
+
     @discardableResult
     package func terminate(grace: TimeInterval = 0.4) async -> Int32? {
         if self.isRunning {
             let killDeadline = Date().addingTimeInterval(max(0, grace))
-            let descendants = TTYProcessTreeTerminator.descendantPIDs(of: self.pid)
-            let descendantIdentities = descendants.compactMap(TTYProcessTreeTerminator.processIdentity(for:))
+            var processIdentities = self.currentResidualProcessIdentities(includeDescendants: true)
             TTYProcessTreeTerminator.terminateProcessTree(
                 rootPID: self.pid,
                 processGroup: self.processGroup,
                 signal: SIGTERM,
-                knownDescendants: descendants)
+                knownDescendants: processIdentities.map(\.pid))
             _ = await self.waitForExit(timeout: max(0, killDeadline.timeIntervalSinceNow))
-            while descendantIdentities.contains(where: TTYProcessTreeTerminator.isCurrent(_:)),
+            while processIdentities.contains(where: TTYProcessTreeTerminator.isCurrent(_:)),
                   Date() < killDeadline
             {
                 try? await Task.sleep(for: .milliseconds(20))
             }
 
-            let currentDescendants = descendantIdentities
+            processIdentities.formUnion(self.currentOutputPipeHolderIdentities())
+            let currentDescendants = processIdentities
                 .filter(TTYProcessTreeTerminator.isCurrent(_:))
                 .map(\.pid)
             if self.isRunning {
@@ -173,16 +288,36 @@ package final class SpawnedProcessGroup: @unchecked Sendable {
             }
             return self.terminationStatus
         }
-        await self.terminateResidualGroup(grace: grace)
+        await self.terminateResidualProcesses(grace: grace)
         return self.terminationStatus
     }
 
-    package func terminateResidualGroup(grace: TimeInterval = 0.4) async {
-        guard Self.processGroupExists(self.processGroup) else { return }
-        Self.signal(processGroup: self.processGroup, signal: SIGTERM)
-        guard await !self.waitForGroupExit(timeout: grace) else { return }
-        Self.signal(processGroup: self.processGroup, signal: SIGKILL)
-        _ = await self.waitForGroupExit(timeout: grace)
+    package func terminateResidualProcesses(grace: TimeInterval = 0.4) async {
+        let deadline = Date().addingTimeInterval(max(0, grace))
+        var processIdentities = self.currentOutputPipeHolderIdentities()
+        if Self.processGroupExists(self.processGroup) {
+            Self.signal(processGroup: self.processGroup, signal: SIGTERM)
+        }
+        Self.signal(processIdentities: processIdentities, signal: SIGTERM)
+
+        while Self.processGroupExists(self.processGroup)
+            || processIdentities.contains(where: TTYProcessTreeTerminator.isCurrent(_:))
+        {
+            guard Date() < deadline else { break }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+
+        processIdentities.formUnion(self.currentOutputPipeHolderIdentities())
+        guard Self.processGroupExists(self.processGroup)
+            || processIdentities.contains(where: TTYProcessTreeTerminator.isCurrent(_:))
+        else {
+            return
+        }
+        if Self.processGroupExists(self.processGroup) {
+            Self.signal(processGroup: self.processGroup, signal: SIGKILL)
+        }
+        Self.signal(processIdentities: processIdentities, signal: SIGKILL)
+        _ = await self.waitForResidualProcessesExit(processIdentities, timeout: grace)
     }
 
     private func startWaiter() {
@@ -208,12 +343,39 @@ package final class SpawnedProcessGroup: @unchecked Sendable {
         return self.terminationStatus
     }
 
-    private func waitForGroupExit(timeout: TimeInterval) async -> Bool {
+    private func waitForResidualProcessesExit(
+        _ processIdentities: Set<TTYProcessTreeTerminator.ProcessIdentity>,
+        timeout: TimeInterval) async -> Bool
+    {
         let deadline = Date().addingTimeInterval(max(0, timeout))
-        while Self.processGroupExists(self.processGroup), Date() < deadline {
+        while Date() < deadline {
+            guard Self.processGroupExists(self.processGroup)
+                || processIdentities.contains(where: TTYProcessTreeTerminator.isCurrent(_:))
+            else {
+                return true
+            }
             try? await Task.sleep(for: .milliseconds(20))
         }
         return !Self.processGroupExists(self.processGroup)
+            && !processIdentities.contains(where: TTYProcessTreeTerminator.isCurrent(_:))
+    }
+
+    private func currentResidualProcessIdentities(
+        includeDescendants: Bool) -> Set<TTYProcessTreeTerminator.ProcessIdentity>
+    {
+        var identities = self.currentOutputPipeHolderIdentities()
+        if includeDescendants {
+            identities.formUnion(
+                TTYProcessTreeTerminator.descendantPIDs(of: self.pid)
+                    .compactMap(TTYProcessTreeTerminator.processIdentity(for:)))
+        }
+        return identities
+    }
+
+    private func currentOutputPipeHolderIdentities() -> Set<TTYProcessTreeTerminator.ProcessIdentity> {
+        let excludedPIDs: Set<pid_t> = [getpid(), self.pid]
+        let holderPIDs = OutputPipeIdentity.holderPIDs(for: self.outputPipes)
+        return Set(holderPIDs.subtracting(excludedPIDs).compactMap(TTYProcessTreeTerminator.processIdentity(for:)))
     }
 
     private static func processGroupExists(_ processGroup: pid_t) -> Bool {
@@ -223,6 +385,15 @@ package final class SpawnedProcessGroup: @unchecked Sendable {
 
     private static func signal(processGroup: pid_t, signal: Int32) {
         _ = kill(-processGroup, signal)
+    }
+
+    private static func signal(
+        processIdentities: Set<TTYProcessTreeTerminator.ProcessIdentity>,
+        signal: Int32)
+    {
+        for identity in processIdentities where TTYProcessTreeTerminator.isCurrent(identity) {
+            _ = kill(identity.pid, signal)
+        }
     }
 
     package static func pipeDescriptorsToClose(_ descriptors: [Int32]) -> [Int32] {

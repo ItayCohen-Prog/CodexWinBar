@@ -491,11 +491,16 @@ public struct KiroStatusProbe: Sendable {
                 throw KiroStatusProbeError.timeout
             }
         }
-        await process.terminateResidualGroup()
+        if process.hasResidualProcessGroup {
+            await process.terminateResidualProcesses()
+        }
 
         async let stdoutData = stdoutCapture.finish(timeout: .seconds(1))
         async let stderrData = stderrCapture.finish(timeout: .seconds(1))
         let output = await (stdout: stdoutData, stderr: stderrData)
+        if !stdoutCapture.reachedEOF || !stderrCapture.reachedEOF {
+            await process.terminateResidualProcesses()
+        }
         guard let terminationStatus = process.terminationStatus else {
             throw KiroStatusProbeError.timeout
         }

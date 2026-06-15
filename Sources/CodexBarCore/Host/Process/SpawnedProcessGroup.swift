@@ -141,13 +141,37 @@ package final class SpawnedProcessGroup: @unchecked Sendable {
     @discardableResult
     package func terminate(grace: TimeInterval = 0.4) async -> Int32? {
         if self.isRunning {
-            Self.signal(processGroup: self.processGroup, signal: SIGTERM)
-            kill(self.pid, SIGTERM)
-            if await self.waitForExit(timeout: grace) == nil {
-                Self.signal(processGroup: self.processGroup, signal: SIGKILL)
-                kill(self.pid, SIGKILL)
-                _ = await self.waitForExit(timeout: grace)
+            let killDeadline = Date().addingTimeInterval(max(0, grace))
+            let descendants = TTYProcessTreeTerminator.descendantPIDs(of: self.pid)
+            let descendantIdentities = descendants.compactMap(TTYProcessTreeTerminator.processIdentity(for:))
+            TTYProcessTreeTerminator.terminateProcessTree(
+                rootPID: self.pid,
+                processGroup: self.processGroup,
+                signal: SIGTERM,
+                knownDescendants: descendants)
+            _ = await self.waitForExit(timeout: max(0, killDeadline.timeIntervalSinceNow))
+            while descendantIdentities.contains(where: TTYProcessTreeTerminator.isCurrent(_:)),
+                  Date() < killDeadline
+            {
+                try? await Task.sleep(for: .milliseconds(20))
             }
+
+            let currentDescendants = descendantIdentities
+                .filter(TTYProcessTreeTerminator.isCurrent(_:))
+                .map(\.pid)
+            if self.isRunning {
+                TTYProcessTreeTerminator.terminateProcessTree(
+                    rootPID: self.pid,
+                    processGroup: self.processGroup,
+                    signal: SIGKILL,
+                    knownDescendants: currentDescendants)
+                _ = await self.waitForExit(timeout: grace)
+            } else {
+                for pid in currentDescendants {
+                    kill(pid, SIGKILL)
+                }
+            }
+            return self.terminationStatus
         }
         await self.terminateResidualGroup(grace: grace)
         return self.terminationStatus

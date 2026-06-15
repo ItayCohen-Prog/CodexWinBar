@@ -109,6 +109,55 @@ struct KiroStatusProbeTests {
     }
 
     @Test
+    func `run command kills a pipe holder that escapes the process group`() async throws {
+        let childPIDFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codexbar-kiro-escaped-\(UUID().uuidString).pid")
+        let cliURL = try self.makeCLI(
+            """
+            #!/usr/bin/python3
+            import subprocess
+            import sys
+            import time
+
+            child = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)",
+                ],
+                start_new_session=True,
+            )
+            with open(sys.argv[1], "w") as handle:
+                handle.write(str(child.pid))
+            print("partial output", flush=True)
+            time.sleep(30)
+            """)
+        defer {
+            try? FileManager.default.removeItem(at: cliURL.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: childPIDFile)
+        }
+
+        let probe = KiroStatusProbe(cliBinaryResolver: { cliURL.path })
+        let result = try await probe.runCommand(
+            arguments: [childPIDFile.path],
+            timeout: 2,
+            idleTimeout: 0.1)
+
+        #expect(result.terminatedForIdle)
+        #expect(result.stdout.contains("partial output"))
+
+        let childPIDText = try String(contentsOf: childPIDFile, encoding: .utf8)
+        let childPID = try #require(pid_t(childPIDText.trimmingCharacters(in: .whitespacesAndNewlines)))
+        defer { _ = kill(childPID, SIGKILL) }
+
+        let cleanupDeadline = Date().addingTimeInterval(1)
+        while kill(childPID, 0) == 0, Date() < cleanupDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(kill(childPID, 0) == -1)
+    }
+
+    @Test
     func `run command preserves completed no-output failure status`() async throws {
         let cliURL = try self.makeCLI(
             """

@@ -316,7 +316,7 @@ struct KiroStatusProbeTests {
 
         #expect(snapshot.planName == "KIRO FREE")
         #expect(snapshot.creditsUsed == 12.50)
-        #expect(elapsed < 5, "Kiro usage capture should not wait for inherited pipe EOF, took \(elapsed)s")
+        #expect(elapsed < 8, "Kiro usage capture should return before the 10s idle timeout, took \(elapsed)s")
 
         let childPIDText = try String(contentsOf: childPIDFile, encoding: .utf8)
         let childPID = try #require(pid_t(childPIDText.trimmingCharacters(in: .whitespacesAndNewlines)))

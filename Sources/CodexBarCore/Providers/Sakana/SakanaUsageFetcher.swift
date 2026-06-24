@@ -147,18 +147,21 @@ public enum SakanaUsageFetcher {
     {
         let escaped = NSRegularExpression.escapedPattern(for: label)
         let pattern = "<p[^>]*>\\s*\(escaped)\\s*</p>\\s*"
-            + "<p[^>]*>\\s*Resets on ([^<]+?)\\s*</p>[\\s\\S]*?"
+            + "([\\s\\S]*?)"
             + "<p[^>]*>\\s*([0-9]+(?:\\.[0-9]+)?)% used\\s*</p>"
         guard let match = self.firstMatch(pattern: pattern, in: html),
-              let resetText = self.capture(1, in: html, match: match),
+              let windowBody = self.capture(1, in: html, match: match),
               let percentText = self.capture(2, in: html, match: match),
               let percent = Double(percentText)
         else {
             return nil
         }
+        let resetText = self.capture(
+            pattern: #"<p[^>]*>\s*Resets on ([^<]+?)\s*</p>"#,
+            in: windowBody)
         return SakanaUsageSnapshot.QuotaWindow(
             usedPercent: min(100, max(0, percent)),
-            resetsAt: self.parseResetDate(resetText, timeZone: timeZone))
+            resetsAt: resetText.flatMap { self.parseResetDate($0, timeZone: timeZone) })
     }
 
     private static func parsePlanName(_ html: String) -> String? {

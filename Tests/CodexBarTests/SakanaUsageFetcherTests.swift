@@ -61,6 +61,23 @@ struct SakanaUsageFetcherTests {
         #expect(usage.primary?.resetDescription == nil)
     }
 
+    @Test
+    func `window without reset line still maps percent`() throws {
+        let html = Self.billingHTML.replacing(
+            "<p class=\"text-muted-foreground text-xs tabular-nums\">Resets on June 23, 2026 at 10:53 PM</p>",
+            with: "")
+        let usage = try SakanaUsageFetcher.parseBillingHTML(
+            html,
+            timeZone: Self.shanghaiTimeZone).toUsageSnapshot()
+
+        #expect(usage.primary?.usedPercent == 92)
+        #expect(usage.primary?.windowMinutes == 300)
+        #expect(usage.primary?.resetsAt == nil)
+        #expect(usage.primary?.resetDescription == nil)
+        #expect(usage.secondary?.usedPercent == 32)
+        #expect(usage.secondary?.resetsAt == Self.date(year: 2026, month: 6, day: 29, hour: 8, minute: 0))
+    }
+
     private static let shanghaiTimeZone = TimeZone(identifier: "Asia/Shanghai")!
 
     private static func date(year: Int, month: Int, day: Int, hour: Int, minute: Int) -> Date? {

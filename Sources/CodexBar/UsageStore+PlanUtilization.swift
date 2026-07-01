@@ -6,6 +6,7 @@ extension UsageStore {
     private nonisolated static let weeklyLimitResetDetectorDefaultsKey = "weeklyLimitResetDetectorStates"
     private nonisolated static let weeklyWindowMinutes = 7 * 24 * 60
     private nonisolated static let planUtilizationUnscopedPreferredKey = "__unscoped__"
+    private nonisolated static let claudeOAuthPlanUtilizationAccountKeyPrefix = "__claude_oauth__:"
 
     struct WeeklyLimitResetDetectorState: Codable, Equatable {
         let wasAboveThreshold: Bool
@@ -53,9 +54,12 @@ extension UsageStore {
         -> (accountKey: String?, histories: [PlanUtilizationSeriesHistory])
     {
         var providerBuckets = self.planUtilizationHistory[provider] ?? PlanUtilizationHistoryBuckets()
-        if provider == .claude, self.lastSourceLabels[provider] == "oauth" {
-            // Match the history view to the latest successful snapshot. OAuth provenance outranks an
-            // unrelated configured token account; the unscoped sentinel intentionally resolves to nil.
+        if provider == .claude,
+           providerBuckets.preferredAccountKey == Self.planUtilizationUnscopedPreferredKey
+           || Self.isClaudeOAuthPlanUtilizationAccountKey(providerBuckets.preferredAccountKey)
+        {
+            // Persisted OAuth provenance outranks an unrelated configured token account. The unscoped
+            // sentinel intentionally resolves to nil, including after the history store is reloaded.
             let accountKey = self.stickyPlanUtilizationAccountKey(providerBuckets: providerBuckets)
             return (accountKey, providerBuckets.histories(for: accountKey))
         }
@@ -608,7 +612,12 @@ extension UsageStore {
         else {
             return nil
         }
-        return self.sha256Hex("claude:oauth-keychain-persistent-ref:\(normalizedHash)")
+        let digest = self.sha256Hex("claude:oauth-keychain-persistent-ref:\(normalizedHash)")
+        return "\(self.claudeOAuthPlanUtilizationAccountKeyPrefix)\(digest)"
+    }
+
+    private nonisolated static func isClaudeOAuthPlanUtilizationAccountKey(_ accountKey: String?) -> Bool {
+        accountKey?.hasPrefix(self.claudeOAuthPlanUtilizationAccountKeyPrefix) == true
     }
 
     private nonisolated static func planUtilizationIdentityAccountKey(

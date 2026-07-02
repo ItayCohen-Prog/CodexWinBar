@@ -125,9 +125,8 @@ struct PopupLocalizationTests {
     }
 
     @Test
-    func `privacy and settings labels use selected localization`() {
+    func `settings labels use selected localization`() {
         CodexBarLocalizationOverride.$appLanguage.withValue("zh-Hant") {
-            #expect(PersonalInfoRedactor.redactEmail("codex@example.com", isEnabled: true) == "隱藏")
             #expect(KiroMenuBarDisplayMode.hidden.label == "隱藏")
             #expect(KiroMenuBarDisplayMode.creditsLeft.label == "剩餘額度")
             #expect(L("(System)") == "（系統）")

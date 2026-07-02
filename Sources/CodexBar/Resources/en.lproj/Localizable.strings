@@ -280,6 +280,7 @@
 "Show provider icons in the switcher (otherwise show a weekly progress line)." = "Show provider icons in the switcher (otherwise show a weekly progress line).";
 "Show reset time as clock" = "Show reset time as clock";
 "Show usage as used" = "Show usage as used";
+"Sign in with Claude Code..." = "Sign in with Claude Code...";
 "Sign in via button below" = "Sign in via button below";
 "Skip teardown between probes (debug-only)." = "Skip teardown between probes (debug-only).";
 "Stack token accounts in the menu (otherwise show an account switcher bar)." = "Stack token accounts in the menu (otherwise show an account switcher bar).";

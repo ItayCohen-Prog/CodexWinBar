@@ -280,6 +280,7 @@
 "Show provider icons in the switcher (otherwise show a weekly progress line)." = "عرض أيقونات المزودين في جهاز التبديل (وإلا اعرض خط تقدم أسبوعي).";
 "Show reset time as clock" = "عرض وقت إعادة التعيين كساعة";
 "Show usage as used" = "استخدام العرض كما هو مستخدم";
+"Sign in with Claude Code..." = "تسجيل الدخول باستخدام Claude Code...";
 "Sign in via button below" = "سجل الدخول عبر الزر أدناه";
 "Skip teardown between probes (debug-only)." = "تخطي التفكيك بين المجسات (تصحيح فقط).";
 "Stack token accounts in the menu (otherwise show an account switcher bar)." = "قم بتكديس حسابات الرموز في القائمة (وإلا اعرض شريط تبديل الحسابات).";

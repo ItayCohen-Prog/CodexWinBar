@@ -287,6 +287,7 @@
 "Show provider icons in the switcher (otherwise show a weekly progress line)." = "在切換器中顯示提供者圖示（否則顯示每週進度線）。";
 "Show reset time as clock" = "以時鐘時間顯示重置時間";
 "Show usage as used" = "以已用量顯示";
+"Sign in with Claude Code..." = "使用 Claude Code 登入…";
 "Sign in via button below" = "透過下方按鈕登入";
 "Skip teardown between probes (debug-only)." = "探測之間跳過清理（僅限除錯）。";
 "Source" = "來源";

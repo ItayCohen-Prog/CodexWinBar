@@ -67,6 +67,10 @@ internal sealed class OpenRouterApiStrategy : IFetchStrategy
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
+        // OpenRouter attributes requests to a client via these headers (matches upstream CodexBar).
+        request.Headers.TryAddWithoutValidation("HTTP-Referer", "https://github.com/ItayCohen-Prog/CodexWinBar");
+        request.Headers.TryAddWithoutValidation("X-Title", "CodexWinBar");
+
         using var response = await ProviderHttpClient.Shared.SendAsync(request, ct).ConfigureAwait(false);
         var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)

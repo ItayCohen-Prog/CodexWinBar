@@ -51,7 +51,14 @@ internal sealed class CopilotOAuthFetchStrategy : IFetchStrategy
         using var request = new HttpRequestMessage(HttpMethod.Get, UsageUri);
         request.Headers.Authorization = new AuthenticationHeaderValue("token", token);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        request.Headers.UserAgent.ParseAdd("CodexBar");
+
+        // The private copilot_internal/user endpoint gates on editor-identifying headers;
+        // these must match what upstream CodexBar (and the VS Code Copilot plugin) send or the
+        // request is rejected. See docs/copilot.md.
+        request.Headers.UserAgent.ParseAdd("GitHubCopilotChat/0.26.7");
+        request.Headers.TryAddWithoutValidation("Editor-Version", "vscode/1.96.2");
+        request.Headers.TryAddWithoutValidation("Editor-Plugin-Version", "copilot-chat/0.26.7");
+        request.Headers.TryAddWithoutValidation("X-Github-Api-Version", "2025-04-01");
 
         using var timeout = ProviderHttpClient.TimeoutCts(ct, Timeout);
         using var response = await ctx.Http.SendAsync(request, timeout.Token).ConfigureAwait(false);

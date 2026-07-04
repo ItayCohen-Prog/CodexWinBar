@@ -31,7 +31,9 @@ internal sealed class WidgetRenderer : IDisposable
         float scale = Scale(dpi);
         using Bitmap bitmap = new(1, 1);
         using Graphics graphics = Graphics.FromImage(bitmap);
-        graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+        // Grayscale AA (not ClearType) — this surface is a per-pixel-alpha layered window, where
+        // ClearType's subpixel blend assumes an opaque background and produces heavy, fringed text.
+        graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
         Font font = GetFont(dpi);
         int width = 0;
         chipBounds?.Clear();
@@ -108,7 +110,9 @@ internal sealed class WidgetRenderer : IDisposable
         float scale = Scale(dpi);
         graphics.Clear(Color.FromArgb(1, 0, 0, 0));
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+        // Grayscale AA (not ClearType): on a per-pixel-alpha layered window ClearType can't produce a
+        // correct alpha channel, which rendered the taskbar text heavy/fringed ("pixelated bold").
+        graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
 
         Font font = GetFont(dpi);
         Color foreground = _theme.SystemUsesLightTheme ? Color.FromArgb(230, 27, 27, 27) : Color.FromArgb(230, 255, 255, 255);

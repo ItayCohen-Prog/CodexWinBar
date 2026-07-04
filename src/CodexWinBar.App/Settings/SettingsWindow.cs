@@ -1,10 +1,12 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Net.Http;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Media;
+using CodexWinBar.App.Assets;
 using CodexWinBar.App.Interop;
 using CodexWinBar.App.Startup;
 using CodexWinBar.Core.Config;
@@ -298,13 +300,55 @@ public sealed class SettingsWindow : Window
     {
         var entry = this.configStore.EntryFor(this.configStore.Load(), descriptor.Id);
         var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(6), Tag = descriptor };
-        row.Children.Add(new TextBlock { Text = descriptor.Branding.GlyphKey, Width = 32, VerticalAlignment = VerticalAlignment.Center });
+        row.Children.Add(ProviderLogo(descriptor));
         row.Children.Add(new TextBlock { Text = descriptor.Metadata.DisplayName, Width = 118, VerticalAlignment = VerticalAlignment.Center });
         var check = new CheckBox { IsChecked = entry.Enabled ?? descriptor.Metadata.DefaultEnabled, VerticalAlignment = VerticalAlignment.Center };
         check.Checked += (_, _) => this.SaveProviderEntry(descriptor.Id, item => item with { Enabled = true });
         check.Unchecked += (_, _) => this.SaveProviderEntry(descriptor.Id, item => item with { Enabled = false });
         row.Children.Add(check);
         return row;
+    }
+
+    private static FrameworkElement ProviderLogo(ProviderDescriptor descriptor)
+    {
+        const double size = 18;
+        if (LogoImages.Get(descriptor.Branding.GlyphKey, darkBackground: true) is { } source)
+        {
+            return new Image
+            {
+                Width = 32,
+                Height = size,
+                Source = source,
+                Stretch = Stretch.Uniform,
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Left,
+            };
+        }
+
+        return new Border
+        {
+            Width = 18,
+            Height = 18,
+            Margin = new Thickness(0, 0, 14, 0),
+            CornerRadius = new CornerRadius(9),
+            Background = new SolidColorBrush(Color.FromRgb(descriptor.Branding.R, descriptor.Branding.G, descriptor.Branding.B)),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new TextBlock
+            {
+                Text = InitialFor(descriptor),
+                FontSize = 10,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = Brushes.White,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+        };
+    }
+
+    private static string InitialFor(ProviderDescriptor descriptor)
+    {
+        var name = descriptor.Metadata.DisplayName;
+        return string.IsNullOrWhiteSpace(name) ? "?" : name.Trim()[0].ToString(CultureInfo.CurrentCulture).ToUpper(CultureInfo.CurrentCulture);
     }
 
     private void ProviderSelectionChanged(object sender, SelectionChangedEventArgs e) => this.RefreshProviderDetail();

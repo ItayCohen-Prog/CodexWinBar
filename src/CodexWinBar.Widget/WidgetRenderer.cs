@@ -3,12 +3,15 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.Runtime.InteropServices;
+using CodexWinBar.Core.Providers;
 
 namespace CodexWinBar.Widget;
 
 internal sealed class WidgetRenderer : IDisposable
 {
+    private const int LogoCacheLimit = 32;
     private readonly ThemeReader _theme;
+    private readonly Dictionary<(string GlyphKey, int TargetPixelSize, bool Dark), Bitmap> _logoCache = [];
     private Font? _font;
     private int _fontDpi;
     private float _fontSize;
@@ -94,6 +97,10 @@ internal sealed class WidgetRenderer : IDisposable
     public void Dispose()
     {
         _font?.Dispose();
+        foreach (var bitmap in _logoCache.Values)
+        {
+            bitmap.Dispose();
+        }
     }
 
     private void Draw(Graphics graphics, WidgetRenderState state, int width, int height, uint dpi, int hoveredIndex)
@@ -138,20 +145,34 @@ internal sealed class WidgetRenderer : IDisposable
         Color brand = Color.FromArgb(ApplyOpacity(255, opacity), chip.BrandR, chip.BrandG, chip.BrandB);
         Color fg = Color.FromArgb(ApplyOpacity(foreground.A, opacity), foreground.R, foreground.G, foreground.B);
 
-        using SolidBrush brandBrush = new(brand);
-        graphics.FillEllipse(brandBrush, x, y + (contentHeight - glyphSize) / 2, glyphSize, glyphSize);
-        string letter = string.IsNullOrWhiteSpace(chip.GlyphKey) ? "?" : chip.GlyphKey[..1].ToUpperInvariant();
-        using StringFormat centered = new() { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-        using Font glyphFont = new(font.FontFamily, Math.Max(6, glyphSize * 0.62f), FontStyle.Bold, GraphicsUnit.Pixel);
-        using SolidBrush glyphText = new(Color.FromArgb(ApplyOpacity(230, opacity), 255, 255, 255));
-        graphics.DrawString(letter, glyphFont, glyphText, new RectangleF(x, y + (contentHeight - glyphSize) / 2, glyphSize, glyphSize), centered);
+        int glyphY = y + (contentHeight - glyphSize) / 2;
+        if (this.GetLogo(chip.GlyphKey, glyphSize, dark: !_theme.SystemUsesLightTheme) is { } logo)
+        {
+            var previousInterpolation = graphics.InterpolationMode;
+            var previousPixelOffset = graphics.PixelOffsetMode;
+            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            graphics.DrawImage(logo, new Rectangle(x, glyphY, glyphSize, glyphSize));
+            graphics.InterpolationMode = previousInterpolation;
+            graphics.PixelOffsetMode = previousPixelOffset;
+        }
+        else
+        {
+            using SolidBrush brandBrush = new(brand);
+            graphics.FillEllipse(brandBrush, x, glyphY, glyphSize, glyphSize);
+            string letter = string.IsNullOrWhiteSpace(chip.GlyphKey) ? "?" : chip.GlyphKey[..1].ToUpperInvariant();
+            using StringFormat centered = new() { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+            using Font glyphFont = new(font.FontFamily, Math.Max(6, glyphSize * 0.62f), FontStyle.Bold, GraphicsUnit.Pixel);
+            using SolidBrush glyphText = new(Color.FromArgb(ApplyOpacity(230, opacity), 255, 255, 255));
+            graphics.DrawString(letter, glyphFont, glyphText, new RectangleF(x, glyphY, glyphSize, glyphSize), centered);
+        }
 
         if (chip.IncidentLevel > 0)
         {
             Color dot = chip.IncidentLevel == 1 ? Color.FromArgb(0xF8, 0xA8, 0x00) : Color.FromArgb(0xC4, 0x2B, 0x1C);
             using SolidBrush dotBrush = new(Color.FromArgb(ApplyOpacity(255, opacity), dot.R, dot.G, dot.B));
             int dotSize = Px(4, scale);
-            graphics.FillEllipse(dotBrush, x + glyphSize - dotSize / 2, y + (contentHeight - glyphSize) / 2 - dotSize / 2, dotSize, dotSize);
+            graphics.FillEllipse(dotBrush, x + glyphSize - dotSize / 2, glyphY - dotSize / 2, dotSize, dotSize);
         }
 
         x += glyphSize + gap;
@@ -230,6 +251,47 @@ internal sealed class WidgetRenderer : IDisposable
         _fontDpi = (int)dpi;
         _fontSize = size;
         return _font;
+    }
+
+    private Bitmap? GetLogo(string glyphKey, int targetPixelSize, bool dark)
+    {
+        if (string.IsNullOrWhiteSpace(glyphKey))
+        {
+            return null;
+        }
+
+        var key = (glyphKey, targetPixelSize, dark);
+        if (_logoCache.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
+
+        var bytes = ProviderAssets.GetLogoPng(glyphKey, dark);
+        if (bytes is null)
+        {
+            return null;
+        }
+
+        using var stream = new MemoryStream(bytes);
+        using var source = new Bitmap(stream);
+        var scaled = new Bitmap(targetPixelSize, targetPixelSize, PixelFormat.Format32bppPArgb);
+        using (var graphics = Graphics.FromImage(scaled))
+        {
+            graphics.Clear(Color.Transparent);
+            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            graphics.DrawImage(source, new Rectangle(0, 0, targetPixelSize, targetPixelSize));
+        }
+
+        if (_logoCache.Count >= LogoCacheLimit)
+        {
+            var oldestKey = _logoCache.Keys.First();
+            _logoCache[oldestKey].Dispose();
+            _logoCache.Remove(oldestKey);
+        }
+
+        _logoCache[key] = scaled;
+        return scaled;
     }
 
     private static void FillRoundRect(Graphics graphics, Brush brush, Rectangle bounds, int radius)

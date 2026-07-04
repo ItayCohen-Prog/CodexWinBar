@@ -23,7 +23,7 @@ public static class OpenAIAdminProvider
             DashboardUrl = new Uri("https://platform.openai.com/usage"),
             StatusPageUrl = new Uri("https://status.openai.com"),
         },
-        Branding = new ProviderBranding { GlyphKey = "openaiadmin", R = 16, G = 163, B = 127 },
+        Branding = new ProviderBranding { GlyphKey = "codex", R = 16, G = 163, B = 127 },
         Strategies = [new OpenAIAdminApiStrategy()],
     };
 }

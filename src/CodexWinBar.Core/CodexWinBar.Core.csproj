@@ -2,4 +2,8 @@
   <PropertyGroup>
     <RootNamespace>CodexWinBar.Core</RootNamespace>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- Provider brand logos rasterized from upstream steipete/CodexBar SVGs (docs/logos). -->
+    <EmbeddedResource Include="Assets\logos\*.png" />
+  </ItemGroup>
 </Project>

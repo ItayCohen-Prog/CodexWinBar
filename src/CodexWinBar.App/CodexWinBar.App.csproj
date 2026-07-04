@@ -5,7 +5,12 @@
     <RootNamespace>CodexWinBar.App</RootNamespace>
     <AssemblyName>CodexWinBar</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- Multi-size icon packed from upstream Icon.icon/Assets/codexbar.png; also used by the tray. -->
+    <EmbeddedResource Include="app.ico" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\CodexWinBar.Core\CodexWinBar.Core.csproj" />
     <ProjectReference Include="..\CodexWinBar.Providers\CodexWinBar.Providers.csproj" />

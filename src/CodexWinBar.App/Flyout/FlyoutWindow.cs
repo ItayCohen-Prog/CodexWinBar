@@ -6,6 +6,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Shapes;
+using CodexWinBar.App.Assets;
 using System.Windows.Threading;
 using CodexWinBar.App.Interop;
 using CodexWinBar.Core.Config;
@@ -245,23 +246,7 @@ public sealed class FlyoutWindow : Window
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(24) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        header.Children.Add(new Border
-        {
-            Width = 16,
-            Height = 16,
-            CornerRadius = new CornerRadius(8),
-            Background = brand,
-            VerticalAlignment = VerticalAlignment.Center,
-            Child = new TextBlock
-            {
-                Text = InitialFor(descriptor),
-                FontSize = 9,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = Brushes.White,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center,
-            },
-        });
+        header.Children.Add(this.CreateProviderGlyph(descriptor, brand, 16));
 
         var title = new TextBlock
         {
@@ -409,6 +394,39 @@ public sealed class FlyoutWindow : Window
         Background = this.ResourceBrush("FlyoutCardBackground"),
         CornerRadius = new CornerRadius(8),
     };
+
+    private FrameworkElement CreateProviderGlyph(ProviderDescriptor descriptor, Brush brand, double size)
+    {
+        if (LogoImages.Get(descriptor.Branding.GlyphKey, this.isDark) is { } source)
+        {
+            return new Image
+            {
+                Width = size,
+                Height = size,
+                Source = source,
+                Stretch = Stretch.Uniform,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+        }
+
+        return new Border
+        {
+            Width = size,
+            Height = size,
+            CornerRadius = new CornerRadius(size / 2),
+            Background = brand,
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new TextBlock
+            {
+                Text = InitialFor(descriptor),
+                FontSize = 9,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = Brushes.White,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+        };
+    }
 
     private UIElement CreateFooter()
     {

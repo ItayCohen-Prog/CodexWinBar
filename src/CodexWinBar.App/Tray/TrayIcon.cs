@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Drawing;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -29,6 +30,7 @@ public sealed class TrayIcon : IDisposable
     private readonly Action refresh;
     private readonly Action quit;
     private readonly HwndSource messageSource;
+    private readonly Icon trayIcon;
     private readonly IntPtr iconHandle;
     private readonly uint taskbarCreatedMessage;
     private bool disposed;
@@ -48,7 +50,8 @@ public sealed class TrayIcon : IDisposable
         };
         this.messageSource = new HwndSource(parameters);
         this.messageSource.AddHook(this.WndProc);
-        this.iconHandle = CreateTrayIcon();
+        this.trayIcon = LoadTrayIcon();
+        this.iconHandle = this.trayIcon.Handle;
         this.taskbarCreatedMessage = RegisterWindowMessage("TaskbarCreated");
         this.AddIcon();
     }
@@ -104,10 +107,7 @@ public sealed class TrayIcon : IDisposable
         _ = ShellNotifyIcon(NimDelete, ref data);
         this.messageSource.RemoveHook(this.WndProc);
         this.messageSource.Dispose();
-        if (this.iconHandle != IntPtr.Zero)
-        {
-            _ = DestroyIcon(this.iconHandle);
-        }
+        this.trayIcon.Dispose();
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -155,54 +155,20 @@ public sealed class TrayIcon : IDisposable
         uID = 1,
     };
 
-    private static IntPtr CreateTrayIcon()
+    private static Icon LoadTrayIcon()
     {
-        using var bitmap = new Bitmap(32, 32, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-        using (var graphics = Graphics.FromImage(bitmap))
+        var assembly = Assembly.GetExecutingAssembly();
+        var resourceName = assembly.GetManifestResourceNames()
+            .FirstOrDefault(static name => name.EndsWith("app.ico", StringComparison.OrdinalIgnoreCase));
+        if (resourceName is null)
         {
-            graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            graphics.Clear(System.Drawing.Color.Transparent);
-            using var accent = new SolidBrush(System.Drawing.Color.FromArgb(255, 16, 163, 127));
-            using var white = new System.Drawing.Pen(System.Drawing.Color.White, 3.5f)
-            {
-                StartCap = System.Drawing.Drawing2D.LineCap.Round,
-                EndCap = System.Drawing.Drawing2D.LineCap.Round,
-            };
-            using var path = RoundedRectangle(4, 4, 24, 24, 7);
-            graphics.FillPath(accent, path);
-            graphics.DrawArc(white, 10, 11, 12, 12, 200, 140);
-            graphics.DrawLine(white, 16, 17, 21, 12);
+            throw new InvalidOperationException("Embedded tray icon resource app.ico was not found.");
         }
 
-        var iconInfo = new IconInfo();
-        var color = bitmap.GetHbitmap(System.Drawing.Color.FromArgb(0));
-        var mask = bitmap.GetHbitmap(System.Drawing.Color.Black);
-        try
-        {
-            iconInfo.fIcon = true;
-            iconInfo.xHotspot = 0;
-            iconInfo.yHotspot = 0;
-            iconInfo.hbmColor = color;
-            iconInfo.hbmMask = mask;
-            return CreateIconIndirect(ref iconInfo);
-        }
-        finally
-        {
-            _ = DeleteObject(color);
-            _ = DeleteObject(mask);
-        }
-    }
-
-    private static System.Drawing.Drawing2D.GraphicsPath RoundedRectangle(float x, float y, float width, float height, float radius)
-    {
-        var path = new System.Drawing.Drawing2D.GraphicsPath();
-        var diameter = radius * 2;
-        path.AddArc(x, y, diameter, diameter, 180, 90);
-        path.AddArc(x + width - diameter, y, diameter, diameter, 270, 90);
-        path.AddArc(x + width - diameter, y + height - diameter, diameter, diameter, 0, 90);
-        path.AddArc(x, y + height - diameter, diameter, diameter, 90, 90);
-        path.CloseFigure();
-        return path;
+        using var stream = assembly.GetManifestResourceStream(resourceName)
+            ?? throw new InvalidOperationException($"Embedded tray icon resource {resourceName} could not be opened.");
+        using var baseIcon = new Icon(stream);
+        return new Icon(baseIcon, new System.Drawing.Size(16, 16));
     }
 
     [DllImport("shell32.dll", EntryPoint = "Shell_NotifyIconW", SetLastError = true)]
@@ -219,17 +185,6 @@ public sealed class TrayIcon : IDisposable
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(IntPtr hwnd);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool DestroyIcon(IntPtr hIcon);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr CreateIconIndirect(ref IconInfo iconInfo);
-
-    [DllImport("gdi32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool DeleteObject(IntPtr hObject);
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct NotifyIconData
@@ -252,17 +207,6 @@ public sealed class TrayIcon : IDisposable
         public uint dwInfoFlags;
         public Guid guidItem;
         public IntPtr hBalloonIcon;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct IconInfo
-    {
-        [MarshalAs(UnmanagedType.Bool)]
-        public bool fIcon;
-        public int xHotspot;
-        public int yHotspot;
-        public IntPtr hbmMask;
-        public IntPtr hbmColor;
     }
 
     [StructLayout(LayoutKind.Sequential)]

@@ -1,0 +1,16 @@
+# CodexWinBar is a Windows-native C# / .NET rewrite of the macOS app steipete/CodexBar.
+# The original macOS Swift sources are kept in-tree for protocol reference only — they are
+# never compiled and are not part of the Windows app. Exclude them from GitHub's language
+# stats (Linguist) so the repository reflects what is actually built: C#.
+
+*.swift            linguist-vendored
+Sources/**         linguist-vendored
+TestsLinux/**      linguist-vendored
+WidgetExtension/** linguist-vendored
+Icon.icon/**       linguist-vendored
+Package.swift      linguist-vendored
+Package.resolved   linguist-vendored
+appcast.xml        linguist-vendored
+
+# Documentation should not count toward language stats either.
+docs/**            linguist-documentation

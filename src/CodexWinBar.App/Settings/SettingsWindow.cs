@@ -621,8 +621,6 @@ public sealed class SettingsWindow : Window
         Thresholds = thresholds.ToArray(),
     };
 
-    private static int? FirstThreshold(IReadOnlyList<int>? thresholds) => thresholds is { Count: > 0 } ? thresholds[0] : null;
-
     private void OnUsageStateChanged()
     {
         _ = this.Dispatcher.BeginInvoke(() =>
@@ -1517,7 +1515,7 @@ public sealed class SettingsWindow : Window
             var current = source;
             while (current is not null)
             {
-                if (current is ToggleSwitch or ButtonBase or TextBox)
+                if (current is ToggleSwitch or ButtonBase or TextBox or ThresholdTrack)
                 {
                     return true;
                 }
@@ -1598,10 +1596,9 @@ public sealed class SettingsWindow : Window
         private QuotaWindowControls CreateWindowRow(string title, string description, bool isSession)
         {
             var root = new Grid { Margin = new Thickness(0, 14, 0, 0) };
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
-            root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
             var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
@@ -1624,7 +1621,11 @@ public sealed class SettingsWindow : Window
             root.Children.Add(text);
 
             ToggleSwitch? toggle = null;
-            var input = CreatePercentInput();
+            var track = new ThresholdTrack
+            {
+                Margin = new Thickness(0, 8, 0, 0),
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+            };
             toggle = new ToggleSwitch(true, enabled =>
             {
                 if (this.refreshing)
@@ -1632,33 +1633,20 @@ public sealed class SettingsWindow : Window
                     return;
                 }
 
-                this.Commit(isSession, enabled, input.Text);
+                track.IsEnabled = enabled;
+                this.Commit(isSession, enabled, track.Values);
             });
             Grid.SetColumn(toggle, 1);
             root.Children.Add(toggle);
 
-            Grid.SetColumn(input, 3);
-            root.Children.Add(input);
-            var suffix = new TextBlock
+            Grid.SetRow(track, 1);
+            Grid.SetColumnSpan(track, 2);
+            root.Children.Add(track);
+            track.ValuesChanged += values =>
             {
-                Text = "%",
-                FontSize = 14,
-                Margin = new Thickness(6, 0, 0, 0),
-                VerticalAlignment = VerticalAlignment.Center,
+                this.Commit(isSession, toggle.IsChecked == true, values);
             };
-            Grid.SetColumn(suffix, 4);
-            root.Children.Add(suffix);
-
-            input.KeyDown += (_, args) =>
-            {
-                if (args.Key == Key.Enter)
-                {
-                    this.Commit(isSession, toggle.IsChecked == true, input.Text);
-                    args.Handled = true;
-                }
-            };
-            input.LostFocus += (_, _) => this.Commit(isSession, toggle.IsChecked == true, input.Text);
-            return new QuotaWindowControls(root, toggle, input);
+            return new QuotaWindowControls(root, toggle, track);
         }
 
         private void Refresh(UiSettings settings)
@@ -1715,11 +1703,12 @@ public sealed class SettingsWindow : Window
             IReadOnlyList<int> defaultThresholds)
         {
             var enabled = overrideWindow?.Enabled ?? defaultEnabled;
-            var threshold = overrideWindow is null
-                ? FirstThreshold(defaultThresholds)
-                : FirstThreshold(overrideWindow.Thresholds ?? []);
+            var thresholds = overrideWindow is null
+                ? defaultThresholds
+                : overrideWindow.Thresholds ?? [];
             controls.Toggle.SetChecked(enabled, notify: false);
-            controls.Input.Text = threshold?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
+            controls.Track.Values = NormalizeThresholds(thresholds);
+            controls.Track.IsEnabled = enabled;
         }
 
         private QuotaWarnings? SelectedQuotaWarnings()
@@ -1733,14 +1722,14 @@ public sealed class SettingsWindow : Window
             return owner.configStore.EntryFor(config, this.selectedProvider.Value).QuotaWarnings;
         }
 
-        private void Commit(bool isSession, bool enabled, string text)
+        private void Commit(bool isSession, bool enabled, IReadOnlyList<int> values)
         {
             if (this.refreshing)
             {
                 return;
             }
 
-            var thresholds = ParseThreshold(text);
+            var thresholds = NormalizeThresholds(values);
             if (this.selectedProvider is null)
             {
                 owner.SaveUi(ui =>
@@ -1765,46 +1754,14 @@ public sealed class SettingsWindow : Window
             this.Refresh(owner.uiStore.Load());
         }
 
-        private static IReadOnlyList<int> ParseThreshold(string text)
-        {
-            if (string.IsNullOrWhiteSpace(text))
-            {
-                return [];
-            }
+        private static IReadOnlyList<int> NormalizeThresholds(IEnumerable<int> values) =>
+            values
+                .Select(value => Math.Clamp(value, 0, 99))
+                .Distinct()
+                .OrderDescending()
+                .ToArray();
 
-            return int.TryParse(text, CultureInfo.InvariantCulture, out var value)
-                ? [Math.Clamp(value, 0, 99)]
-                : [];
-        }
-
-        private static TextBox CreatePercentInput()
-        {
-            var box = new TextBox
-            {
-                Width = 48,
-                Height = 32,
-                Padding = new Thickness(8, 5, 8, 5),
-                BorderThickness = new Thickness(1),
-                HorizontalContentAlignment = HorizontalAlignment.Right,
-                VerticalContentAlignment = VerticalAlignment.Center,
-            };
-            box.SetResourceReference(Control.BackgroundProperty, "SettingsControlBackground");
-            box.SetResourceReference(Control.BorderBrushProperty, "SettingsControlBorder");
-            box.SetResourceReference(Control.ForegroundProperty, "SettingsForeground");
-            box.PreviewTextInput += (_, args) => args.Handled = args.Text.Any(static ch => !char.IsDigit(ch));
-            DataObject.AddPastingHandler(box, OnPaste);
-            return box;
-        }
-
-        private static void OnPaste(object sender, DataObjectPastingEventArgs args)
-        {
-            if (args.DataObject.GetData(typeof(string)) is not string text || text.Any(static ch => !char.IsDigit(ch)))
-            {
-                args.CancelCommand();
-            }
-        }
-
-        private sealed record QuotaWindowControls(Grid Root, ToggleSwitch Toggle, TextBox Input);
+        private sealed record QuotaWindowControls(Grid Root, ToggleSwitch Toggle, ThresholdTrack Track);
     }
 
     private sealed class ProviderCard : Border

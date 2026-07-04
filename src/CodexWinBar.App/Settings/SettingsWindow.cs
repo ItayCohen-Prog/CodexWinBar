@@ -8,6 +8,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
@@ -569,21 +570,8 @@ public sealed class SettingsWindow : Window
 
     private QuotaSettingsCard CreateQuotaNotificationsCard(UiSettings settings)
     {
-        var detail = new StackPanel { Margin = new Thickness(40, 14, 0, 0) };
-        detail.Children.Add(Text(
-            "You'll get a notification when a provider's remaining quota drops below each threshold — e.g. at 50%, then again at 20%. Alerts re-arm after every window reset. Providers with their own thresholds in config.json keep them."));
-        detail.Children.Add(this.CreateQuotaWindowRow(
-            "Session window",
-            settings.QuotaSessionEnabled,
-            settings.QuotaSessionThresholds,
-            (ui, enabled) => ui.QuotaSessionEnabled = enabled,
-            (ui, thresholds) => ui.QuotaSessionThresholds = thresholds));
-        detail.Children.Add(this.CreateQuotaWindowRow(
-            "Weekly window",
-            settings.QuotaWeeklyEnabled,
-            settings.QuotaWeeklyThresholds,
-            (ui, enabled) => ui.QuotaWeeklyEnabled = enabled,
-            (ui, thresholds) => ui.QuotaWeeklyThresholds = thresholds));
+        var editor = new QuotaWarningsEditor(this);
+        var detail = editor.Build(settings);
 
         QuotaSettingsCard? card = null;
         var toggle = new ToggleSwitch(settings.QuotaNotificationsEnabled, isChecked =>
@@ -598,50 +586,42 @@ public sealed class SettingsWindow : Window
         return card;
     }
 
-    private FrameworkElement CreateQuotaWindowRow(
-        string title,
-        bool isEnabled,
-        IReadOnlyList<int> thresholds,
-        Action<UiSettings, bool> saveEnabled,
-        Action<UiSettings, IReadOnlyList<int>> saveThresholds)
+    private void SaveQuotaProviderOverride(
+        ProviderId providerId,
+        bool isSession,
+        bool enabled,
+        IReadOnlyList<int> thresholds)
     {
-        var panel = new StackPanel { Margin = new Thickness(0, 12, 0, 0) };
-        var row = new Grid();
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        row.Children.Add(new TextBlock
+        var settings = this.uiStore.Load();
+        this.SaveProviderEntry(providerId, entry =>
         {
-            Text = title,
-            FontSize = 14,
-            VerticalAlignment = VerticalAlignment.Center,
-        });
-
-        QuotaThresholdEditor? editor = null;
-        var toggle = new ToggleSwitch(isEnabled, enabled =>
-        {
-            this.SaveUi(ui => saveEnabled(ui, enabled));
-            if (editor is not null)
+            var existing = entry.QuotaWarnings;
+            var session = existing?.Session ?? CreateQuotaWarningWindow(settings.QuotaSessionEnabled, settings.QuotaSessionThresholds);
+            var weekly = existing?.Weekly ?? CreateQuotaWarningWindow(settings.QuotaWeeklyEnabled, settings.QuotaWeeklyThresholds);
+            var updated = CreateQuotaWarningWindow(enabled, thresholds);
+            return entry with
             {
-                editor.IsEnabled = enabled;
-                editor.Opacity = enabled ? 1 : 0.55;
-            }
+                QuotaWarnings = new QuotaWarnings
+                {
+                    Session = isSession ? updated : session,
+                    Weekly = isSession ? weekly : updated,
+                },
+            };
         });
-        Grid.SetColumn(toggle, 1);
-        row.Children.Add(toggle);
-        panel.Children.Add(row);
-
-        editor = new QuotaThresholdEditor(
-            thresholds,
-            updated => this.SaveUi(ui => saveThresholds(ui, updated)),
-            () => this.Brush("SettingsSubtleFill"),
-            () => this.Brush("SettingsControlBackground"),
-            () => this.Brush("SettingsControlBorder"));
-        editor.Margin = new Thickness(0, 8, 0, 0);
-        editor.IsEnabled = isEnabled;
-        editor.Opacity = isEnabled ? 1 : 0.55;
-        panel.Children.Add(editor);
-        return panel;
     }
+
+    private void ResetQuotaProviderOverride(ProviderId providerId)
+    {
+        this.SaveProviderEntry(providerId, entry => entry with { QuotaWarnings = null });
+    }
+
+    private static QuotaWarningWindow CreateQuotaWarningWindow(bool enabled, IReadOnlyList<int> thresholds) => new()
+    {
+        Enabled = enabled,
+        Thresholds = thresholds.ToArray(),
+    };
+
+    private static int? FirstThreshold(IReadOnlyList<int>? thresholds) => thresholds is { Count: > 0 } ? thresholds[0] : null;
 
     private void OnUsageStateChanged()
     {
@@ -859,14 +839,9 @@ public sealed class SettingsWindow : Window
         var box = new ComboBox
         {
             MinWidth = 150,
-            Height = 32,
-            Padding = new Thickness(12, 4, 8, 4),
             HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalContentAlignment = VerticalAlignment.Center,
         };
-        box.SetResourceReference(Control.BackgroundProperty, "SettingsControlBackground");
-        box.SetResourceReference(Control.BorderBrushProperty, "SettingsControlBorder");
-        box.SetResourceReference(Control.ForegroundProperty, "SettingsForeground");
+        box.Style = CreateSettingsComboBoxStyle();
         foreach (var option in options)
         {
             box.Items.Add(option);
@@ -877,6 +852,128 @@ public sealed class SettingsWindow : Window
         }
 
         return box;
+    }
+
+    private static Style CreateSettingsComboBoxStyle()
+    {
+        const string xaml = """
+<Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+       TargetType="{x:Type ComboBox}">
+    <Setter Property="Height" Value="32" />
+    <Setter Property="Padding" Value="12,0,34,0" />
+    <Setter Property="Background" Value="{DynamicResource SettingsControlBackground}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource SettingsControlBorder}" />
+    <Setter Property="Foreground" Value="{DynamicResource SettingsForeground}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="FontFamily" Value="Segoe UI" />
+    <Setter Property="FontSize" Value="14" />
+    <Setter Property="VerticalContentAlignment" Value="Center" />
+    <Setter Property="ScrollViewer.CanContentScroll" Value="True" />
+    <Setter Property="ItemContainerStyle">
+        <Setter.Value>
+            <Style TargetType="{x:Type ComboBoxItem}">
+                <Setter Property="MinHeight" Value="34" />
+                <Setter Property="Padding" Value="10,0" />
+                <Setter Property="Margin" Value="2,1" />
+                <Setter Property="FontFamily" Value="Segoe UI" />
+                <Setter Property="FontSize" Value="14" />
+                <Setter Property="Foreground" Value="{DynamicResource SettingsForeground}" />
+                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                <Setter Property="VerticalContentAlignment" Value="Center" />
+                <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="{x:Type ComboBoxItem}">
+                            <Border x:Name="ItemBorder" Background="Transparent" CornerRadius="4" SnapsToDevicePixels="True">
+                                <Grid>
+                                    <Border x:Name="SelectionPill" Width="3" Height="16" Margin="2,0,0,0" HorizontalAlignment="Left" VerticalAlignment="Center" Background="{DynamicResource SettingsAccent}" CornerRadius="1.5" Visibility="Collapsed" />
+                                    <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}" RecognizesAccessKey="True" />
+                                </Grid>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsHighlighted" Value="True">
+                                    <Setter TargetName="ItemBorder" Property="Background" Value="{DynamicResource SettingsSubtleFill}" />
+                                </Trigger>
+                                <Trigger Property="IsSelected" Value="True">
+                                    <Setter TargetName="ItemBorder" Property="Background" Value="{DynamicResource SettingsComboSelectedFill}" />
+                                    <Setter TargetName="SelectionPill" Property="Visibility" Value="Visible" />
+                                </Trigger>
+                                <Trigger Property="IsEnabled" Value="False">
+                                    <Setter Property="Opacity" Value="0.55" />
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+        </Setter.Value>
+    </Setter>
+    <Setter Property="Template">
+        <Setter.Value>
+            <ControlTemplate TargetType="{x:Type ComboBox}">
+                <Grid>
+                    <ToggleButton x:Name="ToggleButton" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" ClickMode="Press" Focusable="False" IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}" Padding="{TemplateBinding Padding}">
+                        <ToggleButton.Template>
+                            <ControlTemplate TargetType="{x:Type ToggleButton}">
+                                <Border x:Name="Chrome" Height="32" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="4" SnapsToDevicePixels="True">
+                                    <Grid>
+                                        <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="Left" VerticalAlignment="Center" Content="{Binding SelectionBoxItem, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}" ContentStringFormat="{Binding SelectionBoxItemStringFormat, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}" ContentTemplate="{Binding SelectionBoxItemTemplate, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}" RecognizesAccessKey="True" />
+                                        <TextBlock x:Name="Chevron" Margin="0,0,12,0" HorizontalAlignment="Right" VerticalAlignment="Center" FontFamily="Segoe Fluent Icons" FontSize="10" Foreground="{DynamicResource SettingsMutedForeground}" RenderTransformOrigin="0.5,0.5" Text="&#xE70D;">
+                                            <TextBlock.RenderTransform>
+                                                <RotateTransform Angle="0" />
+                                            </TextBlock.RenderTransform>
+                                        </TextBlock>
+                                    </Grid>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="Chrome" Property="Background" Value="{DynamicResource SettingsComboHoverFill}" />
+                                    </Trigger>
+                                    <Trigger Property="IsChecked" Value="True">
+                                        <Setter TargetName="Chrome" Property="Background" Value="{DynamicResource SettingsComboHoverFill}" />
+                                        <Setter TargetName="Chevron" Property="RenderTransform">
+                                            <Setter.Value>
+                                                <RotateTransform Angle="180" />
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Trigger>
+                                    <Trigger Property="IsEnabled" Value="False">
+                                        <Setter TargetName="Chrome" Property="Opacity" Value="0.55" />
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </ToggleButton.Template>
+                    </ToggleButton>
+                    <Popup x:Name="PART_Popup" AllowsTransparency="True" Focusable="False" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" VerticalOffset="4" PopupAnimation="Fade">
+                        <Border MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}" Padding="4" Background="{DynamicResource SettingsComboPopupBackground}" BorderBrush="{DynamicResource SettingsComboPopupBorder}" BorderThickness="1" CornerRadius="8" SnapsToDevicePixels="True">
+                            <Border.Effect>
+                                <DropShadowEffect BlurRadius="16" Direction="270" Opacity="0.18" ShadowDepth="4" Color="#000000" />
+                            </Border.Effect>
+                            <ScrollViewer MaxHeight="360" CanContentScroll="True" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+                                <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained" />
+                            </ScrollViewer>
+                        </Border>
+                    </Popup>
+                </Grid>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                        <Setter Property="BorderBrush" Value="{DynamicResource SettingsAccent}" />
+                    </Trigger>
+                    <Trigger Property="HasItems" Value="False">
+                        <Setter TargetName="PART_Popup" Property="MinHeight" Value="32" />
+                    </Trigger>
+                    <Trigger Property="IsEnabled" Value="False">
+                        <Setter Property="Opacity" Value="0.55" />
+                    </Trigger>
+                </ControlTemplate.Triggers>
+            </ControlTemplate>
+        </Setter.Value>
+    </Setter>
+</Style>
+""";
+
+        return (Style)XamlReader.Parse(xaml);
     }
 
     private static PasswordBox StyledPasswordBox()
@@ -1013,7 +1110,6 @@ public sealed class SettingsWindow : Window
             this.Label = label;
             this.Height = 36;
             this.CornerRadius = new CornerRadius(4);
-            this.Cursor = Cursors.Hand;
 
             this.fill = new Border { CornerRadius = new CornerRadius(4), Opacity = 0 };
             this.fill.SetResourceReference(Border.BackgroundProperty, "SettingsSubtleFill");
@@ -1145,6 +1241,12 @@ public sealed class SettingsWindow : Window
             panel.Children.Add(this.label);
             panel.Children.Add(this.track);
             return panel;
+        }
+
+        public void SetChecked(bool on, bool notify)
+        {
+            this.IsChecked = on;
+            this.SetState(on, notify);
         }
 
         private void SetState(bool on, bool notify)
@@ -1292,118 +1394,263 @@ public sealed class SettingsWindow : Window
         }
     }
 
-    private sealed class QuotaThresholdEditor : StackPanel
+    private sealed class QuotaWarningsEditor(SettingsWindow owner)
     {
-        private readonly Action<IReadOnlyList<int>> save;
-        private readonly Func<Brush> subtleFill;
-        private readonly Func<Brush> controlFill;
-        private readonly Func<Brush> controlBorder;
-        private readonly WrapPanel chips = new();
-        private readonly TextBlock emptyNote = new();
-        private readonly List<int> thresholds;
-        private readonly TextBox input;
+        private const string DefaultScope = "__default";
+        private readonly TextBlock status = new() { FontSize = 12, Margin = new Thickness(0, 6, 0, 0) };
+        private QuotaWindowControls? sessionControls;
+        private QuotaWindowControls? weeklyControls;
+        private ProviderId? selectedProvider;
+        private bool refreshing;
 
-        public QuotaThresholdEditor(
-            IReadOnlyList<int> thresholds,
-            Action<IReadOnlyList<int>> save,
-            Func<Brush> subtleFill,
-            Func<Brush> controlFill,
-            Func<Brush> controlBorder)
+        public StackPanel Build(UiSettings settings)
         {
-            this.save = save;
-            this.subtleFill = subtleFill;
-            this.controlFill = controlFill;
-            this.controlBorder = controlBorder;
-            this.thresholds = NormalizeThresholds(thresholds).ToList();
-            this.Orientation = Orientation.Vertical;
-
-            this.input = this.CreateInput();
-            this.Children.Add(this.chips);
-            this.emptyNote.Text = "No thresholds set; only depleted and restored alerts will show.";
-            this.emptyNote.FontSize = 11;
-            this.emptyNote.Margin = new Thickness(0, 4, 0, 0);
-            this.emptyNote.TextWrapping = TextWrapping.Wrap;
-            this.emptyNote.SetResourceReference(TextBlock.ForegroundProperty, "SettingsMutedForeground");
-            this.Children.Add(this.emptyNote);
-            this.RenderChips();
+            this.status.SetResourceReference(TextBlock.ForegroundProperty, "SettingsMutedForeground");
+            var detail = new StackPanel { Margin = new Thickness(40, 14, 0, 0) };
+            detail.Children.Add(this.CreateApplyToRow());
+            detail.Children.Add(this.status);
+            this.sessionControls = this.CreateWindowRow(
+                "5-hour window",
+                "Alert when remaining drops below this",
+                isSession: true);
+            detail.Children.Add(this.sessionControls.Root);
+            this.weeklyControls = this.CreateWindowRow(
+                "Weekly window",
+                "Alert when remaining drops below this",
+                isSession: false);
+            detail.Children.Add(this.weeklyControls.Root);
+            this.Refresh(settings);
+            return detail;
         }
 
-        private void RenderChips()
+        private FrameworkElement CreateApplyToRow()
         {
-            this.chips.Children.Clear();
-            foreach (var threshold in this.thresholds)
-            {
-                this.chips.Children.Add(this.CreateChip(threshold));
-            }
-
-            this.chips.Children.Add(this.CreateAddControls());
-            this.emptyNote.Visibility = this.thresholds.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        }
-
-        private FrameworkElement CreateChip(int threshold)
-        {
-            var row = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            var row = new Grid { Margin = new Thickness(0, 0, 0, 4) };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(130) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             row.Children.Add(new TextBlock
             {
-                Text = $"{threshold.ToString(CultureInfo.InvariantCulture)}%",
-                FontSize = 12,
+                Text = "Apply to",
+                FontSize = 14,
                 VerticalAlignment = VerticalAlignment.Center,
             });
 
-            var remove = new Button
+            var options = new List<ComboOption<string>>
             {
-                Content = LogoImages.IconGlyph("\uE711", 10),
-                Width = 20,
-                Height = 20,
-                Margin = new Thickness(6, 0, -4, 0),
-                Padding = new Thickness(0),
-                BorderThickness = new Thickness(0),
-                Background = Brushes.Transparent,
-                Cursor = Cursors.Hand,
-                ToolTip = "Remove",
+                new("All providers (default)", DefaultScope),
             };
-            remove.Click += (_, _) =>
+            options.AddRange(owner.providers.Select(provider =>
+                new ComboOption<string>(provider.Metadata.DisplayName, provider.Id.ConfigId())));
+            var combo = Combo(options, DefaultScope);
+            combo.MinWidth = 240;
+            combo.SelectionChanged += (_, _) =>
             {
-                _ = this.thresholds.Remove(threshold);
-                this.SaveAndRender();
-            };
-            remove.MouseEnter += (_, _) => remove.Background = this.controlFill();
-            remove.MouseLeave += (_, _) => remove.Background = Brushes.Transparent;
-            row.Children.Add(remove);
+                if (combo.SelectedItem is not ComboOption<string> option)
+                {
+                    return;
+                }
 
-            var chip = new Border
-            {
-                CornerRadius = new CornerRadius(12),
-                Padding = new Thickness(10, 4, 10, 4),
-                Margin = new Thickness(0, 0, 8, 8),
-                Background = this.subtleFill(),
-                Child = row,
+                this.selectedProvider = string.Equals(option.Value, DefaultScope, StringComparison.Ordinal)
+                    ? null
+                    : ProviderIds.All.First(id => string.Equals(id.ConfigId(), option.Value, StringComparison.OrdinalIgnoreCase));
+                this.Refresh(owner.uiStore.Load());
             };
-            return chip;
+            Grid.SetColumn(combo, 1);
+            row.Children.Add(combo);
+            return row;
         }
 
-        private FrameworkElement CreateAddControls()
+        private QuotaWindowControls CreateWindowRow(string title, string description, bool isSession)
         {
-            var panel = new StackPanel
+            var root = new Grid { Margin = new Thickness(0, 14, 0, 0) };
+            root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+            root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            text.Children.Add(new TextBlock
             {
-                Orientation = Orientation.Horizontal,
-                Margin = new Thickness(0, 0, 0, 8),
+                Text = title,
+                FontSize = 14,
+                TextWrapping = TextWrapping.Wrap,
+            });
+            var desc = new TextBlock
+            {
+                Text = description,
+                FontSize = 12,
+                Margin = new Thickness(0, 2, 0, 0),
+                TextWrapping = TextWrapping.Wrap,
+            };
+            desc.SetResourceReference(TextBlock.ForegroundProperty, "SettingsMutedForeground");
+            text.Children.Add(desc);
+            Grid.SetColumn(text, 0);
+            root.Children.Add(text);
+
+            ToggleSwitch? toggle = null;
+            var input = CreatePercentInput();
+            toggle = new ToggleSwitch(true, enabled =>
+            {
+                if (this.refreshing)
+                {
+                    return;
+                }
+
+                this.Commit(isSession, enabled, input.Text);
+            });
+            Grid.SetColumn(toggle, 1);
+            root.Children.Add(toggle);
+
+            Grid.SetColumn(input, 3);
+            root.Children.Add(input);
+            var suffix = new TextBlock
+            {
+                Text = "%",
+                FontSize = 14,
+                Margin = new Thickness(6, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center,
             };
-            panel.Children.Add(this.input);
-            panel.Children.Add(Button("Add", this.CommitAdd));
-            return panel;
+            Grid.SetColumn(suffix, 4);
+            root.Children.Add(suffix);
+
+            input.KeyDown += (_, args) =>
+            {
+                if (args.Key == Key.Enter)
+                {
+                    this.Commit(isSession, toggle.IsChecked == true, input.Text);
+                    args.Handled = true;
+                }
+            };
+            input.LostFocus += (_, _) => this.Commit(isSession, toggle.IsChecked == true, input.Text);
+            return new QuotaWindowControls(root, toggle, input);
         }
 
-        private TextBox CreateInput()
+        private void Refresh(UiSettings settings)
+        {
+            if (this.sessionControls is null || this.weeklyControls is null)
+            {
+                return;
+            }
+
+            this.refreshing = true;
+            try
+            {
+                var quotaWarnings = this.SelectedQuotaWarnings();
+                this.status.Inlines.Clear();
+                if (this.selectedProvider is null || quotaWarnings is null)
+                {
+                    this.status.Text = "Using default thresholds";
+                }
+                else
+                {
+                    var name = owner.providers.First(provider => provider.Id == this.selectedProvider.Value).Metadata.DisplayName;
+                    this.status.Text = string.Empty;
+                    this.status.Inlines.Add(new Run($"Custom thresholds for {name} "));
+                    var reset = new Hyperlink(new Run("Reset to defaults"));
+                    reset.Click += (_, _) =>
+                    {
+                        owner.ResetQuotaProviderOverride(this.selectedProvider.Value);
+                        this.Refresh(owner.uiStore.Load());
+                    };
+                    this.status.Inlines.Add(reset);
+                }
+
+                this.ApplyWindow(
+                    this.sessionControls,
+                    quotaWarnings?.Session,
+                    settings.QuotaSessionEnabled,
+                    settings.QuotaSessionThresholds);
+                this.ApplyWindow(
+                    this.weeklyControls,
+                    quotaWarnings?.Weekly,
+                    settings.QuotaWeeklyEnabled,
+                    settings.QuotaWeeklyThresholds);
+            }
+            finally
+            {
+                this.refreshing = false;
+            }
+        }
+
+        private void ApplyWindow(
+            QuotaWindowControls controls,
+            QuotaWarningWindow? overrideWindow,
+            bool defaultEnabled,
+            IReadOnlyList<int> defaultThresholds)
+        {
+            var enabled = overrideWindow?.Enabled ?? defaultEnabled;
+            var threshold = overrideWindow is null
+                ? FirstThreshold(defaultThresholds)
+                : FirstThreshold(overrideWindow.Thresholds ?? []);
+            controls.Toggle.SetChecked(enabled, notify: false);
+            controls.Input.Text = threshold?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
+        }
+
+        private QuotaWarnings? SelectedQuotaWarnings()
+        {
+            if (this.selectedProvider is null)
+            {
+                return null;
+            }
+
+            var config = owner.configStore.Load();
+            return owner.configStore.EntryFor(config, this.selectedProvider.Value).QuotaWarnings;
+        }
+
+        private void Commit(bool isSession, bool enabled, string text)
+        {
+            if (this.refreshing)
+            {
+                return;
+            }
+
+            var thresholds = ParseThreshold(text);
+            if (this.selectedProvider is null)
+            {
+                owner.SaveUi(ui =>
+                {
+                    if (isSession)
+                    {
+                        ui.QuotaSessionEnabled = enabled;
+                        ui.QuotaSessionThresholds = thresholds;
+                    }
+                    else
+                    {
+                        ui.QuotaWeeklyEnabled = enabled;
+                        ui.QuotaWeeklyThresholds = thresholds;
+                    }
+                });
+            }
+            else
+            {
+                owner.SaveQuotaProviderOverride(this.selectedProvider.Value, isSession, enabled, thresholds);
+            }
+
+            this.Refresh(owner.uiStore.Load());
+        }
+
+        private static IReadOnlyList<int> ParseThreshold(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return [];
+            }
+
+            return int.TryParse(text, CultureInfo.InvariantCulture, out var value)
+                ? [Math.Clamp(value, 0, 99)]
+                : [];
+        }
+
+        private static TextBox CreatePercentInput()
         {
             var box = new TextBox
             {
-                Width = 56,
+                Width = 48,
                 Height = 32,
-                Padding = new Thickness(10, 5, 10, 5),
-                Margin = new Thickness(0, 0, 8, 0),
+                Padding = new Thickness(8, 5, 8, 5),
                 BorderThickness = new Thickness(1),
+                HorizontalContentAlignment = HorizontalAlignment.Right,
                 VerticalContentAlignment = VerticalAlignment.Center,
             };
             box.SetResourceReference(Control.BackgroundProperty, "SettingsControlBackground");
@@ -1411,47 +1658,8 @@ public sealed class SettingsWindow : Window
             box.SetResourceReference(Control.ForegroundProperty, "SettingsForeground");
             box.PreviewTextInput += (_, args) => args.Handled = args.Text.Any(static ch => !char.IsDigit(ch));
             DataObject.AddPastingHandler(box, OnPaste);
-            box.KeyDown += (_, args) =>
-            {
-                if (args.Key == Key.Enter)
-                {
-                    this.CommitAdd();
-                    args.Handled = true;
-                }
-            };
             return box;
         }
-
-        private void CommitAdd()
-        {
-            if (!int.TryParse(this.input.Text, CultureInfo.InvariantCulture, out var threshold)
-                || threshold < 0
-                || threshold > 99
-                || this.thresholds.Contains(threshold))
-            {
-                return;
-            }
-
-            this.thresholds.Add(threshold);
-            this.input.Clear();
-            this.SaveAndRender();
-        }
-
-        private void SaveAndRender()
-        {
-            var normalized = NormalizeThresholds(this.thresholds).ToArray();
-            this.thresholds.Clear();
-            this.thresholds.AddRange(normalized);
-            this.save(normalized);
-            this.RenderChips();
-        }
-
-        private static IReadOnlyList<int> NormalizeThresholds(IEnumerable<int> thresholds) =>
-            thresholds
-                .Select(threshold => Math.Clamp(threshold, 0, 99))
-                .Distinct()
-                .OrderDescending()
-                .ToArray();
 
         private static void OnPaste(object sender, DataObjectPastingEventArgs args)
         {
@@ -1460,6 +1668,8 @@ public sealed class SettingsWindow : Window
                 args.CancelCommand();
             }
         }
+
+        private sealed record QuotaWindowControls(Grid Root, ToggleSwitch Toggle, TextBox Input);
     }
 
     private sealed class ProviderCard : Border
@@ -1597,8 +1807,12 @@ public sealed class SettingsWindow : Window
                 ["SettingsCardBackground"] = new SolidColorBrush(dark ? Color.FromArgb(0x0f, 0xff, 0xff, 0xff) : Color.FromArgb(0xb3, 0xff, 0xff, 0xff)),
                 ["SettingsCardBorder"] = new SolidColorBrush(dark ? Color.FromArgb(0x26, 0x00, 0x00, 0x00) : Color.FromArgb(0x19, 0x00, 0x00, 0x00)),
                 ["SettingsSubtleFill"] = new SolidColorBrush(dark ? Color.FromArgb(0x14, 0xff, 0xff, 0xff) : Color.FromArgb(0x14, 0x00, 0x00, 0x00)),
-                ["SettingsControlBackground"] = new SolidColorBrush(dark ? Color.FromArgb(0x0d, 0xff, 0xff, 0xff) : Color.FromArgb(0x0d, 0x00, 0x00, 0x00)),
+                ["SettingsControlBackground"] = new SolidColorBrush(dark ? Color.FromArgb(0x0f, 0xff, 0xff, 0xff) : Color.FromArgb(0xf2, 0xff, 0xff, 0xff)),
                 ["SettingsControlBorder"] = new SolidColorBrush(dark ? Color.FromArgb(0x26, 0xff, 0xff, 0xff) : Color.FromArgb(0x26, 0x00, 0x00, 0x00)),
+                ["SettingsComboHoverFill"] = new SolidColorBrush(dark ? Color.FromArgb(0x1f, 0xff, 0xff, 0xff) : Color.FromArgb(0xff, 0xf3, 0xf3, 0xf3)),
+                ["SettingsComboSelectedFill"] = new SolidColorBrush(dark ? Color.FromArgb(0x29, 0xff, 0xff, 0xff) : Color.FromArgb(0xff, 0xee, 0xee, 0xee)),
+                ["SettingsComboPopupBackground"] = new SolidColorBrush(dark ? Color.FromRgb(0x2c, 0x2c, 0x2c) : Color.FromRgb(0xf9, 0xf9, 0xf9)),
+                ["SettingsComboPopupBorder"] = new SolidColorBrush(dark ? Color.FromArgb(0x1f, 0xff, 0xff, 0xff) : Color.FromArgb(0x1f, 0x00, 0x00, 0x00)),
                 ["SettingsDivider"] = new SolidColorBrush(dark ? Color.FromArgb(0x14, 0xff, 0xff, 0xff) : Color.FromArgb(0x14, 0x00, 0x00, 0x00)),
                 ["SettingsSwitchOffBorder"] = new SolidColorBrush(dark ? Color.FromArgb(0x73, 0xff, 0xff, 0xff) : Color.FromArgb(0x73, 0x00, 0x00, 0x00)),
                 ["SettingsSwitchThumb"] = new SolidColorBrush(dark ? Colors.White : Color.FromRgb(0x33, 0x33, 0x33)),

@@ -7,7 +7,8 @@ namespace CodexWinBar.Core.Config;
 /// Loads and saves Windows UI settings stored under application data.
 /// </summary>
 /// <param name="log">Log sink for non-secret diagnostics.</param>
-public sealed class UiSettingsStore(Action<string> log)
+/// <param name="baseDirectory">Optional storage root. Defaults to application data.</param>
+public sealed class UiSettingsStore(Action<string> log, string? baseDirectory = null)
 {
     private const string DirectoryName = "CodexWinBar";
     private const string FileName = "ui-settings.json";
@@ -75,9 +76,9 @@ public sealed class UiSettingsStore(Action<string> log)
         }
     }
 
-    private static string ResolvePath()
+    private string ResolvePath()
     {
-        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        return Path.Combine(appData, DirectoryName, FileName);
+        var root = baseDirectory ?? Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        return Path.Combine(root, DirectoryName, FileName);
     }
 }

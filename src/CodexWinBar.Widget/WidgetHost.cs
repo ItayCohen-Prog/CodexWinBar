@@ -40,8 +40,24 @@ public sealed class WidgetHost : IWidgetHost
         WidgetLog.Sink = logger;
     }
 
+    /// <inheritdoc />
+    public System.Drawing.Rectangle? CurrentScreenRect
+    {
+        get
+        {
+            WidgetWindow? window;
+            lock (_gate)
+            {
+                window = _window;
+            }
+
+            var rect = window?.CurrentScreenRect ?? System.Drawing.Rectangle.Empty;
+            return rect.IsEmpty ? null : rect;
+        }
+    }
+
     /// <summary>Starts the widget host thread.</summary>
-    public void Start(WidgetMode mode)
+    public void Start(WidgetMode mode, bool anchorLeft = false)
     {
         ThrowIfDisposed();
         lock (_gate)
@@ -53,7 +69,7 @@ public sealed class WidgetHost : IWidgetHost
 
             _thread = new Thread(() =>
             {
-                WidgetWindow window = new(this, mode);
+                WidgetWindow window = new(this, mode, anchorLeft);
                 lock (_gate)
                 {
                     _window = window;

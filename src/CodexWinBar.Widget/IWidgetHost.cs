@@ -43,14 +43,20 @@ public sealed record WidgetRenderState
 /// </summary>
 public interface IWidgetHost : IDisposable
 {
-    /// <summary>Creates the widget window per <paramref name="mode"/> and starts tracking the taskbar.</summary>
-    void Start(WidgetMode mode);
+    /// <summary>
+    /// Creates the widget window per <paramref name="mode"/> and starts tracking the taskbar.
+    /// <paramref name="anchorLeft"/> pins the widget to the taskbar's left edge instead of left-of-tray.
+    /// </summary>
+    void Start(WidgetMode mode, bool anchorLeft = false);
 
     /// <summary>Replaces the rendered state; cheap, coalesced on the widget thread.</summary>
     void Update(WidgetRenderState state);
 
     /// <summary>The mode currently in effect after probing/fallback (never Auto).</summary>
     WidgetMode EffectiveMode { get; }
+
+    /// <summary>Current widget rect in physical screen pixels, or null when not placed (starting/hidden).</summary>
+    System.Drawing.Rectangle? CurrentScreenRect { get; }
 
     /// <summary>Left-click on the widget. Arg = chip screen rect (physical pixels) to anchor the flyout.</summary>
     event Action<System.Drawing.Rectangle>? Clicked;

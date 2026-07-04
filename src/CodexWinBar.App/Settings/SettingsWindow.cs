@@ -163,12 +163,12 @@ public sealed class SettingsWindow : Window
         launch.Checked += (_, _) =>
         {
             StartupManager.SetEnabled(true);
-            this.SaveUi(ui => ui with { LaunchAtLogin = true });
+            this.SaveUi(ui => ui.LaunchAtLogin = true);
         };
         launch.Unchecked += (_, _) =>
         {
             StartupManager.SetEnabled(false);
-            this.SaveUi(ui => ui with { LaunchAtLogin = false });
+            this.SaveUi(ui => ui.LaunchAtLogin = false);
         };
         panel.Children.Add(launch);
 
@@ -188,19 +188,19 @@ public sealed class SettingsWindow : Window
         {
             if (cadence.SelectedItem is ComboOption<int?> option)
             {
-                this.SaveUi(ui => ui with { RefreshCadenceMinutes = option.Value });
+                this.SaveUi(ui => ui.RefreshCadenceMinutes = option.Value);
             }
         };
         panel.Children.Add(cadence);
 
         var status = Check("Check provider status", settings.StatusChecksEnabled);
-        status.Checked += (_, _) => this.SaveUi(ui => ui with { StatusChecksEnabled = true });
-        status.Unchecked += (_, _) => this.SaveUi(ui => ui with { StatusChecksEnabled = false });
+        status.Checked += (_, _) => this.SaveUi(ui => ui.StatusChecksEnabled = true);
+        status.Unchecked += (_, _) => this.SaveUi(ui => ui.StatusChecksEnabled = false);
         panel.Children.Add(status);
 
         var notifications = Check("Quota notifications", settings.QuotaNotificationsEnabled);
-        notifications.Checked += (_, _) => this.SaveUi(ui => ui with { QuotaNotificationsEnabled = true });
-        notifications.Unchecked += (_, _) => this.SaveUi(ui => ui with { QuotaNotificationsEnabled = false });
+        notifications.Checked += (_, _) => this.SaveUi(ui => ui.QuotaNotificationsEnabled = true);
+        notifications.Unchecked += (_, _) => this.SaveUi(ui => ui.QuotaNotificationsEnabled = false);
         panel.Children.Add(notifications);
 
         this.SetContent(panel);
@@ -217,7 +217,7 @@ public sealed class SettingsWindow : Window
         {
             if (mode.SelectedItem is ComboOption<WidgetMode> option)
             {
-                this.SaveUi(ui => ui with { WidgetMode = option.Value });
+                this.SaveUi(ui => ui.WidgetMode = option.Value);
             }
         };
         panel.Children.Add(mode);
@@ -234,10 +234,10 @@ public sealed class SettingsWindow : Window
         {
             if (side.SelectedItem is ComboOption<WidgetSide> option)
             {
-                this.SaveUi(ui => ui with
+                this.SaveUi(ui =>
                 {
-                    WidgetSide = option.Value,
-                    WidgetMode = option.Value == WidgetSide.Left ? WidgetMode.Overlay : ui.WidgetMode,
+                    ui.WidgetSide = option.Value;
+                    ui.WidgetMode = option.Value == WidgetSide.Left ? WidgetMode.Overlay : ui.WidgetMode;
                 });
             }
         };
@@ -249,19 +249,19 @@ public sealed class SettingsWindow : Window
         {
             if (textMode.SelectedItem is ComboOption<DisplayTextMode> option)
             {
-                this.SaveUi(ui => ui with { DisplayTextMode = option.Value });
+                this.SaveUi(ui => ui.DisplayTextMode = option.Value);
             }
         };
         panel.Children.Add(textMode);
 
         var used = Check("Show used instead of remaining", settings.UsageBarsShowUsed);
-        used.Checked += (_, _) => this.SaveUi(ui => ui with { UsageBarsShowUsed = true });
-        used.Unchecked += (_, _) => this.SaveUi(ui => ui with { UsageBarsShowUsed = false });
+        used.Checked += (_, _) => this.SaveUi(ui => ui.UsageBarsShowUsed = true);
+        used.Unchecked += (_, _) => this.SaveUi(ui => ui.UsageBarsShowUsed = false);
         panel.Children.Add(used);
 
         var absolute = Check("Absolute reset times", settings.ResetTimesShowAbsolute);
-        absolute.Checked += (_, _) => this.SaveUi(ui => ui with { ResetTimesShowAbsolute = true });
-        absolute.Unchecked += (_, _) => this.SaveUi(ui => ui with { ResetTimesShowAbsolute = false });
+        absolute.Checked += (_, _) => this.SaveUi(ui => ui.ResetTimesShowAbsolute = true);
+        absolute.Unchecked += (_, _) => this.SaveUi(ui => ui.ResetTimesShowAbsolute = false);
         panel.Children.Add(absolute);
 
         this.SetContent(panel);
@@ -462,9 +462,11 @@ public sealed class SettingsWindow : Window
         this.SetContent(panel);
     }
 
-    private void SaveUi(Func<UiSettings, UiSettings> update)
+    private void SaveUi(Action<UiSettings> update)
     {
-        this.uiStore.Save(update(this.uiStore.Load()));
+        var settings = this.uiStore.Load();
+        update(settings);
+        this.uiStore.Save(settings);
         this.applySettings();
     }
 

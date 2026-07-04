@@ -86,65 +86,65 @@ public enum WidgetSide
 /// <summary>
 /// Windows-only UI preferences stored outside upstream config.json.
 /// </summary>
-public sealed record UiSettings
+public sealed class UiSettings
 {
     /// <summary>
     /// Refresh cadence in minutes; null represents manual refresh.
     /// </summary>
     [JsonPropertyName("refreshCadence")]
-    public int? RefreshCadenceMinutes { get; init; } = 5;
+    public int? RefreshCadenceMinutes { get; set; } = 5;
 
     /// <summary>
     /// Whether to merge provider icons in the taskbar widget.
     /// </summary>
     [JsonPropertyName("mergeIcons")]
-    public bool MergeIcons { get; init; } = true;
+    public bool MergeIcons { get; set; } = true;
 
     /// <summary>
     /// Text mode used for provider usage.
     /// </summary>
     [JsonPropertyName("displayTextMode")]
-    public DisplayTextMode DisplayTextMode { get; init; } = DisplayTextMode.Percent;
+    public DisplayTextMode DisplayTextMode { get; set; } = DisplayTextMode.Percent;
 
     /// <summary>
     /// Whether usage bars show used quota instead of remaining quota.
     /// </summary>
     [JsonPropertyName("usageBarsShowUsed")]
-    public bool UsageBarsShowUsed { get; init; }
+    public bool UsageBarsShowUsed { get; set; }
 
     /// <summary>
     /// Whether reset times are shown as absolute times.
     /// </summary>
     [JsonPropertyName("resetTimesShowAbsolute")]
-    public bool ResetTimesShowAbsolute { get; init; }
+    public bool ResetTimesShowAbsolute { get; set; }
 
     /// <summary>
     /// Whether CodexWinBar launches at login.
     /// </summary>
     [JsonPropertyName("launchAtLogin")]
-    public bool LaunchAtLogin { get; init; }
+    public bool LaunchAtLogin { get; set; }
 
     /// <summary>
     /// Whether provider status checks are enabled.
     /// </summary>
     [JsonPropertyName("statusChecksEnabled")]
-    public bool StatusChecksEnabled { get; init; } = true;
+    public bool StatusChecksEnabled { get; set; } = true;
 
     /// <summary>
     /// Whether quota notifications are enabled.
     /// </summary>
     [JsonPropertyName("quotaNotificationsEnabled")]
-    public bool QuotaNotificationsEnabled { get; init; } = true;
+    public bool QuotaNotificationsEnabled { get; set; } = true;
 
     /// <summary>
     /// Widget hosting mode.
     /// </summary>
     [JsonPropertyName("widgetMode")]
-    public WidgetMode WidgetMode { get; init; } = WidgetMode.Auto;
+    public WidgetMode WidgetMode { get; set; } = WidgetMode.Auto;
 
     /// <summary>
     /// Widget side preference.
     /// </summary>
     [JsonPropertyName("widgetSide")]
-    public WidgetSide WidgetSide { get; init; } = WidgetSide.Right;
+    public WidgetSide WidgetSide { get; set; } = WidgetSide.Right;
 }

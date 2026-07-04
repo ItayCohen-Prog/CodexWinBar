@@ -64,7 +64,11 @@ public static class Program
 
 internal sealed class AppShell : IDisposable
 {
-    private static readonly System.Drawing.Rectangle FallbackAnchor = new(0, 0, 1, 1);
+    /// <summary>
+    /// Anchor used when the widget has no on-screen rect (starting/hidden). The huge Y lets the
+    /// flyout's work-area clamping resolve it to the bottom-left corner on any monitor/DPI.
+    /// </summary>
+    private static readonly System.Drawing.Rectangle FallbackAnchor = new(0, 1_000_000, 1, 1);
     private readonly App app;
     private readonly RollingLog log;
     private readonly ConfigStore configStore;
@@ -78,6 +82,9 @@ internal sealed class AppShell : IDisposable
     private readonly QuotaNotifier quotaNotifier;
     private readonly CancellationTokenSource pipeCancellation = new();
     private readonly Action usageStateChangedHandler;
+    private WidgetHostMode? lastWidgetModeRequest;
+    private WidgetSide? lastWidgetSide;
+    private WidgetRenderState lastWidgetState = new() { Chips = [] };
     private bool modeBalloonShown;
     private bool disposed;
 
@@ -103,12 +110,12 @@ internal sealed class AppShell : IDisposable
             this.Quit,
             this.Log);
         this.trayIcon = new TrayIcon(
-            () => this.ToggleFlyout(FallbackAnchor),
+            () => this.ToggleFlyout(this.GetActivationAnchor()),
             this.OpenSettings,
             this.Refresh,
             this.Quit);
         this.quotaNotifier = new QuotaNotifier(this.usageStore, this.configStore, this.trayIcon);
-        this.usageStateChangedHandler = () => this.app.Dispatcher.BeginInvoke(this.UpdateWidget);
+        this.usageStateChangedHandler = () => this.app.Dispatcher.BeginInvoke(() => this.UpdateWidget());
     }
 
     public void Start()
@@ -163,8 +170,16 @@ internal sealed class AppShell : IDisposable
     private void StartWidgetFromSettings()
     {
         var settings = this.uiStore.Load();
-        this.widgetHost.Start(ToWidgetMode(settings.WidgetMode));
+        var mode = ToWidgetMode(settings.WidgetMode);
+        var anchorLeft = settings.WidgetSide == WidgetSide.Left;
+        this.lastWidgetModeRequest = mode;
+        this.lastWidgetSide = settings.WidgetSide;
+        this.widgetHost.Start(mode, anchorLeft);
     }
+
+    /// <summary>Best flyout anchor available right now: the live widget rect, else bottom-left fallback.</summary>
+    private System.Drawing.Rectangle GetActivationAnchor() =>
+        this.widgetHost.CurrentScreenRect ?? FallbackAnchor;
 
     private void ToggleFlyout(System.Drawing.Rectangle anchorPhysicalPx)
     {
@@ -185,7 +200,18 @@ internal sealed class AppShell : IDisposable
 
     private void ApplySettings()
     {
-        this.UpdateWidget();
+        var settings = this.uiStore.Load();
+        var mode = ToWidgetMode(settings.WidgetMode);
+        if (this.lastWidgetModeRequest != mode || this.lastWidgetSide != settings.WidgetSide)
+        {
+            this.widgetHost.Stop();
+            this.widgetHost.Start(mode, settings.WidgetSide == WidgetSide.Left);
+            this.lastWidgetModeRequest = mode;
+            this.lastWidgetSide = settings.WidgetSide;
+            this.widgetHost.Update(this.lastWidgetState);
+        }
+
+        this.UpdateWidget(settings);
     }
 
     private void Refresh()
@@ -201,12 +227,18 @@ internal sealed class AppShell : IDisposable
     private void UpdateWidget()
     {
         var settings = this.uiStore.Load();
+        this.UpdateWidget(settings);
+    }
+
+    private void UpdateWidget(UiSettings settings)
+    {
         var chips = this.usageStore.States.Select(state => this.ToChipState(state, settings)).ToArray();
-        this.widgetHost.Update(new WidgetRenderState
+        this.lastWidgetState = new WidgetRenderState
         {
             Chips = chips,
             IsLoading = this.usageStore.States.Any(state => state.IsRefreshing),
-        });
+        };
+        this.widgetHost.Update(this.lastWidgetState);
     }
 
     private WidgetChipState ToChipState(ProviderState state, UiSettings settings)
@@ -251,7 +283,7 @@ internal sealed class AppShell : IDisposable
                     var line = await reader.ReadLineAsync(this.pipeCancellation.Token).ConfigureAwait(false);
                     if (string.Equals(line, "show", StringComparison.OrdinalIgnoreCase))
                     {
-                        _ = this.app.Dispatcher.BeginInvoke(() => this.ToggleFlyout(FallbackAnchor));
+                        _ = this.app.Dispatcher.BeginInvoke(() => this.ToggleFlyout(this.GetActivationAnchor()));
                     }
                 }
                 catch (OperationCanceledException)

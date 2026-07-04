@@ -37,6 +37,7 @@ internal sealed class WidgetWindow : IDisposable
     private readonly NativeMethods.WndProc _widgetProc;
     private readonly NativeMethods.WinEventDelegate _eventProc;
     private readonly IntPtr _module;
+    private readonly bool _anchorLeft;
     private WidgetMode _requestedMode;
     private WidgetMode _effectiveMode = WidgetMode.Hidden;
     private WidgetMode? _attemptedMode;
@@ -61,10 +62,11 @@ internal sealed class WidgetWindow : IDisposable
     private Rectangle _screenRect;
     private readonly List<Rectangle> _chipBounds = [];
 
-    internal WidgetWindow(WidgetHost host, WidgetMode requestedMode)
+    internal WidgetWindow(WidgetHost host, WidgetMode requestedMode, bool anchorLeft)
     {
         _host = host;
         _requestedMode = requestedMode;
+        _anchorLeft = anchorLeft;
         _renderer = new WidgetRenderer(_theme);
         _controllerProc = ControllerWndProc;
         _widgetProc = WidgetWndProc;
@@ -75,6 +77,10 @@ internal sealed class WidgetWindow : IDisposable
     internal IntPtr Controller => _controller;
 
     internal WidgetMode EffectiveMode => _effectiveMode;
+
+    /// <summary>Last placed widget rect in physical screen pixels; Empty before first placement.
+    /// Read cross-thread for flyout anchoring — a torn read is benign there.</summary>
+    internal Rectangle CurrentScreenRect => _screenRect;
 
     internal void Run()
     {
@@ -199,9 +205,9 @@ internal sealed class WidgetWindow : IDisposable
             return;
         }
 
-        if (info.IsRtl)
+        if (_anchorLeft && info.IsRtl)
         {
-            CreateOverlayOrHidden("rtl taskbar forces overlay");
+            CreateOverlayOrHidden("left-anchored rtl taskbar forces overlay");
             return;
         }
 
@@ -291,10 +297,19 @@ internal sealed class WidgetWindow : IDisposable
 
     private void PositionEmbedded(TaskbarInfo info)
     {
-        NativeMethods.RECT trayClient = new() { Left = info.TrayRect.Left, Top = info.TrayRect.Top, Right = info.TrayRect.Right, Bottom = info.TrayRect.Bottom };
-        _ = NativeMethods.MapWindowPoints(IntPtr.Zero, info.TaskbarHwnd, ref trayClient, 2);
-        int gap = Scale(6);
-        int x = trayClient.Left - _width - gap;
+        int x;
+        if (_anchorLeft)
+        {
+            x = Scale(8);
+        }
+        else
+        {
+            NativeMethods.RECT trayClient = new() { Left = info.TrayRect.Left, Top = info.TrayRect.Top, Right = info.TrayRect.Right, Bottom = info.TrayRect.Bottom };
+            _ = NativeMethods.MapWindowPoints(IntPtr.Zero, info.TaskbarHwnd, ref trayClient, 2);
+            int gap = Scale(6);
+            x = trayClient.Left - _width - gap;
+        }
+
         int y = Math.Max(0, (info.ClientRect.Height - _height) / 2);
         _placementRect = new Rectangle(x, y, _width, _height);
         NativeMethods.RECT screen = new() { Left = x, Top = y, Right = x + _width, Bottom = y + _height };
@@ -305,7 +320,7 @@ internal sealed class WidgetWindow : IDisposable
     private void PositionOverlay(TaskbarInfo info)
     {
         int gap = Scale(6);
-        int x = info.TrayRect.Left - _width - gap;
+        int x = _anchorLeft ? info.TaskbarRect.Left + Scale(8) : info.TrayRect.Left - _width - gap;
         int y = info.TaskbarRect.Top + Math.Max(0, (info.TaskbarRect.Height - _height) / 2);
         _placementRect = new Rectangle(x, y, _width, _height);
         _screenRect = _placementRect;
@@ -353,8 +368,26 @@ internal sealed class WidgetWindow : IDisposable
         bool rectOk = NativeMethods.GetWindowRect(_widget, out NativeMethods.RECT rect) && !rect.IsEmpty;
         Rectangle widgetScreen = TaskbarInterop.ToRectangle(rect);
         bool intersects = TaskbarInterop.RectIntersectsTaskbarClient(_taskbar, widgetScreen);
-        bool adjacent = _tray == IntPtr.Zero || widgetScreen.Right <= TaskbarInterop.ToRectangle(GetWindowRectOrEmpty(_tray)).Left + Scale(2);
-        return ancestorMatches && TaskbarInterop.IsExplorerProcess(_taskbar) && styleOk && rectOk && intersects && adjacent;
+        bool anchorOk = _anchorLeft ? LeftEdgeWithinTaskbarClient(widgetScreen) : _tray == IntPtr.Zero || widgetScreen.Right <= TaskbarInterop.ToRectangle(GetWindowRectOrEmpty(_tray)).Left + Scale(2);
+        return ancestorMatches && TaskbarInterop.IsExplorerProcess(_taskbar) && styleOk && rectOk && intersects && anchorOk;
+    }
+
+    private bool LeftEdgeWithinTaskbarClient(Rectangle widgetScreen)
+    {
+        if (_taskbar == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        NativeMethods.RECT client = new() { Left = 0, Top = 0, Right = 0, Bottom = 0 };
+        if (!NativeMethods.GetClientRect(_taskbar, out client))
+        {
+            return false;
+        }
+
+        _ = NativeMethods.MapWindowPoints(_taskbar, IntPtr.Zero, ref client, 2);
+        Rectangle taskbarClient = TaskbarInterop.ToRectangle(client);
+        return widgetScreen.Left >= taskbarClient.Left && widgetScreen.Left <= taskbarClient.Right;
     }
 
     private static NativeMethods.RECT GetWindowRectOrEmpty(IntPtr hwnd)

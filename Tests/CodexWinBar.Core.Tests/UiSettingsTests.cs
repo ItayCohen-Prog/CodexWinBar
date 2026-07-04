@@ -26,20 +26,38 @@ public sealed class UiSettingsTests
     public void UiSettingsStore_returns_defaults_for_corrupt_file()
     {
         using var temp = TempDir.Create();
-        var previous = Environment.GetEnvironmentVariable("APPDATA");
-        try
-        {
-            Environment.SetEnvironmentVariable("APPDATA", temp.Path);
-            var settingsPath = Path.Combine(temp.Path, "CodexWinBar", "ui-settings.json");
-            Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
-            File.WriteAllText(settingsPath, "{not json");
-            var settings = new UiSettingsStore(_ => { }).Load();
+        var settingsPath = Path.Combine(temp.Path, "CodexWinBar", "ui-settings.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
+        File.WriteAllText(settingsPath, "{not json");
+        var settings = new UiSettingsStore(_ => { }, temp.Path).Load();
 
-            Assert.Equal(new UiSettings(), settings);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("APPDATA", previous);
-        }
+        AssertDefaults(settings);
+    }
+
+    [Fact]
+    public void UiSettingsStore_partial_json_preserves_documented_defaults()
+    {
+        using var temp = TempDir.Create();
+        var settingsPath = Path.Combine(temp.Path, "CodexWinBar", "ui-settings.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
+        File.WriteAllText(settingsPath, "{\"widgetSide\":\"left\"}");
+
+        var settings = new UiSettingsStore(_ => { }, temp.Path).Load();
+
+        AssertDefaults(settings, expectedWidgetSide: WidgetSide.Left);
+    }
+
+    private static void AssertDefaults(UiSettings settings, WidgetSide expectedWidgetSide = WidgetSide.Right)
+    {
+        Assert.Equal(5, settings.RefreshCadenceMinutes);
+        Assert.True(settings.MergeIcons);
+        Assert.Equal(DisplayTextMode.Percent, settings.DisplayTextMode);
+        Assert.False(settings.UsageBarsShowUsed);
+        Assert.False(settings.ResetTimesShowAbsolute);
+        Assert.False(settings.LaunchAtLogin);
+        Assert.True(settings.StatusChecksEnabled);
+        Assert.True(settings.QuotaNotificationsEnabled);
+        Assert.Equal(WidgetMode.Auto, settings.WidgetMode);
+        Assert.Equal(expectedWidgetSide, settings.WidgetSide);
     }
 }

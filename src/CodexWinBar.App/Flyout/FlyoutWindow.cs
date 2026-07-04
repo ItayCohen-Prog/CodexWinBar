@@ -38,6 +38,11 @@ public sealed class FlyoutWindow : Window
     private const uint SwpNoMove = 0x0002;
     private const uint SwpNoZorder = 0x0004;
     private const uint SwpNoActivate = 0x0010;
+    private const int AbeLeft = 0;
+    private const int AbeTop = 1;
+    private const int AbeRight = 2;
+    private const int AbeBottom = 3;
+    private const uint AbmGetTaskbarPos = 0x00000005;
     private const double ShadowMarginDip = 16;
     private static readonly TimeSpan OpenDismissGrace = TimeSpan.FromMilliseconds(500);
     private static readonly Duration OpenSlideDuration = new(TimeSpan.FromMilliseconds(260));
@@ -74,6 +79,7 @@ public sealed class FlyoutWindow : Window
     private bool isClosing;
     private int animationGeneration;
     private int measureNonce;
+    private int currentEdge = AbeBottom;
     private ProviderId? currentFocusProvider;
 
     // The HWND is sized ONCE per open session to the tallest provider and never resized during a
@@ -154,6 +160,10 @@ public sealed class FlyoutWindow : Window
     {
         try
         {
+            // The flyout always shows exactly one provider. A missing focus (tray/keyboard activation)
+            // falls back to the first provider — there is no combined all-providers view.
+            focusProvider ??= this.store.States.Count > 0 ? this.store.States[0].Provider : null;
+
             if (this.IsOpen)
             {
                 if (this.currentFocusProvider == focusProvider)
@@ -194,6 +204,7 @@ public sealed class FlyoutWindow : Window
 
             this.log?.Invoke($"toggle-open at {anchorPhysicalPx}; focus={focusProvider?.ConfigId() ?? "all"}");
             this.isClosing = false;
+            this.currentEdge = QueryTaskbarEdge();
             this.currentFocusProvider = focusProvider;
             this.animationGeneration++;
             this.settings = this.uiStore.Load();
@@ -217,9 +228,8 @@ public sealed class FlyoutWindow : Window
             var wasVisible = this.IsVisible;
             if (!wasVisible)
             {
-                this.rootTranslate.BeginAnimation(TranslateTransform.YProperty, null);
                 this.root.BeginAnimation(UIElement.OpacityProperty, null);
-                this.rootTranslate.Y = this.AnimationDistanceDip();
+                this.ApplySlideOffset(this.SlideStartOffset());
                 this.root.Opacity = 0;
                 this.Show();
             }
@@ -345,8 +355,7 @@ public sealed class FlyoutWindow : Window
 
         // Any slide-open translate/opacity leftovers snap to their resting values so the switch
         // works from a clean state regardless of what was mid-flight.
-        this.rootTranslate.BeginAnimation(TranslateTransform.YProperty, null);
-        this.rootTranslate.Y = 0;
+        this.ApplySlideOffset(0);
         this.root.BeginAnimation(UIElement.OpacityProperty, null);
         this.root.Opacity = 1;
 
@@ -458,18 +467,53 @@ public sealed class FlyoutWindow : Window
         return completion.Task;
     }
 
+    /// <summary>True when the flyout slides horizontally (taskbar on the left/right).</summary>
+    private bool SlidesHorizontally() => this.currentEdge is AbeLeft or AbeRight;
+
+    /// <summary>The off-screen starting offset of the slide, signed for the taskbar edge: bottom slides
+    /// up (+Y), top slides down (-Y), left slides right (-X), right slides left (+X).</summary>
+    private double SlideStartOffset()
+    {
+        var distance = Math.Max(1, this.SlidesHorizontally() ? this.root.ActualWidth : this.root.ActualHeight);
+        return this.currentEdge switch
+        {
+            AbeTop => -distance,
+            AbeLeft => -distance,
+            AbeRight => distance,
+            _ => distance, // bottom
+        };
+    }
+
+    /// <summary>Sets the resting slide offset on the active axis and zeroes the other (clearing animations).</summary>
+    private void ApplySlideOffset(double offset)
+    {
+        this.rootTranslate.BeginAnimation(TranslateTransform.XProperty, null);
+        this.rootTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+        this.rootTranslate.X = this.SlidesHorizontally() ? offset : 0;
+        this.rootTranslate.Y = this.SlidesHorizontally() ? 0 : offset;
+    }
+
+    private static bool IsPartway(double value, double start) =>
+        start >= 0 ? value > 0 && value <= start : value < 0 && value >= start;
+
     private void BeginOpenAnimation()
     {
         var generation = this.animationGeneration;
-        var distance = this.AnimationDistanceDip();
-        if (this.rootTranslate.Y <= 0 || this.rootTranslate.Y > distance)
+        var horizontal = this.SlidesHorizontally();
+        var start = this.SlideStartOffset();
+        var property = horizontal ? TranslateTransform.XProperty : TranslateTransform.YProperty;
+        var current = horizontal ? this.rootTranslate.X : this.rootTranslate.Y;
+
+        // Start off-screen unless we're already partway there (a re-open mid-close animates from where it is).
+        if (!IsPartway(current, start))
         {
-            this.rootTranslate.Y = distance;
+            current = start;
+            this.ApplySlideOffset(start);
         }
 
-        this.rootTranslate.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation
+        this.rootTranslate.BeginAnimation(property, new DoubleAnimation
         {
-            From = this.rootTranslate.Y,
+            From = current,
             To = 0,
             Duration = OpenSlideDuration,
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
@@ -483,22 +527,24 @@ public sealed class FlyoutWindow : Window
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
             FillBehavior = FillBehavior.HoldEnd,
         });
-        this.log?.Invoke($"flyout open animation generation {generation}");
+        this.log?.Invoke($"flyout open animation generation {generation} edge={this.currentEdge}");
     }
 
     private void BeginCloseAnimation(int generation)
     {
-        var distance = this.AnimationDistanceDip();
+        var horizontal = this.SlidesHorizontally();
+        var property = horizontal ? TranslateTransform.XProperty : TranslateTransform.YProperty;
+        var current = horizontal ? this.rootTranslate.X : this.rootTranslate.Y;
         var slide = new DoubleAnimation
         {
-            From = this.rootTranslate.Y,
-            To = distance,
+            From = current,
+            To = this.SlideStartOffset(),
             Duration = CloseSlideDuration,
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn },
             FillBehavior = FillBehavior.HoldEnd,
         };
         slide.Completed += (_, _) => this.CompleteHide(generation);
-        this.rootTranslate.BeginAnimation(TranslateTransform.YProperty, slide);
+        this.rootTranslate.BeginAnimation(property, slide);
         this.root.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation
         {
             From = this.root.Opacity,
@@ -518,21 +564,18 @@ public sealed class FlyoutWindow : Window
 
         this.UninstallMouseHook();
         this.Hide();
-        this.rootTranslate.BeginAnimation(TranslateTransform.YProperty, null);
         this.root.BeginAnimation(UIElement.OpacityProperty, null);
         this.stack.BeginAnimation(UIElement.OpacityProperty, null);
         // Clear the switch panel-height animation and hand sizing back to WPF for the next fresh open.
         this.root.BeginAnimation(FrameworkElement.HeightProperty, null);
         this.root.Height = double.NaN;
-        this.rootTranslate.Y = this.AnimationDistanceDip();
+        this.ApplySlideOffset(0);
         this.root.Opacity = 0;
         this.stack.Opacity = 1;
         this.SizeToContent = SizeToContent.Height;
         this.isClosing = false;
         this.currentFocusProvider = null;
     }
-
-    private double AnimationDistanceDip() => Math.Max(1, this.root.ActualHeight);
 
     private void RebuildCards()
     {
@@ -963,6 +1006,39 @@ public sealed class FlyoutWindow : Window
         return heightPx * (transform.M22 <= 0 ? 1 : transform.M22);
     }
 
+    /// <summary>
+    /// Panel top-left (physical px) placed just off the anchor toward the screen centre, per taskbar
+    /// edge (bottom→above, top→below, left→right of, right→left of), clamped to the work area.
+    /// </summary>
+    private static (double X, double Y) PanelTopLeftPx(DrawingRectangle anchor, double panelW, double panelH, NativeRect work, int edge)
+    {
+        double x;
+        double y;
+        switch (edge)
+        {
+            case AbeTop:
+                x = anchor.Right - panelW;
+                y = anchor.Bottom + GapPhysicalPx;
+                break;
+            case AbeLeft:
+                x = anchor.Right + GapPhysicalPx;
+                y = anchor.Top;
+                break;
+            case AbeRight:
+                x = anchor.Left - GapPhysicalPx - panelW;
+                y = anchor.Top;
+                break;
+            default: // AbeBottom
+                x = anchor.Right - panelW;
+                y = anchor.Top - GapPhysicalPx - panelH;
+                break;
+        }
+
+        x = Math.Max(work.Left, Math.Min(x, work.Right - panelW));
+        y = Math.Max(work.Top, Math.Min(y, work.Bottom - panelH));
+        return (x, y);
+    }
+
     private Point ComputePlacement(DrawingRectangle anchorPhysicalPx, double heightDip)
     {
         var hwnd = new WindowInteropHelper(this).EnsureHandle();
@@ -978,10 +1054,7 @@ public sealed class FlyoutWindow : Window
         var shadowMarginYPx = ShadowMarginDip / Math.Max(transform.M22, 0.01);
         var panelWidthPx = widthPx - (shadowMarginXPx * 2);
         var panelHeightPx = heightPx - (shadowMarginYPx * 2);
-        var panelX = anchorPhysicalPx.Right - panelWidthPx;
-        var panelY = anchorPhysicalPx.Top - panelHeightPx - GapPhysicalPx;
-        panelX = Math.Max(work.Left, Math.Min(panelX, work.Right - panelWidthPx));
-        panelY = Math.Max(work.Top, Math.Min(panelY, work.Bottom - panelHeightPx));
+        var (panelX, panelY) = PanelTopLeftPx(anchorPhysicalPx, panelWidthPx, panelHeightPx, work, this.currentEdge);
         var x = panelX - shadowMarginXPx;
         var y = panelY - shadowMarginYPx;
         x = Math.Max(work.Left, Math.Min(x, work.Right - widthPx));
@@ -1031,12 +1104,13 @@ public sealed class FlyoutWindow : Window
         var shadowMarginYPx = (int)Math.Round(ShadowMarginDip / Math.Max(transform.M22, 0.01));
         var panelWidthPx = Math.Max(1, widthPx - (shadowMarginXPx * 2));
         var panelHeightPx = Math.Max(1, heightPx - (shadowMarginYPx * 2));
-        var panelX = (int)Math.Max(work.Left, Math.Min(anchorPhysicalPx.Right - panelWidthPx, work.Right - panelWidthPx));
-        var panelY = (int)Math.Max(work.Top, Math.Min(anchorPhysicalPx.Top - panelHeightPx - GapPhysicalPx, work.Bottom - panelHeightPx));
+        var (panelXd, panelYd) = PanelTopLeftPx(anchorPhysicalPx, panelWidthPx, panelHeightPx, work, this.currentEdge);
+        var panelX = (int)panelXd;
+        var panelY = (int)panelYd;
         var x = (int)Math.Max(work.Left, Math.Min(panelX - shadowMarginXPx, work.Right - widthPx));
         var y = (int)Math.Max(work.Top, Math.Min(panelY - shadowMarginYPx, work.Bottom - heightPx));
         _ = SetWindowPos(hwnd, HwndTop, x, y, 0, 0, SwpNoSize | SwpNoActivate);
-        this.log?.Invoke($"flyout placed at ({x},{y}) size {widthPx}x{heightPx}; panel at ({x + shadowMarginXPx},{y + shadowMarginYPx}) size {panelWidthPx}x{panelHeightPx} (physical)");
+        this.log?.Invoke($"flyout placed edge={this.currentEdge} at ({x},{y}) size {widthPx}x{heightPx}; panel at ({x + shadowMarginXPx},{y + shadowMarginYPx}) size {panelWidthPx}x{panelHeightPx} (physical)");
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -1248,5 +1322,27 @@ public sealed class FlyoutWindow : Window
         public uint Flags;
 
         public static MonitorInfo Create() => new() { Size = Marshal.SizeOf<MonitorInfo>() };
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct AppBarData
+    {
+        public uint CbSize;
+        public IntPtr Hwnd;
+        public uint CallbackMessage;
+        public uint Edge;
+        public NativeRect Rect;
+        public IntPtr LParam;
+    }
+
+    [DllImport("shell32.dll", ExactSpelling = true)]
+    private static extern IntPtr SHAppBarMessage(uint dwMessage, ref AppBarData pData);
+
+    /// <summary>The screen edge the primary taskbar is docked to (ABE_*), or bottom when unknown.</summary>
+    private static int QueryTaskbarEdge()
+    {
+        var data = new AppBarData { CbSize = (uint)Marshal.SizeOf<AppBarData>() };
+        var result = SHAppBarMessage(AbmGetTaskbarPos, ref data);
+        return result == IntPtr.Zero ? AbeBottom : (int)data.Edge;
     }
 }

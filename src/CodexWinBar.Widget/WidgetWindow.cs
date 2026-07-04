@@ -53,6 +53,7 @@ internal sealed class WidgetWindow : IDisposable
     private uint _dpi = 96;
     private int _width = 1;
     private int _height = 1;
+    private bool _vertical;
     private int _hoveredIndex = -1;
     private bool _trackingMouse;
     private bool _overlayHidden;
@@ -227,12 +228,7 @@ internal sealed class WidgetWindow : IDisposable
             return;
         }
 
-        if (info.Edge != NativeMethods.ABE_BOTTOM)
-        {
-            CreateOverlayOrHidden("non-bottom taskbar forces overlay");
-            return;
-        }
-
+        // All four taskbar edges embed now (bottom/top render horizontally, left/right vertically).
         if (_requestedMode == WidgetMode.Overlay || _overlayFallbackForSession)
         {
             CreateOverlayOrHidden(_overlayFallbackForSession ? "embedded probe failed for session" : "overlay requested");
@@ -242,12 +238,31 @@ internal sealed class WidgetWindow : IDisposable
         CreateEmbedded(info);
     }
 
+    private static bool IsVerticalEdge(int edge) => edge == NativeMethods.ABE_LEFT || edge == NativeMethods.ABE_RIGHT;
+
+    /// <summary>Sets orientation and computes _width/_height: the strip fills the taskbar's thickness on
+    /// the cross-axis (client height when horizontal, client width when vertical) and the measured
+    /// content length on the along-axis.</summary>
+    private void MeasureForTaskbar(TaskbarInfo info)
+    {
+        _vertical = IsVerticalEdge(info.Edge);
+        if (_vertical)
+        {
+            _width = Math.Max(1, info.ClientRect.Width);
+            _height = _renderer.Measure(_state, _dpi, vertical: true, _chipBounds);
+        }
+        else
+        {
+            _height = Math.Max(1, info.ClientRect.Height);
+            _width = _renderer.Measure(_state, _dpi, vertical: false, _chipBounds);
+        }
+    }
+
     private void CreateEmbedded(TaskbarInfo info)
     {
         DestroyWidget();
         _attemptedMode = WidgetMode.Embedded;
-        _height = Math.Max(1, info.ClientRect.Height);
-        _width = _renderer.Measure(_state, _dpi, _chipBounds);
+        MeasureForTaskbar(info);
         _widget = NativeMethods.CreateWindowExW(NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_LAYERED, WidgetClassName, null, NativeMethods.WS_POPUP, 0, 0, _width, _height, IntPtr.Zero, IntPtr.Zero, _module, IntPtr.Zero);
         IntPtr oldParent = NativeMethods.SetParent(_widget, info.TaskbarHwnd);
 
@@ -286,8 +301,7 @@ internal sealed class WidgetWindow : IDisposable
 
         _taskbar = info.TaskbarHwnd;
         _tray = info.TrayHwnd;
-        _height = Math.Max(1, info.ClientRect.Height);
-        _width = _renderer.Measure(_state, _dpi, _chipBounds);
+        MeasureForTaskbar(info);
         _widget = NativeMethods.CreateWindowExW(NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_TOPMOST | NativeMethods.WS_EX_LAYERED, WidgetClassName, null, NativeMethods.WS_POPUP, 0, 0, _width, _height, IntPtr.Zero, IntPtr.Zero, _module, IntPtr.Zero);
         PositionOverlay(info);
         _ = NativeMethods.SetWindowPos(_widget, NativeMethods.HWND_TOPMOST, _screenRect.X, _screenRect.Y, _width, _height, NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
@@ -313,20 +327,41 @@ internal sealed class WidgetWindow : IDisposable
 
     private void PositionEmbedded(TaskbarInfo info)
     {
+        int gap = Scale(6);
         int x;
-        if (_anchorLeft)
+        int y;
+        if (_vertical)
         {
-            x = Scale(8);
+            // Center across the strip width; anchor to the top of the taskbar (the "start" end) or,
+            // when not left-anchored, just above the tray/clock at the bottom of a vertical taskbar.
+            x = Math.Max(0, (info.ClientRect.Width - _width) / 2);
+            if (_anchorLeft)
+            {
+                y = Scale(8);
+            }
+            else
+            {
+                NativeMethods.RECT trayClient = new() { Left = info.TrayRect.Left, Top = info.TrayRect.Top, Right = info.TrayRect.Right, Bottom = info.TrayRect.Bottom };
+                _ = NativeMethods.MapWindowPoints(IntPtr.Zero, info.TaskbarHwnd, ref trayClient, 2);
+                y = Math.Max(Scale(8), trayClient.Top - _height - gap);
+            }
         }
         else
         {
-            NativeMethods.RECT trayClient = new() { Left = info.TrayRect.Left, Top = info.TrayRect.Top, Right = info.TrayRect.Right, Bottom = info.TrayRect.Bottom };
-            _ = NativeMethods.MapWindowPoints(IntPtr.Zero, info.TaskbarHwnd, ref trayClient, 2);
-            int gap = Scale(6);
-            x = trayClient.Left - _width - gap;
+            if (_anchorLeft)
+            {
+                x = Scale(8);
+            }
+            else
+            {
+                NativeMethods.RECT trayClient = new() { Left = info.TrayRect.Left, Top = info.TrayRect.Top, Right = info.TrayRect.Right, Bottom = info.TrayRect.Bottom };
+                _ = NativeMethods.MapWindowPoints(IntPtr.Zero, info.TaskbarHwnd, ref trayClient, 2);
+                x = trayClient.Left - _width - gap;
+            }
+
+            y = Math.Max(0, (info.ClientRect.Height - _height) / 2);
         }
 
-        int y = Math.Max(0, (info.ClientRect.Height - _height) / 2);
         _placementRect = new Rectangle(x, y, _width, _height);
         NativeMethods.RECT screen = new() { Left = x, Top = y, Right = x + _width, Bottom = y + _height };
         _ = NativeMethods.MapWindowPoints(info.TaskbarHwnd, IntPtr.Zero, ref screen, 2);
@@ -336,8 +371,19 @@ internal sealed class WidgetWindow : IDisposable
     private void PositionOverlay(TaskbarInfo info)
     {
         int gap = Scale(6);
-        int x = _anchorLeft ? info.TaskbarRect.Left + Scale(8) : info.TrayRect.Left - _width - gap;
-        int y = info.TaskbarRect.Top + Math.Max(0, (info.TaskbarRect.Height - _height) / 2);
+        int x;
+        int y;
+        if (_vertical)
+        {
+            x = info.TaskbarRect.Left + Math.Max(0, (info.TaskbarRect.Width - _width) / 2);
+            y = _anchorLeft ? info.TaskbarRect.Top + Scale(8) : Math.Max(info.TaskbarRect.Top + Scale(8), info.TrayRect.Top - _height - gap);
+        }
+        else
+        {
+            x = _anchorLeft ? info.TaskbarRect.Left + Scale(8) : info.TrayRect.Left - _width - gap;
+            y = info.TaskbarRect.Top + Math.Max(0, (info.TaskbarRect.Height - _height) / 2);
+        }
+
         _placementRect = new Rectangle(x, y, _width, _height);
         _screenRect = _placementRect;
     }
@@ -352,7 +398,7 @@ internal sealed class WidgetWindow : IDisposable
         long style = NativeMethods.GetWindowLongPtrW(_widget, NativeMethods.GWL_STYLE).ToInt64();
         bool embeddedChild = (style & NativeMethods.WS_CHILD) != 0;
         Point? location = embeddedChild ? null : _screenRect.Location;
-        return _renderer.RenderToWindow(_widget, _state, _width, _height, _dpi, _hoveredIndex, location);
+        return _renderer.RenderToWindow(_widget, _state, _width, _height, _dpi, _vertical, _hoveredIndex, location);
     }
 
     private bool ProbeEmbedded(IntPtr oldParent, bool rendered)
@@ -455,8 +501,7 @@ internal sealed class WidgetWindow : IDisposable
             _dpi = 96;
         }
 
-        _height = Math.Max(1, info.ClientRect.Height);
-        _width = _renderer.Measure(_state, _dpi, _chipBounds);
+        MeasureForTaskbar(info);
         if (_effectiveMode == WidgetMode.Embedded || _attemptedMode == WidgetMode.Embedded)
         {
             PositionEmbedded(info);
@@ -605,7 +650,7 @@ internal sealed class WidgetWindow : IDisposable
                     var clickedIndex = HitTest(ClientPointFromLParam(lParam));
                     if (clickedIndex >= 0 && clickedIndex < _state.Chips.Count && clickedIndex < _chipBounds.Count)
                     {
-                        Rectangle bounds = _chipBounds[clickedIndex] with { Height = _height };
+                        Rectangle bounds = ChipHitRect(clickedIndex);
                         var chipRect = new Rectangle(
                             _screenRect.Left + bounds.Left,
                             _screenRect.Top + bounds.Top,
@@ -659,19 +704,47 @@ internal sealed class WidgetWindow : IDisposable
 
         if (_chipBounds.Count != _state.Chips.Count)
         {
-            _ = _renderer.Measure(_state, _dpi, _chipBounds);
+            _ = _renderer.Measure(_state, _dpi, _vertical, _chipBounds);
         }
 
         for (int i = 0; i < _chipBounds.Count; i++)
         {
-            Rectangle bounds = _chipBounds[i] with { Height = _height };
-            if (bounds.Contains(clientPoint))
+            if (ChipRegion(i).Contains(clientPoint))
             {
                 return i;
             }
         }
 
-        return -1;
+        // Regions tile the whole widget [0,len); only an exact far-edge pixel misses — snap to the last.
+        return _chipBounds.Count - 1;
+    }
+
+    /// <summary>The chip's tight client rect (icon + gauges), used to anchor the flyout at the icon.</summary>
+    private Rectangle ChipHitRect(int i)
+    {
+        Rectangle bounds = _chipBounds[i];
+        return _vertical ? bounds with { Width = _width } : bounds with { Height = _height };
+    }
+
+    /// <summary>
+    /// The provider's full clickable region: the whole widget is tiled between providers, each region
+    /// running from the midpoint of the gap with the previous chip to the midpoint with the next (the
+    /// ends reach the widget edges). No dead "seam" between icons, and hover covers the whole area.
+    /// </summary>
+    private Rectangle ChipRegion(int i)
+    {
+        Rectangle self = _chipBounds[i];
+        int last = _chipBounds.Count - 1;
+        if (_vertical)
+        {
+            int top = i == 0 ? 0 : (_chipBounds[i - 1].Bottom + self.Top) / 2;
+            int bottom = i == last ? _height : (self.Bottom + _chipBounds[i + 1].Top) / 2;
+            return Rectangle.FromLTRB(0, top, _width, bottom);
+        }
+
+        int left = i == 0 ? 0 : (_chipBounds[i - 1].Right + self.Left) / 2;
+        int right = i == last ? _width : (self.Right + _chipBounds[i + 1].Left) / 2;
+        return Rectangle.FromLTRB(left, 0, right, _height);
     }
 
     private static Point ClientPointFromLParam(IntPtr lParam) => new((short)(lParam.ToInt64() & 0xFFFF), (short)((lParam.ToInt64() >> 16) & 0xFFFF));

@@ -52,6 +52,7 @@ internal static partial class NativeMethods
     internal const uint WM_LBUTTONUP = 0x0202;
     internal const uint WM_RBUTTONUP = 0x0205;
     internal const uint WM_NCHITTEST = 0x0084;
+    internal const uint WM_SETCURSOR = 0x0020;
     internal const int HTCLIENT = 1;
     internal const uint WM_APP = 0x8000;
 
@@ -187,6 +188,15 @@ internal static partial class NativeMethods
 
     [DllImport("user32.dll", EntryPoint = "RegisterClassExW", SetLastError = true)]
     internal static extern ushort RegisterClassExW([In] ref WNDCLASSEXW lpwcx);
+
+    /// <summary>Standard arrow cursor id for <see cref="LoadCursorW"/>.</summary>
+    internal const int IDC_ARROW = 32512;
+
+    [LibraryImport("user32.dll", EntryPoint = "LoadCursorW", SetLastError = true)]
+    internal static partial IntPtr LoadCursorW(IntPtr hInstance, IntPtr lpCursorName);
+
+    [LibraryImport("user32.dll", EntryPoint = "SetCursor")]
+    internal static partial IntPtr SetCursor(IntPtr hCursor);
 
     [LibraryImport("user32.dll", EntryPoint = "DefWindowProcW")]
     internal static partial IntPtr DefWindowProcW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);

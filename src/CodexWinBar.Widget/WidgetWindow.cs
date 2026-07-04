@@ -48,6 +48,7 @@ internal sealed class WidgetWindow : IDisposable
     private IntPtr _tray;
     private IntPtr _hook;
     private IntPtr _foregroundHook;
+    private IntPtr _arrowCursor;
     private uint _taskbarCreatedMessage;
     private uint _dpi = 96;
     private int _width = 1;
@@ -155,11 +156,16 @@ internal sealed class WidgetWindow : IDisposable
 
     private void RegisterClasses()
     {
+        // Without a class cursor the widget inherits Explorer's tray cursor state, which shows the
+        // app-starting/busy cursor over our window; give the class the standard arrow.
+        _arrowCursor = NativeMethods.LoadCursorW(IntPtr.Zero, new IntPtr(NativeMethods.IDC_ARROW));
+
         NativeMethods.WNDCLASSEXW controller = new()
         {
             cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.WNDCLASSEXW>(),
             lpfnWndProc = _controllerProc,
             hInstance = _module,
+            hCursor = _arrowCursor,
             lpszClassName = ControllerClassName,
         };
         _ = NativeMethods.RegisterClassExW(ref controller);
@@ -169,6 +175,7 @@ internal sealed class WidgetWindow : IDisposable
             cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.WNDCLASSEXW>(),
             lpfnWndProc = _widgetProc,
             hInstance = _module,
+            hCursor = _arrowCursor,
             lpszClassName = WidgetClassName,
         };
         _ = NativeMethods.RegisterClassExW(ref widget);
@@ -569,6 +576,11 @@ internal sealed class WidgetWindow : IDisposable
         {
             switch (msg)
             {
+                case NativeMethods.WM_SETCURSOR:
+                    // Force the arrow over the whole widget; as a SetParent child of Explorer's tray
+                    // the inherited cursor is otherwise the busy/app-starting spinner.
+                    _ = NativeMethods.SetCursor(_arrowCursor);
+                    return new IntPtr(1);
                 case NativeMethods.WM_MOUSEMOVE:
                     TrackMouse(hwnd);
                     _hoveredIndex = HitTest(ClientPointFromLParam(lParam));

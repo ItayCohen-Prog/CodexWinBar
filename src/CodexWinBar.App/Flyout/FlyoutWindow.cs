@@ -66,13 +66,6 @@ public sealed class FlyoutWindow : Window
     private HwndSource? source;
     private IntPtr hookHandle;
     private DateTimeOffset openedAt;
-    private readonly System.Diagnostics.Stopwatch resizeClock = new();
-    private EventHandler? resizeRenderHandler;
-    private double resizeStartHeightPx;
-    private double resizeTargetHeightPx;
-    private double resizeFixedBottomPx;
-    private double resizeXPx;
-    private double resizeWidthPx;
     private UiSettings settings = new();
     private bool isDark;
     private bool isRefreshingUi;
@@ -281,10 +274,23 @@ public sealed class FlyoutWindow : Window
             return;
         }
 
+        // Clicking the widget deactivates the flyout; that click is a switch/toggle, not a dismiss.
+        // Let the widget's Clicked -> Toggle handle it (in-place cross-fade) instead of racing it
+        // with a close (which turned switches into a close+reopen slide).
+        if (IsCursorOverWidget())
+        {
+            return;
+        }
+
         if (this.wasActivated || DateTimeOffset.UtcNow - this.openedAt >= OpenDismissGrace)
         {
             this.HideFlyout("close: deactivated");
         }
+    }
+
+    private static bool IsCursorOverWidget()
+    {
+        return GetCursorPos(out var point) && IsWidgetClick(point);
     }
 
     private bool IsInOpenGrace() => DateTimeOffset.UtcNow - this.openedAt < OpenDismissGrace;
@@ -316,10 +322,17 @@ public sealed class FlyoutWindow : Window
         this.root.BeginAnimation(UIElement.OpacityProperty, null);
         this.root.Opacity = 1;
 
-        // Freeze auto-sizing NOW so rebuilding to a taller provider does not instantly snap the
-        // window bigger (that snap was the "grow doesn't animate" bug). The physical size is left
-        // exactly as-is; the resize driver takes over from ground truth.
+        // Read the TRUE current window geometry from the physical rect converted to DIP — WPF's
+        // Top/ActualHeight DPs can be stale/NaN after physical-pixel positioning. Pin the DP base
+        // values to this truth (so clearing animations later never snaps to a stale value) and freeze
+        // auto-size (so rebuilding to a taller provider doesn't instantly jump the window bigger).
+        var (currentTop, currentHeight) = this.CurrentWindowDip();
+        var fixedBottom = currentTop + currentHeight;
+        this.BeginAnimation(TopProperty, null);
+        this.BeginAnimation(HeightProperty, null);
         this.SizeToContent = SizeToContent.Manual;
+        this.Top = currentTop;
+        this.Height = currentHeight;
 
         await this.AnimateCardsOpacityAsync(this.stack.Opacity, 0, SwitchFadeOutDuration, EasingMode.EaseIn, generation).ConfigureAwait(true);
         if (!this.IsCurrentAnimation(generation))
@@ -329,114 +342,71 @@ public sealed class FlyoutWindow : Window
 
         this.currentFocusProvider = focusProvider;
         this.RebuildCards();
-        this.UpdateLayout();
-        var targetHeightDip = this.MeasureNaturalHeight();
+        var targetHeight = this.MeasureNaturalHeight();
+        var targetTop = fixedBottom - targetHeight;
 
-        // Drive the resize in PHYSICAL pixels off the real current window rect (immune to the WPF
-        // Top/Height DP base-value snap that made rapid switches sink the window under the taskbar).
-        this.StartWindowResizePhysical(targetHeightDip, generation);
-
-        await this.AnimateCardsOpacityAsync(0, 1, SwitchFadeInDuration, EasingMode.EaseOut, generation).ConfigureAwait(true);
-    }
-
-    /// <summary>
-    /// Animates the window height in physical pixels with the bottom edge pinned, retargetable
-    /// mid-flight. Uses a single CompositionTarget.Rendering driver + SetWindowPos so it never
-    /// fights WPF's DIP Top/Height DPs.
-    /// </summary>
-    private void StartWindowResizePhysical(double targetHeightDip, int generation)
-    {
-        var hwnd = new WindowInteropHelper(this).Handle;
-        if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out var wr))
-        {
-            return;
-        }
-
-        var transform = (this.source ?? (HwndSource?)PresentationSource.FromVisual(this))?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
-        var dipToPx = 1.0 / Math.Max(transform.M22, 0.01);
-
-        this.resizeStartHeightPx = wr.Bottom - wr.Top;
-        this.resizeTargetHeightPx = Math.Max(1, targetHeightDip * dipToPx);
-        this.resizeFixedBottomPx = wr.Bottom;                 // ground-truth bottom edge, stays pinned
-        this.resizeXPx = wr.Left;
-        this.resizeWidthPx = wr.Right - wr.Left;
-        this.resizeClock.Restart();
-
-        if (this.resizeRenderHandler is null)
-        {
-            this.resizeRenderHandler = (_, _) => this.OnResizeRendering(generation);
-            CompositionTarget.Rendering += this.resizeRenderHandler;
-        }
-    }
-
-    private void OnResizeRendering(int generation)
-    {
+        // Let WPF own the window resize/move via its Height/Top DPs (no fighting SetWindowPos). The
+        // bottom stays pinned because Top and Height share the same duration+easing.
+        var resizeTask = this.AnimateHeightTopAsync(currentHeight, targetHeight, currentTop, targetTop, generation);
+        var fadeInTask = this.AnimateCardsOpacityAsync(0, 1, SwitchFadeInDuration, EasingMode.EaseOut, generation);
+        await Task.WhenAll(resizeTask, fadeInTask).ConfigureAwait(true);
         if (!this.IsCurrentAnimation(generation))
         {
-            this.StopWindowResize();
             return;
         }
 
-        var duration = SwitchResizeDuration.TimeSpan.TotalMilliseconds;
-        var t = duration <= 0 ? 1.0 : Math.Clamp(this.resizeClock.Elapsed.TotalMilliseconds / duration, 0, 1);
-        var eased = EaseInOutCubic(t);
-        var heightPx = this.resizeStartHeightPx + ((this.resizeTargetHeightPx - this.resizeStartHeightPx) * eased);
-        var yPx = this.resizeFixedBottomPx - heightPx;
-
-        var hwnd = new WindowInteropHelper(this).Handle;
-        if (hwnd != IntPtr.Zero)
-        {
-            _ = SetWindowPos(
-                hwnd,
-                HwndTop,
-                (int)Math.Round(this.resizeXPx),
-                (int)Math.Round(yPx),
-                (int)Math.Round(this.resizeWidthPx),
-                (int)Math.Round(heightPx),
-                SwpNoZorder | SwpNoActivate);
-        }
-
-        if (t >= 1.0)
-        {
-            this.StopWindowResize();
-        }
+        // Settle the DP base values to the targets so the next switch reads a correct base. Stay
+        // Manual for the whole open session; CompleteHide restores auto-size on close.
+        this.BeginAnimation(HeightProperty, null);
+        this.BeginAnimation(TopProperty, null);
+        this.Height = targetHeight;
+        this.Top = targetTop;
+        this.stack.Opacity = 1;
     }
 
-    private void StopWindowResize()
+    /// <summary>Current window top and height in DIP, from the ground-truth physical rect.</summary>
+    private (double Top, double Height) CurrentWindowDip()
     {
-        if (this.resizeRenderHandler is not null)
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd != IntPtr.Zero && GetWindowRect(hwnd, out var wr))
         {
-            CompositionTarget.Rendering -= this.resizeRenderHandler;
-            this.resizeRenderHandler = null;
+            var transform = (this.source ?? (HwndSource?)PresentationSource.FromVisual(this))?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
+            var topLeft = transform.Transform(new Point(wr.Left, wr.Top));
+            var bottomRight = transform.Transform(new Point(wr.Right, wr.Bottom));
+            return (topLeft.Y, Math.Max(1, bottomRight.Y - topLeft.Y));
         }
 
-        this.resizeClock.Reset();
-
-        // Deliberately DO NOT restore SizeToContent=Height here: WPF auto-sizing anchors at the
-        // window TOP, which shoves the bottom edge downward — across rapid switches that sinks the
-        // flyout under the taskbar. The window stays Manual for the whole open session; CompleteHide
-        // restores auto-sizing when the flyout actually closes. Pin the final rect exactly so the
-        // bottom is authoritative for the next switch's ground-truth read.
-        if (this.IsVisible && !this.isClosing)
-        {
-            var hwnd = new WindowInteropHelper(this).Handle;
-            if (hwnd != IntPtr.Zero)
-            {
-                var y = this.resizeFixedBottomPx - this.resizeTargetHeightPx;
-                _ = SetWindowPos(
-                    hwnd,
-                    HwndTop,
-                    (int)Math.Round(this.resizeXPx),
-                    (int)Math.Round(y),
-                    (int)Math.Round(this.resizeWidthPx),
-                    (int)Math.Round(this.resizeTargetHeightPx),
-                    SwpNoZorder | SwpNoActivate);
-            }
-        }
+        var height = this.ActualHeight > 0 ? this.ActualHeight : Math.Max(this.DesiredSize.Height, 80);
+        return (this.Top, height);
     }
 
-    private static double EaseInOutCubic(double t) =>
-        t < 0.5 ? 4 * t * t * t : 1 - (Math.Pow((-2 * t) + 2, 3) / 2);
+    private Task AnimateHeightTopAsync(double fromHeight, double toHeight, double fromTop, double toTop, int generation)
+    {
+        var heightCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var topCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var heightAnim = new DoubleAnimation
+        {
+            From = fromHeight,
+            To = toHeight,
+            Duration = SwitchResizeDuration,
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut },
+            FillBehavior = FillBehavior.HoldEnd,
+        };
+        heightAnim.Completed += (_, _) => heightCompletion.TrySetResult();
+        var topAnim = new DoubleAnimation
+        {
+            From = fromTop,
+            To = toTop,
+            Duration = SwitchResizeDuration,
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut },
+            FillBehavior = FillBehavior.HoldEnd,
+        };
+        topAnim.Completed += (_, _) => topCompletion.TrySetResult();
+        _ = generation;
+        this.BeginAnimation(HeightProperty, heightAnim);
+        this.BeginAnimation(TopProperty, topAnim);
+        return Task.WhenAll(heightCompletion.Task, topCompletion.Task);
+    }
 
     private void BeginOpenAnimation()
     {
@@ -496,12 +466,14 @@ public sealed class FlyoutWindow : Window
             return;
         }
 
-        this.StopWindowResize();
         this.UninstallMouseHook();
         this.Hide();
         this.rootTranslate.BeginAnimation(TranslateTransform.YProperty, null);
         this.root.BeginAnimation(UIElement.OpacityProperty, null);
         this.stack.BeginAnimation(UIElement.OpacityProperty, null);
+        // Clear any switch resize animation and hand sizing back to WPF for the next fresh open.
+        this.BeginAnimation(HeightProperty, null);
+        this.BeginAnimation(TopProperty, null);
         this.rootTranslate.Y = this.AnimationDistanceDip();
         this.root.Opacity = 0;
         this.stack.Opacity = 1;
@@ -983,13 +955,29 @@ public sealed class FlyoutWindow : Window
         {
             var hook = Marshal.PtrToStructure<MouseHookStruct>(lParam);
             var windowRect = this.WindowPhysicalRect();
-            if (!windowRect.Contains(hook.Point.X, hook.Point.Y))
+            // A click on the CodexWinBar widget is a switch/toggle, not an outside-dismiss — let the
+            // widget's own click routing handle it. Dismissing here would race the switch and turn it
+            // into a close+reopen slide instead of the in-place cross-fade.
+            if (!windowRect.Contains(hook.Point.X, hook.Point.Y) && !IsWidgetClick(hook.Point))
             {
                 _ = this.Dispatcher.BeginInvoke(() => this.HideFlyout("close: outside-click"));
             }
         }
 
         return CallNextHookEx(this.hookHandle, code, wParam, lParam);
+    }
+
+    private static bool IsWidgetClick(NativePoint point)
+    {
+        var hwnd = WindowFromPoint(point);
+        if (hwnd == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        var buffer = new char[64];
+        var length = GetClassName(hwnd, buffer, buffer.Length);
+        return length > 0 && new string(buffer, 0, length) == "CodexWinBarWidget";
     }
 
     private DrawingRectangle WindowPhysicalRect()
@@ -1071,6 +1059,16 @@ public sealed class FlyoutWindow : Window
     [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
+
+    [DllImport("user32.dll", ExactSpelling = true)]
+    private static extern IntPtr WindowFromPoint(NativePoint point);
+
+    [DllImport("user32.dll", ExactSpelling = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetCursorPos(out NativePoint point);
+
+    [DllImport("user32.dll", EntryPoint = "GetClassNameW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern int GetClassName(IntPtr hWnd, [Out] char[] lpClassName, int nMaxCount);
 
     private delegate IntPtr LowLevelMouseProc(int code, IntPtr wParam, IntPtr lParam);
 

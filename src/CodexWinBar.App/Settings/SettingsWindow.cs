@@ -1277,16 +1277,161 @@ public sealed class SettingsWindow : Window
         }
     }
 
+    private static TextBlock CreateExpanderChevron()
+    {
+        var chevron = LogoImages.IconGlyph("\uE70D", 12);
+        chevron.Margin = new Thickness(12, 0, 0, 0);
+        chevron.VerticalAlignment = VerticalAlignment.Center;
+        chevron.RenderTransformOrigin = new Point(0.5, 0.5);
+        chevron.RenderTransform = new RotateTransform(0);
+        return chevron;
+    }
+
+    private sealed class ExpandableCardAnimator
+    {
+        private readonly Border owner;
+        private readonly FrameworkElement drawer;
+        private readonly TextBlock chevron;
+        private readonly UIElement? divider;
+        private int animationGeneration;
+
+        public ExpandableCardAnimator(Border owner, FrameworkElement drawer, TextBlock chevron, UIElement? divider)
+        {
+            this.owner = owner;
+            this.drawer = drawer;
+            this.chevron = chevron;
+            this.divider = divider;
+            this.drawer.ClipToBounds = true;
+            this.drawer.Visibility = Visibility.Collapsed;
+            this.drawer.Opacity = 0;
+            if (this.divider is not null)
+            {
+                this.divider.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        public void SetExpanded(bool expanded)
+        {
+            var generation = ++this.animationGeneration;
+            this.AnimateChevron(expanded);
+            if (expanded)
+            {
+                this.Expand(generation);
+            }
+            else
+            {
+                this.Collapse(generation);
+            }
+        }
+
+        private void AnimateChevron(bool expanded)
+        {
+            if (this.chevron.RenderTransform is not RotateTransform rotate)
+            {
+                rotate = new RotateTransform(0);
+                this.chevron.RenderTransform = rotate;
+            }
+
+            var animation = new DoubleAnimation
+            {
+                To = expanded ? 180 : 0,
+                Duration = TimeSpan.FromMilliseconds(200),
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+            };
+            rotate.BeginAnimation(RotateTransform.AngleProperty, animation);
+        }
+
+        private void Expand(int generation)
+        {
+            this.divider?.SetCurrentValue(VisibilityProperty, Visibility.Visible);
+            this.drawer.Visibility = Visibility.Visible;
+
+            var startHeight = Math.Max(0, this.drawer.ActualHeight);
+            this.drawer.Height = startHeight;
+            this.drawer.Measure(new Size(this.InnerWidth(), double.PositiveInfinity));
+            var targetHeight = Math.Max(0, this.drawer.DesiredSize.Height);
+
+            var heightAnimation = new DoubleAnimation
+            {
+                From = startHeight,
+                To = targetHeight,
+                Duration = TimeSpan.FromMilliseconds(220),
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+            };
+            heightAnimation.Completed += (_, _) =>
+            {
+                if (generation != this.animationGeneration)
+                {
+                    return;
+                }
+
+                this.drawer.BeginAnimation(FrameworkElement.HeightProperty, null);
+                this.drawer.Height = double.NaN;
+            };
+
+            this.drawer.BeginAnimation(FrameworkElement.HeightProperty, heightAnimation);
+            this.drawer.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation
+            {
+                From = this.drawer.Opacity,
+                To = 1,
+                Duration = TimeSpan.FromMilliseconds(160),
+            });
+        }
+
+        private void Collapse(int generation)
+        {
+            var startHeight = Math.Max(0, this.drawer.ActualHeight);
+            this.drawer.Height = startHeight;
+
+            var heightAnimation = new DoubleAnimation
+            {
+                From = startHeight,
+                To = 0,
+                Duration = TimeSpan.FromMilliseconds(180),
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn },
+            };
+            heightAnimation.Completed += (_, _) =>
+            {
+                if (generation != this.animationGeneration)
+                {
+                    return;
+                }
+
+                this.drawer.BeginAnimation(FrameworkElement.HeightProperty, null);
+                this.drawer.Visibility = Visibility.Collapsed;
+                this.drawer.Height = double.NaN;
+                this.divider?.SetCurrentValue(VisibilityProperty, Visibility.Collapsed);
+            };
+
+            this.drawer.BeginAnimation(FrameworkElement.HeightProperty, heightAnimation);
+            this.drawer.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation
+            {
+                From = this.drawer.Opacity,
+                To = 0,
+                Duration = TimeSpan.FromMilliseconds(120),
+            });
+        }
+
+        private double InnerWidth()
+        {
+            var width = this.owner.ActualWidth - this.owner.Padding.Left - this.owner.Padding.Right;
+            if (double.IsNaN(width) || width <= 0)
+            {
+                width = this.drawer.ActualWidth;
+            }
+
+            return Math.Max(0, width);
+        }
+    }
+
     private sealed class QuotaSettingsCard : Border
     {
         private readonly Border divider = new();
-        private readonly StackPanel detail;
-        private readonly TextBlock chevron;
+        private readonly ExpandableCardAnimator expander;
         private bool expanded;
 
         public QuotaSettingsCard(FrameworkElement leading, ToggleSwitch toggle, StackPanel detail)
         {
-            this.detail = detail;
             this.CornerRadius = new CornerRadius(4);
             this.MinHeight = 64;
             this.Padding = new Thickness(16, 14, 16, 14);
@@ -1333,23 +1478,18 @@ public sealed class SettingsWindow : Window
             Grid.SetColumn(toggle, 3);
             row.Children.Add(toggle);
 
-            this.chevron = LogoImages.IconGlyph("\uE70D", 12);
-            this.chevron.Margin = new Thickness(12, 0, 0, 0);
-            this.chevron.VerticalAlignment = VerticalAlignment.Center;
-            this.chevron.RenderTransformOrigin = new Point(0.5, 0.5);
-            this.chevron.RenderTransform = new RotateTransform(0);
-            Grid.SetColumn(this.chevron, 4);
-            row.Children.Add(this.chevron);
+            var chevron = CreateExpanderChevron();
+            Grid.SetColumn(chevron, 4);
+            row.Children.Add(chevron);
 
             root.Children.Add(row);
             this.divider.Height = 1;
             this.divider.Margin = new Thickness(40, 14, 0, 0);
             this.divider.SetResourceReference(Border.BackgroundProperty, "SettingsDivider");
-            this.divider.Visibility = Visibility.Collapsed;
-            detail.Visibility = Visibility.Collapsed;
             root.Children.Add(this.divider);
             root.Children.Add(detail);
             this.Child = root;
+            this.expander = new ExpandableCardAnimator(this, detail, chevron, this.divider);
 
             this.MouseLeftButtonUp += (_, args) =>
             {
@@ -1368,12 +1508,7 @@ public sealed class SettingsWindow : Window
             set
             {
                 this.expanded = value;
-                this.divider.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
-                this.detail.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
-                if (this.chevron.RenderTransform is RotateTransform rotate)
-                {
-                    rotate.BeginAnimation(RotateTransform.AngleProperty, new DoubleAnimation(value ? 90 : 0, TimeSpan.FromMilliseconds(120)));
-                }
+                this.expander.SetExpanded(value);
             }
         }
 
@@ -1675,7 +1810,7 @@ public sealed class SettingsWindow : Window
     private sealed class ProviderCard : Border
     {
         private readonly Border divider = new();
-        private readonly TextBlock chevron;
+        private readonly ExpandableCardAnimator expander;
         private bool expanded;
 
         public ProviderCard(
@@ -1725,24 +1860,19 @@ public sealed class SettingsWindow : Window
             Grid.SetColumn(toggle, 3);
             row.Children.Add(toggle);
 
-            this.chevron = LogoImages.IconGlyph("\uE70D", 12);
-            this.chevron.Margin = new Thickness(12, 0, 0, 0);
-            this.chevron.VerticalAlignment = VerticalAlignment.Center;
-            this.chevron.RenderTransformOrigin = new Point(0.5, 0.5);
-            this.chevron.RenderTransform = new RotateTransform(0);
-            this.chevron.Visibility = canExpand ? Visibility.Visible : Visibility.Collapsed;
-            Grid.SetColumn(this.chevron, 4);
-            row.Children.Add(this.chevron);
+            var chevron = CreateExpanderChevron();
+            chevron.Visibility = canExpand ? Visibility.Visible : Visibility.Collapsed;
+            Grid.SetColumn(chevron, 4);
+            row.Children.Add(chevron);
 
             root.Children.Add(row);
             this.divider.Height = 1;
             this.divider.Margin = new Thickness(40, 14, 0, 0);
             this.divider.SetResourceReference(Border.BackgroundProperty, "SettingsDivider");
-            this.divider.Visibility = Visibility.Collapsed;
-            detail.Visibility = Visibility.Collapsed;
             root.Children.Add(this.divider);
             root.Children.Add(detail);
             this.Child = root;
+            this.expander = new ExpandableCardAnimator(this, detail, chevron, this.divider);
 
             if (canExpand)
             {
@@ -1769,12 +1899,7 @@ public sealed class SettingsWindow : Window
             set
             {
                 this.expanded = value;
-                this.divider.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
-                this.Detail.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
-                if (this.chevron.RenderTransform is RotateTransform rotate)
-                {
-                    rotate.BeginAnimation(RotateTransform.AngleProperty, new DoubleAnimation(value ? 90 : 0, TimeSpan.FromMilliseconds(120)));
-                }
+                this.expander.SetExpanded(value);
             }
         }
 

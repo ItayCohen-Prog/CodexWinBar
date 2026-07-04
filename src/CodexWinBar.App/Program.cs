@@ -224,6 +224,7 @@ internal sealed class AppShell : IDisposable
             this.widgetHost.Update(this.lastWidgetState);
         }
 
+        this.usageStore.ReloadSchedule();
         this.UpdateWidget(settings);
     }
 

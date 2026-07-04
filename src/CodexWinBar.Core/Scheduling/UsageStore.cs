@@ -88,6 +88,13 @@ public sealed class UsageStore : IUsageStore
     }
 
     /// <inheritdoc />
+    public void ReloadSchedule()
+    {
+        this.ThrowIfDisposed();
+        this.ReschedulePeriodicTimer();
+    }
+
+    /// <inheritdoc />
     public async Task RefreshAllAsync(CancellationToken ct = default)
     {
         this.ThrowIfDisposed();

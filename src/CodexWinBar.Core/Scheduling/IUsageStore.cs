@@ -42,4 +42,7 @@ public interface IUsageStore : IDisposable
 
     /// <summary>Flyout-open hook: refresh stale/never-fetched providers after the upstream 1.2s delay.</summary>
     void NotifyFlyoutOpened();
+
+    /// <summary>Re-arms the periodic refresh timer from current UiSettings (call after a cadence change).</summary>
+    void ReloadSchedule();
 }

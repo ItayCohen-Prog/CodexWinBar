@@ -4,8 +4,14 @@ using System.Net.Http;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
+using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Imaging;
+using Microsoft.Win32;
 using CodexWinBar.App.Assets;
 using CodexWinBar.App.Interop;
 using CodexWinBar.App.Startup;
@@ -22,6 +28,7 @@ namespace CodexWinBar.App.Settings;
 /// </summary>
 public sealed class SettingsWindow : Window
 {
+    private const double NavWidth = 280;
     private static SettingsWindow? current;
 
     private readonly ConfigStore configStore;
@@ -30,11 +37,15 @@ public sealed class SettingsWindow : Window
     private readonly Action applySettings;
     private readonly IReadOnlyList<ProviderDescriptor> providers;
     private readonly Grid contentHost = new();
-    private readonly ListBox providerList = new();
-    private readonly TextBlock providerStatus = new();
-    private readonly StackPanel providerDetail = new() { Margin = new Thickness(18, 0, 0, 0) };
+    private readonly List<NavRow> navRows = [];
+    private readonly Dictionary<ProviderId, ProviderCard> providerCards = [];
     private readonly HttpClient http = new();
+    private readonly bool isDark;
+    private readonly SolidColorBrush accentBrush;
     private CancellationTokenSource? copilotSignIn;
+    private TextBlock? activeCopilotStatus;
+    private StackPanel? activeCopilotDetail;
+    private string activePane = "General";
 
     private SettingsWindow(ConfigStore cfg, UiSettingsStore ui, IUsageStore store, Action applySettings)
     {
@@ -43,20 +54,24 @@ public sealed class SettingsWindow : Window
         this.usageStore = store;
         this.applySettings = applySettings;
         this.providers = ProviderCatalog.CreateAll();
+        this.isDark = !SystemAppsUseLightTheme();
+        this.accentBrush = new SolidColorBrush(ReadAccentColor());
+        this.accentBrush.Freeze();
 
         this.Title = "CodexWinBar Settings";
-        this.Width = 720;
-        this.Height = 520;
-        this.MinWidth = 680;
-        this.MinHeight = 480;
+        this.Width = 980;
+        this.Height = 700;
+        this.MinWidth = 760;
+        this.MinHeight = 500;
         this.WindowStyle = WindowStyle.SingleBorderWindow;
         this.ShowInTaskbar = true;
         this.FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
-        this.Background = new SolidColorBrush(Color.FromRgb(32, 32, 32));
-        this.Foreground = Brushes.White;
+        this.Resources.MergedDictionaries.Add(SettingsTheme.Create(this.isDark, this.accentBrush.Color));
+        this.Background = Brushes.Transparent;
+        this.Foreground = Brush("SettingsForeground");
         this.Content = this.BuildRoot();
 
-        this.SourceInitialized += (_, _) => WpfDwm.ApplyWindowChrome(this, dark: true);
+        this.SourceInitialized += this.OnSourceInitialized;
         this.usageStore.StateChanged += this.OnUsageStateChanged;
         this.Closed += (_, _) =>
         {
@@ -70,7 +85,7 @@ public sealed class SettingsWindow : Window
             }
         };
 
-        this.ShowGeneral();
+        this.Navigate("General");
     }
 
     /// <summary>
@@ -94,60 +109,84 @@ public sealed class SettingsWindow : Window
         current.Activate();
     }
 
+    private void OnSourceInitialized(object? sender, EventArgs e)
+    {
+        // Full Mica recipe (frame extension + backdrop + transparent surface) lives in WpfDwm.
+        WpfDwm.ApplyWindowChrome(this, this.isDark);
+    }
+
     private Grid BuildRoot()
     {
         var root = new Grid();
-        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(168) });
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(NavWidth) });
         root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-        var nav = new ListBox
+        var nav = new StackPanel
         {
-            BorderThickness = new Thickness(0),
-            Background = new SolidColorBrush(Color.FromRgb(27, 27, 27)),
-            Foreground = Brushes.White,
-            Padding = new Thickness(8, 16, 8, 8),
+            Margin = new Thickness(8, 20, 8, 0),
+            Background = Brushes.Transparent,
         };
-        foreach (var name in new[] { "General", "Display", "Providers", "About" })
+
+        foreach (var item in new[]
         {
-            nav.Items.Add(new ListBoxItem { Content = name, Padding = new Thickness(12, 9, 12, 9) });
+            ("General", "\uE713"),
+            ("Display", "\uE7F4"),
+            ("Providers", "\uE8D4"),
+            ("About", "\uE946"),
+        })
+        {
+            var row = new NavRow(item.Item1, item.Item2, () => this.Navigate(item.Item1))
+            {
+                Margin = new Thickness(4, 0, 4, 2),
+            };
+            this.navRows.Add(row);
+            nav.Children.Add(row);
         }
 
-        nav.SelectionChanged += (_, _) =>
-        {
-            if (nav.SelectedItem is not ListBoxItem item || item.Content is not string name)
-            {
-                return;
-            }
-
-            switch (name)
-            {
-                case "General":
-                    this.ShowGeneral();
-                    break;
-                case "Display":
-                    this.ShowDisplay();
-                    break;
-                case "Providers":
-                    this.ShowProviders();
-                    break;
-                case "About":
-                    this.ShowAbout();
-                    break;
-            }
-        };
-        nav.SelectedIndex = 0;
         Grid.SetColumn(nav, 0);
         root.Children.Add(nav);
 
+        var contentFrame = new Grid
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
+
         var scroller = new ScrollViewer
         {
-            Content = this.contentHost,
-            Padding = new Thickness(24),
+            Padding = new Thickness(24, 20, 24, 20),
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Content = contentFrame,
         };
+        contentFrame.Children.Add(this.contentHost);
         Grid.SetColumn(scroller, 1);
         root.Children.Add(scroller);
         return root;
+    }
+
+    private void Navigate(string pane)
+    {
+        this.activePane = pane;
+        foreach (var row in this.navRows)
+        {
+            row.IsSelected = string.Equals(row.Label, pane, StringComparison.Ordinal);
+        }
+
+        switch (pane)
+        {
+            case "General":
+                this.ShowGeneral();
+                break;
+            case "Display":
+                this.ShowDisplay();
+                break;
+            case "Providers":
+                this.ShowProviders();
+                break;
+            case "About":
+                this.ShowAbout();
+                break;
+        }
     }
 
     private void SetContent(UIElement element)
@@ -160,21 +199,15 @@ public sealed class SettingsWindow : Window
     {
         var settings = this.uiStore.Load();
         var panel = Page("General");
+        var group = CardGroup();
 
-        var launch = Check("Launch at login", StartupManager.IsEnabled());
-        launch.Checked += (_, _) =>
-        {
-            StartupManager.SetEnabled(true);
-            this.SaveUi(ui => ui.LaunchAtLogin = true);
-        };
-        launch.Unchecked += (_, _) =>
-        {
-            StartupManager.SetEnabled(false);
-            this.SaveUi(ui => ui.LaunchAtLogin = false);
-        };
-        panel.Children.Add(launch);
+        group.Children.Add(this.SettingCard("\uE77B", "Launch at login", "Start CodexWinBar when you sign in",
+            new ToggleSwitch(StartupManager.IsEnabled(), isChecked =>
+            {
+                StartupManager.SetEnabled(isChecked);
+                this.SaveUi(ui => ui.LaunchAtLogin = isChecked);
+            })));
 
-        panel.Children.Add(Label("Refresh cadence"));
         var cadence = Combo(
             new[]
             {
@@ -193,18 +226,15 @@ public sealed class SettingsWindow : Window
                 this.SaveUi(ui => ui.RefreshCadenceMinutes = option.Value);
             }
         };
-        panel.Children.Add(cadence);
+        group.Children.Add(this.SettingCard("\uE823", "Refresh cadence", "How often provider usage is fetched", cadence));
 
-        var status = Check("Check provider status", settings.StatusChecksEnabled);
-        status.Checked += (_, _) => this.SaveUi(ui => ui.StatusChecksEnabled = true);
-        status.Unchecked += (_, _) => this.SaveUi(ui => ui.StatusChecksEnabled = false);
-        panel.Children.Add(status);
+        group.Children.Add(this.SettingCard("\uE9D9", "Provider status checks", "Poll provider status pages for incidents",
+            new ToggleSwitch(settings.StatusChecksEnabled, isChecked => this.SaveUi(ui => ui.StatusChecksEnabled = isChecked))));
 
-        var notifications = Check("Quota notifications", settings.QuotaNotificationsEnabled);
-        notifications.Checked += (_, _) => this.SaveUi(ui => ui.QuotaNotificationsEnabled = true);
-        notifications.Unchecked += (_, _) => this.SaveUi(ui => ui.QuotaNotificationsEnabled = false);
-        panel.Children.Add(notifications);
+        group.Children.Add(this.SettingCard("\uE7F4", "Quota notifications", "Notify when a usage window crosses a threshold",
+            new ToggleSwitch(settings.QuotaNotificationsEnabled, isChecked => this.SaveUi(ui => ui.QuotaNotificationsEnabled = isChecked))));
 
+        panel.Children.Add(group);
         this.SetContent(panel);
     }
 
@@ -212,8 +242,8 @@ public sealed class SettingsWindow : Window
     {
         var settings = this.uiStore.Load();
         var panel = Page("Display");
+        var group = CardGroup();
 
-        panel.Children.Add(Label("Widget mode"));
         var mode = Combo(Enum.GetValues<WidgetMode>().Select(value => new ComboOption<WidgetMode>(value.ToString(), value)), settings.WidgetMode);
         mode.SelectionChanged += (_, _) =>
         {
@@ -222,14 +252,13 @@ public sealed class SettingsWindow : Window
                 this.SaveUi(ui => ui.WidgetMode = option.Value);
             }
         };
-        panel.Children.Add(mode);
+        group.Children.Add(this.SettingCard("\uE8A7", "Widget mode", null, mode));
 
-        panel.Children.Add(Label("Widget side"));
         var side = Combo(
             new[]
             {
                 new ComboOption<WidgetSide>("Right", WidgetSide.Right),
-                new ComboOption<WidgetSide>("Left (forces overlay)", WidgetSide.Left),
+                new ComboOption<WidgetSide>("Left", WidgetSide.Left),
             },
             settings.WidgetSide);
         side.SelectionChanged += (_, _) =>
@@ -243,9 +272,8 @@ public sealed class SettingsWindow : Window
                 });
             }
         };
-        panel.Children.Add(side);
+        group.Children.Add(this.SettingCard("\uE8AB", "Widget side", "Left pins the widget to the taskbar's left edge", side));
 
-        panel.Children.Add(Label("Display text mode"));
         var textMode = Combo(Enum.GetValues<DisplayTextMode>().Select(value => new ComboOption<DisplayTextMode>(value.ToString(), value)), settings.DisplayTextMode);
         textMode.SelectionChanged += (_, _) =>
         {
@@ -254,89 +282,100 @@ public sealed class SettingsWindow : Window
                 this.SaveUi(ui => ui.DisplayTextMode = option.Value);
             }
         };
-        panel.Children.Add(textMode);
+        group.Children.Add(this.SettingCard("\uE8D2", "Display text", null, textMode));
 
-        var used = Check("Show used instead of remaining", settings.UsageBarsShowUsed);
-        used.Checked += (_, _) => this.SaveUi(ui => ui.UsageBarsShowUsed = true);
-        used.Unchecked += (_, _) => this.SaveUi(ui => ui.UsageBarsShowUsed = false);
-        panel.Children.Add(used);
+        group.Children.Add(this.SettingCard("\uE9F5", "Show used instead of remaining", null,
+            new ToggleSwitch(settings.UsageBarsShowUsed, isChecked => this.SaveUi(ui => ui.UsageBarsShowUsed = isChecked))));
 
-        var absolute = Check("Absolute reset times", settings.ResetTimesShowAbsolute);
-        absolute.Checked += (_, _) => this.SaveUi(ui => ui.ResetTimesShowAbsolute = true);
-        absolute.Unchecked += (_, _) => this.SaveUi(ui => ui.ResetTimesShowAbsolute = false);
-        panel.Children.Add(absolute);
+        group.Children.Add(this.SettingCard("\uE916", "Absolute reset times", null,
+            new ToggleSwitch(settings.ResetTimesShowAbsolute, isChecked => this.SaveUi(ui => ui.ResetTimesShowAbsolute = isChecked))));
 
+        panel.Children.Add(group);
         this.SetContent(panel);
     }
 
     private void ShowProviders()
     {
-        var root = new Grid();
-        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(230) });
-        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var panel = Page("Providers");
+        var group = CardGroup();
+        this.providerCards.Clear();
+        this.activeCopilotStatus = null;
+        this.activeCopilotDetail = null;
 
-        this.providerList.Items.Clear();
-        this.providerList.BorderBrush = new SolidColorBrush(Color.FromRgb(70, 70, 70));
-        this.providerList.Background = new SolidColorBrush(Color.FromRgb(37, 37, 37));
-        this.providerList.Foreground = Brushes.White;
         foreach (var descriptor in this.providers)
         {
-            this.providerList.Items.Add(this.ProviderRow(descriptor));
+            var card = this.CreateProviderCard(descriptor);
+            this.providerCards[descriptor.Id] = card;
+            group.Children.Add(card);
         }
 
-        this.providerList.SelectionChanged -= this.ProviderSelectionChanged;
-        this.providerList.SelectionChanged += this.ProviderSelectionChanged;
-        this.providerList.SelectedIndex = 0;
-        Grid.SetColumn(this.providerList, 0);
-        root.Children.Add(this.providerList);
-
-        Grid.SetColumn(this.providerDetail, 1);
-        root.Children.Add(this.providerDetail);
-        this.SetContent(root);
-        this.RefreshProviderDetail();
+        panel.Children.Add(group);
+        this.SetContent(panel);
     }
 
-    private FrameworkElement ProviderRow(ProviderDescriptor descriptor)
+    private ProviderCard CreateProviderCard(ProviderDescriptor descriptor)
     {
         var entry = this.configStore.EntryFor(this.configStore.Load(), descriptor.Id);
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(6), Tag = descriptor };
-        row.Children.Add(ProviderLogo(descriptor));
-        row.Children.Add(new TextBlock { Text = descriptor.Metadata.DisplayName, Width = 118, VerticalAlignment = VerticalAlignment.Center });
-        var check = new CheckBox { IsChecked = entry.Enabled ?? descriptor.Metadata.DefaultEnabled, VerticalAlignment = VerticalAlignment.Center };
-        check.Checked += (_, _) => this.SaveProviderEntry(descriptor.Id, item => item with { Enabled = true });
-        check.Unchecked += (_, _) => this.SaveProviderEntry(descriptor.Id, item => item with { Enabled = false });
-        row.Children.Add(check);
-        return row;
+        var enabled = entry.Enabled ?? descriptor.Metadata.DefaultEnabled;
+        var status = new TextBlock();
+        var detail = new StackPanel { Margin = new Thickness(40, 14, 0, 0) };
+        var toggle = new ToggleSwitch(enabled, isChecked => this.SaveProviderEntry(descriptor.Id, item => item with { Enabled = isChecked }));
+        var card = new ProviderCard(descriptor, this.ProviderLogo(descriptor, 24), status, toggle, detail, this.ProviderNeedsConfig(descriptor.Id));
+        card.SetResourceReference(Control.ForegroundProperty, "SettingsForeground");
+        this.FillProviderCard(descriptor, status, detail);
+        return card;
     }
 
-    private static FrameworkElement ProviderLogo(ProviderDescriptor descriptor)
+    private void FillProviderCard(ProviderDescriptor descriptor, TextBlock status, StackPanel detail)
     {
-        const double size = 18;
-        if (LogoImages.Get(descriptor.Branding.GlyphKey, darkBackground: true) is { } source)
+        status.Text = this.ProviderSummary(descriptor.Id);
+        status.SetResourceReference(TextBlock.ForegroundProperty, "SettingsMutedForeground");
+        detail.Children.Clear();
+
+        if (descriptor.Id is ProviderId.OpenRouter or ProviderId.Zai or ProviderId.OpenAIAdmin)
+        {
+            this.AddApiKeyEditor(descriptor, detail);
+        }
+        else if (descriptor.Id == ProviderId.Copilot)
+        {
+            this.AddCopilotEditor(detail, status);
+        }
+        else
+        {
+            detail.Children.Add(Text(this.CredentialHint(descriptor.Id)));
+            detail.Children.Add(ButtonWithIcon(LogoImages.RefreshGlyph, "Refresh", async () => await this.RefreshProviderAsync(descriptor.Id)));
+        }
+    }
+
+    private bool ProviderNeedsConfig(ProviderId id) =>
+        id is ProviderId.OpenRouter or ProviderId.Zai or ProviderId.OpenAIAdmin or ProviderId.Copilot or ProviderId.Codex or ProviderId.Claude or ProviderId.Gemini;
+
+    private FrameworkElement ProviderLogo(ProviderDescriptor descriptor, double size)
+    {
+        if (LogoImages.Get(descriptor.Branding.GlyphKey, this.isDark) is { } source)
         {
             return new Image
             {
-                Width = 32,
+                Width = size,
                 Height = size,
                 Source = source,
                 Stretch = Stretch.Uniform,
                 VerticalAlignment = VerticalAlignment.Center,
-                HorizontalAlignment = HorizontalAlignment.Left,
+                HorizontalAlignment = HorizontalAlignment.Center,
             };
         }
 
         return new Border
         {
-            Width = 18,
-            Height = 18,
-            Margin = new Thickness(0, 0, 14, 0),
-            CornerRadius = new CornerRadius(9),
+            Width = size,
+            Height = size,
+            CornerRadius = new CornerRadius(size / 2),
             Background = new SolidColorBrush(Color.FromRgb(descriptor.Branding.R, descriptor.Branding.G, descriptor.Branding.B)),
             VerticalAlignment = VerticalAlignment.Center,
             Child = new TextBlock
             {
                 Text = InitialFor(descriptor),
-                FontSize = 10,
+                FontSize = 11,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = Brushes.White,
                 HorizontalAlignment = HorizontalAlignment.Center,
@@ -351,64 +390,37 @@ public sealed class SettingsWindow : Window
         return string.IsNullOrWhiteSpace(name) ? "?" : name.Trim()[0].ToString(CultureInfo.CurrentCulture).ToUpper(CultureInfo.CurrentCulture);
     }
 
-    private void ProviderSelectionChanged(object sender, SelectionChangedEventArgs e) => this.RefreshProviderDetail();
-
-    private void RefreshProviderDetail()
-    {
-        this.providerDetail.Children.Clear();
-        if (this.providerList.SelectedItem is not StackPanel { Tag: ProviderDescriptor descriptor })
-        {
-            return;
-        }
-
-        this.providerDetail.Children.Add(Header(descriptor.Metadata.DisplayName));
-        this.providerStatus.Text = this.AuthStateText(descriptor.Id);
-        this.providerStatus.Margin = new Thickness(0, 0, 0, 14);
-        this.providerStatus.TextWrapping = TextWrapping.Wrap;
-        this.providerDetail.Children.Add(this.providerStatus);
-
-        if (descriptor.Id is ProviderId.OpenRouter or ProviderId.Zai or ProviderId.OpenAIAdmin)
-        {
-            this.AddApiKeyEditor(descriptor);
-        }
-        else if (descriptor.Id == ProviderId.Copilot)
-        {
-            this.AddCopilotEditor();
-        }
-        else
-        {
-            this.providerDetail.Children.Add(Text(this.CredentialHint(descriptor.Id)));
-            this.providerDetail.Children.Add(ButtonWithIcon(LogoImages.RefreshGlyph, "Refresh now", async () => await this.RefreshProviderAsync(descriptor.Id)));
-        }
-    }
-
-    private void AddApiKeyEditor(ProviderDescriptor descriptor)
+    private void AddApiKeyEditor(ProviderDescriptor descriptor, Panel detail)
     {
         var entry = this.configStore.EntryFor(this.configStore.Load(), descriptor.Id);
-        this.providerDetail.Children.Add(Text(string.IsNullOrWhiteSpace(entry.ApiKey) ? "No API key saved." : "API key saved: •••"));
-        var password = new PasswordBox { Margin = new Thickness(0, 8, 0, 8), MaxWidth = 300 };
-        this.providerDetail.Children.Add(password);
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal };
+        detail.Children.Add(Text(string.IsNullOrWhiteSpace(entry.ApiKey) ? "No API key saved." : "API key saved: ..."));
+        var password = StyledPasswordBox();
+        detail.Children.Add(password);
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
         buttons.Children.Add(Button("Save", () =>
         {
             this.SaveProviderEntry(descriptor.Id, item => item with { ApiKey = password.Password, Source = "api" });
             password.Clear();
-            this.RefreshProviderDetail();
-        }));
+            this.RefreshProviderCard(descriptor.Id);
+        }, true));
         buttons.Children.Add(Button("Clear", () =>
         {
             this.SaveProviderEntry(descriptor.Id, item => item with { ApiKey = null });
-            this.RefreshProviderDetail();
+            this.RefreshProviderCard(descriptor.Id);
         }));
-        this.providerDetail.Children.Add(buttons);
-        this.providerDetail.Children.Add(ButtonWithIcon(LogoImages.RefreshGlyph, "Refresh now", async () => await this.RefreshProviderAsync(descriptor.Id)));
+        buttons.Children.Add(ButtonWithIcon(LogoImages.RefreshGlyph, "Refresh", async () => await this.RefreshProviderAsync(descriptor.Id)));
+        detail.Children.Add(buttons);
     }
 
-    private void AddCopilotEditor()
+    private void AddCopilotEditor(StackPanel detail, TextBlock status)
     {
-        this.providerDetail.Children.Add(Text("Sign in with GitHub device flow. The token is stored in the Copilot apiKey field."));
-        this.providerDetail.Children.Add(ButtonWithIcon(LogoImages.SignInGlyph, "Sign in with GitHub", async () => await this.StartCopilotSignInAsync()));
-        this.providerDetail.Children.Add(ButtonWithIcon(LogoImages.RefreshGlyph, "Refresh now", async () => await this.RefreshProviderAsync(ProviderId.Copilot)));
+        this.activeCopilotStatus = status;
+        this.activeCopilotDetail = detail;
+        detail.Children.Add(Text("Sign in with GitHub device flow. The token is stored in the Copilot apiKey field."));
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
+        buttons.Children.Add(ButtonWithIcon(LogoImages.SignInGlyph, "Sign in", async () => await this.StartCopilotSignInAsync(), true));
+        buttons.Children.Add(ButtonWithIcon(LogoImages.RefreshGlyph, "Refresh", async () => await this.RefreshProviderAsync(ProviderId.Copilot)));
+        detail.Children.Add(buttons);
     }
 
     private async Task StartCopilotSignInAsync()
@@ -417,59 +429,87 @@ public sealed class SettingsWindow : Window
         this.copilotSignIn?.Dispose();
         this.copilotSignIn = new CancellationTokenSource();
         var ct = this.copilotSignIn.Token;
+        var status = this.activeCopilotStatus;
+        var detail = this.activeCopilotDetail;
 
         try
         {
-            this.providerStatus.Text = "Starting GitHub device flow...";
+            if (status is not null)
+            {
+                status.Text = "Starting GitHub device flow...";
+            }
+
             var info = await CopilotAuth.StartAsync(this.http, ct);
-            this.providerDetail.Children.Add(Header(info.UserCode));
-            this.providerDetail.Children.Add(ButtonWithIcon(LogoImages.CopyGlyph, "Copy code", () => Clipboard.SetText(info.UserCode)));
-            this.providerDetail.Children.Add(ButtonWithIcon(LogoImages.ExternalLinkGlyph, "Open GitHub", () => OpenUri(info.VerificationUri)));
-            this.providerDetail.Children.Add(Button("Cancel", () => this.copilotSignIn?.Cancel()));
+            if (detail is not null)
+            {
+                detail.Children.Add(SectionHeader(info.UserCode));
+                detail.Children.Add(ButtonWithIcon(LogoImages.CopyGlyph, "Copy code", () => Clipboard.SetText(info.UserCode)));
+                detail.Children.Add(ButtonWithIcon(LogoImages.ExternalLinkGlyph, "Open GitHub", () => OpenUri(info.VerificationUri)));
+                detail.Children.Add(Button("Cancel", () => this.copilotSignIn?.Cancel()));
+            }
+
             OpenUri(info.VerificationUri);
-            this.providerStatus.Text = $"Waiting for GitHub authorization. Expires at {info.ExpiresAt.LocalDateTime:t}.";
+            if (status is not null)
+            {
+                status.Text = $"Waiting for GitHub authorization. Expires at {info.ExpiresAt.LocalDateTime:t}.";
+            }
+
             var token = await CopilotAuth.PollAsync(this.http, info, ct);
             if (string.IsNullOrWhiteSpace(token))
             {
-                this.providerStatus.Text = "GitHub authorization expired or was denied.";
+                if (status is not null)
+                {
+                    status.Text = "GitHub authorization expired or was denied.";
+                }
+
                 return;
             }
 
             this.SaveProviderEntry(ProviderId.Copilot, entry => entry with { ApiKey = token, Source = "oauth" });
-            this.providerStatus.Text = "GitHub authorization complete.";
+            if (status is not null)
+            {
+                status.Text = "GitHub authorization complete.";
+            }
+
             await this.RefreshProviderAsync(ProviderId.Copilot);
         }
         catch (OperationCanceledException)
         {
-            this.providerStatus.Text = "GitHub authorization cancelled.";
+            if (status is not null)
+            {
+                status.Text = "GitHub authorization cancelled.";
+            }
         }
         catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException)
         {
-            this.providerStatus.Text = ex.Message;
+            if (status is not null)
+            {
+                status.Text = ex.Message;
+            }
         }
     }
 
-    private string AuthStateText(ProviderId id)
+    private string ProviderSummary(ProviderId id)
     {
         var state = this.usageStore.States.FirstOrDefault(item => item.Provider == id);
         if (state is null)
         {
-            return "No usage state yet.";
+            return "Not configured";
         }
 
         if (state.NeedsAuthentication)
         {
-            return "Needs authentication.";
+            return "Needs authentication";
         }
 
         if (!string.IsNullOrWhiteSpace(state.Error))
         {
-            return $"Stale: {state.Error}";
+            return state.Error;
         }
 
         var identity = state.Snapshot?.Identity;
         var name = identity?.AccountEmail ?? identity?.AccountOrganization ?? identity?.Plan;
-        return string.IsNullOrWhiteSpace(name) ? "OK." : $"OK: {name}";
+        return string.IsNullOrWhiteSpace(name) ? "Signed in" : name;
     }
 
     private string CredentialHint(ProviderId id) => id switch
@@ -488,21 +528,27 @@ public sealed class SettingsWindow : Window
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException)
         {
-            this.providerStatus.Text = ex.Message;
+            if (this.providerCards.TryGetValue(id, out var card))
+            {
+                card.Status.Text = ex.Message;
+            }
         }
     }
 
     private void ShowAbout()
     {
         var panel = Page("About");
+        var group = CardGroup();
         var version = Assembly.GetExecutingAssembly()
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
             ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString()
             ?? "unknown";
-        panel.Children.Add(Text($"Version {version}"));
-        panel.Children.Add(LinkText("Windows-native fork of steipete/CodexBar (MIT)", "https://github.com/steipete/CodexBar"));
-        panel.Children.Add(LinkText("CodexWinBar repository", "https://github.com/steipete/CodexWinBar"));
-        panel.Children.Add(Text("MIT license. Provider credentials remain in upstream-compatible local config files."));
+
+        group.Children.Add(this.HeroCard(version));
+        group.Children.Add(LinkCard("\uE8A7", "GitHub repo", "https://github.com/steipete/CodexWinBar"));
+        group.Children.Add(LinkCard("\uE8A7", "Upstream CodexBar", "https://github.com/steipete/CodexBar"));
+        group.Children.Add(LinkCard("\uE8A7", "MIT license", "https://github.com/steipete/CodexWinBar/blob/main/LICENSE"));
+        panel.Children.Add(group);
         this.SetContent(panel);
     }
 
@@ -526,52 +572,224 @@ public sealed class SettingsWindow : Window
     {
         _ = this.Dispatcher.BeginInvoke(() =>
         {
-            if (this.providerList.IsVisible)
+            if (string.Equals(this.activePane, "Providers", StringComparison.Ordinal))
             {
-                this.RefreshProviderDetail();
+                foreach (var descriptor in this.providers)
+                {
+                    this.RefreshProviderCard(descriptor.Id);
+                }
             }
         });
     }
 
-    private static StackPanel Page(string title)
+    private void RefreshProviderCard(ProviderId id)
     {
-        var panel = new StackPanel { MaxWidth = 460 };
-        panel.Children.Add(Header(title));
+        if (!this.providerCards.TryGetValue(id, out var card))
+        {
+            return;
+        }
+
+        this.FillProviderCard(card.Descriptor, card.Status, card.Detail);
+    }
+
+    private StackPanel Page(string title)
+    {
+        var panel = new StackPanel
+        {
+            MaxWidth = 1000,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        panel.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontSize = 28,
+            FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(0, 0, 0, 24),
+        });
         return panel;
     }
 
-    private static TextBlock Header(string text) => new()
+    private static StackPanel CardGroup() => new()
+    {
+        HorizontalAlignment = HorizontalAlignment.Stretch,
+    };
+
+    private Border SettingCard(string glyph, string title, string? description, FrameworkElement trailing) =>
+        this.SettingCard(LogoImages.IconGlyph(glyph, 20), title, description, trailing);
+
+    private Border SettingCard(FrameworkElement leading, string title, string? description, FrameworkElement trailing)
+    {
+        var content = new Grid();
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(20) });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(16) });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        leading.Width = 20;
+        leading.Height = 20;
+        leading.VerticalAlignment = VerticalAlignment.Center;
+        leading.SetResourceReference(Control.ForegroundProperty, "SettingsForeground");
+        Grid.SetColumn(leading, 0);
+        content.Children.Add(leading);
+
+        var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        text.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontSize = 14,
+            TextWrapping = TextWrapping.Wrap,
+        });
+        if (!string.IsNullOrWhiteSpace(description))
+        {
+            var desc = new TextBlock
+            {
+                Text = description,
+                FontSize = 12,
+                Margin = new Thickness(0, 2, 0, 0),
+                TextWrapping = TextWrapping.Wrap,
+            };
+            desc.SetResourceReference(TextBlock.ForegroundProperty, "SettingsMutedForeground");
+            text.Children.Add(desc);
+        }
+
+        Grid.SetColumn(text, 2);
+        content.Children.Add(text);
+
+        trailing.VerticalAlignment = VerticalAlignment.Center;
+        trailing.Margin = new Thickness(18, 0, 0, 0);
+        Grid.SetColumn(trailing, 3);
+        content.Children.Add(trailing);
+
+        var card = CardBorder();
+        card.Child = content;
+        return card;
+    }
+
+    private Border HeroCard(string version)
+    {
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(48) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(16) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var logo = AppLogo();
+        Grid.SetColumn(logo, 0);
+        grid.Children.Add(logo);
+
+        var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        text.Children.Add(new TextBlock { Text = "CodexWinBar", FontSize = 18, FontWeight = FontWeights.SemiBold });
+        var versionText = new TextBlock { Text = $"Version {version}", FontSize = 12, Margin = new Thickness(0, 2, 0, 0) };
+        versionText.SetResourceReference(TextBlock.ForegroundProperty, "SettingsMutedForeground");
+        text.Children.Add(versionText);
+        Grid.SetColumn(text, 2);
+        grid.Children.Add(text);
+
+        var card = CardBorder();
+        card.MinHeight = 82;
+        card.Child = grid;
+        return card;
+    }
+
+    private static FrameworkElement AppLogo()
+    {
+        try
+        {
+            // app.ico ships as an EmbeddedResource, not a WPF pack resource — decode the stream
+            // and pick the largest frame for crisp 48px display.
+            var assembly = System.Reflection.Assembly.GetExecutingAssembly();
+            var resource = assembly.GetManifestResourceNames()
+                .First(static name => name.EndsWith("app.ico", StringComparison.OrdinalIgnoreCase));
+            using var stream = assembly.GetManifestResourceStream(resource)!;
+            var decoder = new IconBitmapDecoder(stream, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+            var frame = decoder.Frames.OrderByDescending(static f => f.PixelWidth).First();
+            frame.Freeze();
+            return new Image
+            {
+                Width = 48,
+                Height = 48,
+                Source = frame,
+                Stretch = Stretch.Uniform,
+            };
+        }
+        catch (Exception)
+        {
+            return LogoImages.IconGlyph(LogoImages.SettingsGlyph, 48);
+        }
+    }
+
+    private static Border LinkCard(string glyph, string title, string uri)
+    {
+        var icon = LogoImages.IconGlyph(glyph, 20);
+        var titleBlock = new TextBlock { Text = title, FontSize = 14, VerticalAlignment = VerticalAlignment.Center };
+        var arrow = LogoImages.IconGlyph(LogoImages.ExternalLinkGlyph, 14);
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(20) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(16) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(icon, 0);
+        Grid.SetColumn(titleBlock, 2);
+        Grid.SetColumn(arrow, 3);
+        grid.Children.Add(icon);
+        grid.Children.Add(titleBlock);
+        grid.Children.Add(arrow);
+
+        var card = CardBorder();
+        card.Cursor = Cursors.Hand;
+        card.Child = grid;
+        card.MouseLeftButtonUp += (_, _) => OpenUri(uri);
+        return card;
+    }
+
+    private static Border CardBorder()
+    {
+        var border = new Border
+        {
+            CornerRadius = new CornerRadius(4),
+            MinHeight = 64,
+            Padding = new Thickness(16, 14, 16, 14),
+            Margin = new Thickness(0, 0, 0, 2),
+        };
+        border.SetResourceReference(Border.BackgroundProperty, "SettingsCardBackground");
+        border.SetResourceReference(Border.BorderBrushProperty, "SettingsCardBorder");
+        border.BorderThickness = new Thickness(1);
+        return border;
+    }
+
+    private static TextBlock SectionHeader(string text) => new()
     {
         Text = text,
-        FontSize = 22,
+        FontSize = 14,
         FontWeight = FontWeights.SemiBold,
-        Margin = new Thickness(0, 0, 0, 18),
+        Margin = new Thickness(0, 20, 0, 8),
     };
 
-    private static TextBlock Label(string text) => new()
+    private static TextBlock Text(string text)
     {
-        Text = text,
-        Margin = new Thickness(0, 12, 0, 4),
-        Opacity = 0.82,
-    };
-
-    private static TextBlock Text(string text) => new()
-    {
-        Text = text,
-        TextWrapping = TextWrapping.Wrap,
-        Margin = new Thickness(0, 4, 0, 10),
-    };
-
-    private static CheckBox Check(string text, bool isChecked) => new()
-    {
-        Content = text,
-        IsChecked = isChecked,
-        Margin = new Thickness(0, 8, 0, 8),
-    };
+        var block = new TextBlock
+        {
+            Text = text,
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 12,
+            Margin = new Thickness(0, 0, 0, 8),
+        };
+        block.SetResourceReference(TextBlock.ForegroundProperty, "SettingsMutedForeground");
+        return block;
+    }
 
     private static ComboBox Combo<T>(IEnumerable<ComboOption<T>> options, T selected)
     {
-        var box = new ComboBox { MaxWidth = 260, HorizontalAlignment = HorizontalAlignment.Left };
+        var box = new ComboBox
+        {
+            MinWidth = 150,
+            Height = 32,
+            Padding = new Thickness(12, 4, 8, 4),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalContentAlignment = VerticalAlignment.Center,
+        };
+        box.SetResourceReference(Control.BackgroundProperty, "SettingsControlBackground");
+        box.SetResourceReference(Control.BorderBrushProperty, "SettingsControlBorder");
+        box.SetResourceReference(Control.ForegroundProperty, "SettingsForeground");
         foreach (var option in options)
         {
             box.Items.Add(option);
@@ -584,43 +802,78 @@ public sealed class SettingsWindow : Window
         return box;
     }
 
-    private static Button Button(string text, Action action)
+    private static PasswordBox StyledPasswordBox()
     {
-        var button = new Button
+        var box = new PasswordBox
         {
-            Content = text,
-            Margin = new Thickness(0, 8, 8, 8),
-            Padding = new Thickness(12, 6, 12, 6),
+            Height = 32,
+            MaxWidth = 340,
+            Padding = new Thickness(10, 5, 10, 5),
             HorizontalAlignment = HorizontalAlignment.Left,
+            MinWidth = 300,
+            BorderThickness = new Thickness(1),
         };
+        box.SetResourceReference(Control.BackgroundProperty, "SettingsControlBackground");
+        box.SetResourceReference(Control.BorderBrushProperty, "SettingsControlBorder");
+        box.SetResourceReference(Control.ForegroundProperty, "SettingsForeground");
+        box.GotKeyboardFocus += (_, _) => box.BorderThickness = new Thickness(1, 1, 1, 2);
+        box.LostKeyboardFocus += (_, _) => box.BorderThickness = new Thickness(1);
+        return box;
+    }
+
+    private static Button Button(string text, Action action, bool accent = false)
+    {
+        var button = StyledButton(text, accent);
         button.Click += (_, _) => action();
         return button;
     }
 
-    private static Button Button(string text, Func<Task> action)
+    private static Button Button(string text, Func<Task> action, bool accent = false)
     {
-        var button = new Button
-        {
-            Content = text,
-            Margin = new Thickness(0, 8, 8, 8),
-            Padding = new Thickness(12, 6, 12, 6),
-            HorizontalAlignment = HorizontalAlignment.Left,
-        };
+        var button = StyledButton(text, accent);
         button.Click += async (_, _) => await action();
         return button;
     }
 
-    private static Button ButtonWithIcon(string glyph, string text, Action action)
+    private static Button ButtonWithIcon(string glyph, string text, Action action, bool accent = false)
     {
-        var button = Button(text, action);
+        var button = Button(text, action, accent);
         button.Content = IconLabel(glyph, text);
         return button;
     }
 
-    private static Button ButtonWithIcon(string glyph, string text, Func<Task> action)
+    private static Button ButtonWithIcon(string glyph, string text, Func<Task> action, bool accent = false)
     {
-        var button = Button(text, action);
+        var button = Button(text, action, accent);
         button.Content = IconLabel(glyph, text);
+        return button;
+    }
+
+    private static Button StyledButton(string text, bool accent)
+    {
+        var button = new Button
+        {
+            Content = text,
+            Height = 32,
+            MinWidth = 76,
+            Margin = new Thickness(0, 0, 8, 0),
+            Padding = new Thickness(12, 0, 12, 0),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            BorderThickness = new Thickness(1),
+        };
+        if (accent)
+        {
+            button.SetResourceReference(Control.BackgroundProperty, "SettingsAccent");
+            button.Foreground = Brushes.White;
+            button.SetResourceReference(Control.BorderBrushProperty, "SettingsAccent");
+        }
+        else
+        {
+            button.SetResourceReference(Control.BackgroundProperty, "SettingsControlBackground");
+            button.SetResourceReference(Control.BorderBrushProperty, "SettingsControlBorder");
+            button.SetResourceReference(Control.ForegroundProperty, "SettingsForeground");
+        }
+
         return button;
     }
 
@@ -637,22 +890,362 @@ public sealed class SettingsWindow : Window
         return panel;
     }
 
-    private static TextBlock LinkText(string text, string uri)
-    {
-        var block = Text(string.Empty);
-        var link = new Hyperlink(new Run(text)) { NavigateUri = new Uri(uri) };
-        link.RequestNavigate += (_, args) => OpenUri(args.Uri.ToString());
-        block.Inlines.Add(link);
-        return block;
-    }
-
     private static void OpenUri(string uri)
     {
         Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true });
     }
 
+    private static bool SystemAppsUseLightTheme()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+        return key?.GetValue("AppsUseLightTheme") is int value ? value != 0 : true;
+    }
+
+    private static Color ReadAccentColor()
+    {
+        // The user accent is DWM\AccentColor in ABGR layout; ColorizationColor is the window
+        // colorization tint (frequently a dark gray) and must not be used for accent fills.
+        using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\DWM");
+        if (key?.GetValue("AccentColor") is int raw)
+        {
+            var abgr = unchecked((uint)raw);
+            return Color.FromRgb((byte)(abgr & 0xff), (byte)((abgr >> 8) & 0xff), (byte)((abgr >> 16) & 0xff));
+        }
+
+        return Color.FromRgb(0x00, 0x67, 0xC0);
+    }
+
+    // Instance lookup: the theme dictionary is merged into THIS window's resources, not the
+    // Application's — Application.Current.TryFindResource returned null and nulled Foreground.
+    private Brush Brush(string key) => (Brush)this.FindResource(key);
+
     private sealed record ComboOption<T>(string Label, T Value)
     {
         public override string ToString() => this.Label;
+    }
+
+    private sealed class NavRow : Border
+    {
+        private readonly Border indicator;
+        private readonly Border fill;
+        private bool isSelected;
+        private bool isHover;
+
+        public NavRow(string label, string glyph, Action click)
+        {
+            this.Label = label;
+            this.Height = 36;
+            this.CornerRadius = new CornerRadius(4);
+            this.Cursor = Cursors.Hand;
+
+            this.fill = new Border { CornerRadius = new CornerRadius(4), Opacity = 0 };
+            this.fill.SetResourceReference(Border.BackgroundProperty, "SettingsSubtleFill");
+
+            this.indicator = new Border
+            {
+                Width = 3,
+                Height = 16,
+                CornerRadius = new CornerRadius(2),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                Opacity = 0,
+            };
+            this.indicator.SetResourceReference(Border.BackgroundProperty, "SettingsAccent");
+
+            var row = new Grid();
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(16) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.Margin = new Thickness(12, 0, 12, 0);
+            var icon = LogoImages.IconGlyph(glyph, 16);
+            icon.SetResourceReference(Control.ForegroundProperty, "SettingsForeground");
+            var text = new TextBlock
+            {
+                Text = label,
+                FontSize = 14,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Grid.SetColumn(icon, 0);
+            Grid.SetColumn(text, 2);
+            row.Children.Add(icon);
+            row.Children.Add(text);
+
+            var grid = new Grid();
+            grid.Children.Add(this.fill);
+            grid.Children.Add(row);
+            grid.Children.Add(this.indicator);
+            this.Child = grid;
+
+            this.MouseEnter += (_, _) =>
+            {
+                this.isHover = true;
+                this.UpdateVisual();
+            };
+            this.MouseLeave += (_, _) =>
+            {
+                this.isHover = false;
+                this.UpdateVisual();
+            };
+            this.MouseLeftButtonUp += (_, _) => click();
+        }
+
+        public string Label { get; }
+
+        public bool IsSelected
+        {
+            get => this.isSelected;
+            set
+            {
+                this.isSelected = value;
+                this.UpdateVisual();
+            }
+        }
+
+        private void UpdateVisual()
+        {
+            this.fill.Opacity = this.isSelected ? 1 : this.isHover ? 0.62 : 0;
+            this.indicator.Opacity = this.isSelected ? 1 : 0;
+        }
+    }
+
+    private sealed class ToggleSwitch : ToggleButton
+    {
+        private readonly TranslateTransform thumbTransform = new();
+        private readonly TextBlock label = new();
+        private readonly Border track = new();
+        private readonly Border thumb = new();
+        private readonly Action<bool> changed;
+
+        public ToggleSwitch(bool isChecked, Action<bool> changed)
+        {
+            this.changed = changed;
+            this.IsChecked = isChecked;
+            this.Focusable = true;
+            this.Cursor = Cursors.Hand;
+            this.Background = Brushes.Transparent;
+            this.BorderThickness = new Thickness(0);
+
+            // Strip the default ToggleButton chrome (its hover/checked highlight painted
+            // behind our custom track); render only our content.
+            var bareTemplate = new ControlTemplate(typeof(ToggleButton));
+            var presenter = new FrameworkElementFactory(typeof(ContentPresenter));
+            presenter.SetValue(VerticalAlignmentProperty, VerticalAlignment.Center);
+            presenter.SetValue(HorizontalAlignmentProperty, HorizontalAlignment.Center);
+            bareTemplate.VisualTree = presenter;
+            this.Template = bareTemplate;
+
+            this.Content = this.BuildContent();
+            this.Checked += (_, _) => this.SetState(true, true);
+            this.Unchecked += (_, _) => this.SetState(false, true);
+            this.Loaded += (_, _) => this.SetState(this.IsChecked == true, false);
+        }
+
+        private UIElement BuildContent()
+        {
+            var panel = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            this.label.FontSize = 14;
+            this.label.Width = 24;
+            this.label.VerticalAlignment = VerticalAlignment.Center;
+            this.label.SetResourceReference(TextBlock.ForegroundProperty, "SettingsForeground");
+
+            this.track.Width = 40;
+            this.track.Height = 20;
+            this.track.CornerRadius = new CornerRadius(10);
+            this.track.BorderThickness = new Thickness(1);
+            this.track.Margin = new Thickness(12, 0, 0, 0);
+
+            var grid = new Grid();
+            this.thumb.Width = 12;
+            this.thumb.Height = 12;
+            this.thumb.CornerRadius = new CornerRadius(6);
+            this.thumb.HorizontalAlignment = HorizontalAlignment.Left;
+            this.thumb.VerticalAlignment = VerticalAlignment.Center;
+            this.thumb.Margin = new Thickness(4, 0, 0, 0);
+            this.thumb.RenderTransform = this.thumbTransform;
+            grid.Children.Add(this.thumb);
+            this.track.Child = grid;
+
+            panel.Children.Add(this.label);
+            panel.Children.Add(this.track);
+            return panel;
+        }
+
+        private void SetState(bool on, bool notify)
+        {
+            this.label.Text = on ? "On" : "Off";
+            if (on)
+            {
+                this.track.SetResourceReference(Border.BackgroundProperty, "SettingsAccent");
+                this.track.SetResourceReference(Border.BorderBrushProperty, "SettingsAccent");
+                this.thumb.Background = Brushes.White;
+            }
+            else
+            {
+                this.track.Background = Brushes.Transparent;
+                this.track.SetResourceReference(Border.BorderBrushProperty, "SettingsSwitchOffBorder");
+                this.thumb.SetResourceReference(Border.BackgroundProperty, "SettingsSwitchThumb");
+            }
+
+            var animation = new DoubleAnimation(on ? 20 : 0, TimeSpan.FromMilliseconds(120))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+            };
+            this.thumbTransform.BeginAnimation(TranslateTransform.XProperty, animation);
+            if (notify)
+            {
+                this.changed(on);
+            }
+        }
+    }
+
+    private sealed class ProviderCard : Border
+    {
+        private readonly Border divider = new();
+        private readonly TextBlock chevron;
+        private bool expanded;
+
+        public ProviderCard(
+            ProviderDescriptor descriptor,
+            FrameworkElement logo,
+            TextBlock status,
+            ToggleSwitch toggle,
+            StackPanel detail,
+            bool canExpand)
+        {
+            this.Descriptor = descriptor;
+            this.Status = status;
+            this.Detail = detail;
+            this.CornerRadius = new CornerRadius(4);
+            this.MinHeight = 64;
+            this.Padding = new Thickness(16, 14, 16, 14);
+            this.Margin = new Thickness(0, 0, 0, 2);
+            this.BorderThickness = new Thickness(1);
+            this.SetResourceReference(Border.BackgroundProperty, "SettingsCardBackground");
+            this.SetResourceReference(Border.BorderBrushProperty, "SettingsCardBorder");
+
+            var root = new StackPanel();
+            var row = new Grid();
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(24) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(16) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(canExpand ? 28 : 0) });
+
+            Grid.SetColumn(logo, 0);
+            row.Children.Add(logo);
+
+            var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            text.Children.Add(new TextBlock
+            {
+                Text = descriptor.Metadata.DisplayName,
+                FontSize = 14,
+                TextWrapping = TextWrapping.Wrap,
+            });
+            status.FontSize = 12;
+            status.TextWrapping = TextWrapping.Wrap;
+            status.Margin = new Thickness(0, 2, 0, 0);
+            text.Children.Add(status);
+            Grid.SetColumn(text, 2);
+            row.Children.Add(text);
+
+            Grid.SetColumn(toggle, 3);
+            row.Children.Add(toggle);
+
+            this.chevron = LogoImages.IconGlyph("\uE70D", 12);
+            this.chevron.Margin = new Thickness(12, 0, 0, 0);
+            this.chevron.VerticalAlignment = VerticalAlignment.Center;
+            this.chevron.RenderTransformOrigin = new Point(0.5, 0.5);
+            this.chevron.RenderTransform = new RotateTransform(0);
+            this.chevron.Visibility = canExpand ? Visibility.Visible : Visibility.Collapsed;
+            Grid.SetColumn(this.chevron, 4);
+            row.Children.Add(this.chevron);
+
+            root.Children.Add(row);
+            this.divider.Height = 1;
+            this.divider.Margin = new Thickness(40, 14, 0, 0);
+            this.divider.SetResourceReference(Border.BackgroundProperty, "SettingsDivider");
+            this.divider.Visibility = Visibility.Collapsed;
+            detail.Visibility = Visibility.Collapsed;
+            root.Children.Add(this.divider);
+            root.Children.Add(detail);
+            this.Child = root;
+
+            if (canExpand)
+            {
+                this.Cursor = Cursors.Hand;
+                this.MouseLeftButtonUp += (_, args) =>
+                {
+                    if (args.OriginalSource is DependencyObject source && IsInsideToggle(source))
+                    {
+                        return;
+                    }
+
+                    this.IsExpanded = !this.IsExpanded;
+                };
+            }
+        }
+
+        public ProviderDescriptor Descriptor { get; }
+        public TextBlock Status { get; }
+        public StackPanel Detail { get; }
+
+        public bool IsExpanded
+        {
+            get => this.expanded;
+            set
+            {
+                this.expanded = value;
+                this.divider.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+                this.Detail.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+                if (this.chevron.RenderTransform is RotateTransform rotate)
+                {
+                    rotate.BeginAnimation(RotateTransform.AngleProperty, new DoubleAnimation(value ? 90 : 0, TimeSpan.FromMilliseconds(120)));
+                }
+            }
+        }
+
+        private static bool IsInsideToggle(DependencyObject source)
+        {
+            var current = source;
+            while (current is not null)
+            {
+                if (current is ToggleSwitch)
+                {
+                    return true;
+                }
+
+                current = VisualTreeHelper.GetParent(current);
+            }
+
+            return false;
+        }
+    }
+
+    private static class SettingsTheme
+    {
+        public static ResourceDictionary Create(bool dark, Color accent)
+        {
+            var dict = new ResourceDictionary
+            {
+                ["SettingsAccent"] = new SolidColorBrush(accent),
+                ["SettingsForeground"] = new SolidColorBrush(dark ? Colors.White : Color.FromRgb(0x1A, 0x1A, 0x1A)),
+                ["SettingsMutedForeground"] = new SolidColorBrush(dark ? Color.FromArgb(0x99, 0xff, 0xff, 0xff) : Color.FromArgb(0x99, 0x00, 0x00, 0x00)),
+                ["SettingsCardBackground"] = new SolidColorBrush(dark ? Color.FromArgb(0x0f, 0xff, 0xff, 0xff) : Color.FromArgb(0xb3, 0xff, 0xff, 0xff)),
+                ["SettingsCardBorder"] = new SolidColorBrush(dark ? Color.FromArgb(0x26, 0x00, 0x00, 0x00) : Color.FromArgb(0x19, 0x00, 0x00, 0x00)),
+                ["SettingsSubtleFill"] = new SolidColorBrush(dark ? Color.FromArgb(0x14, 0xff, 0xff, 0xff) : Color.FromArgb(0x14, 0x00, 0x00, 0x00)),
+                ["SettingsControlBackground"] = new SolidColorBrush(dark ? Color.FromArgb(0x0d, 0xff, 0xff, 0xff) : Color.FromArgb(0x0d, 0x00, 0x00, 0x00)),
+                ["SettingsControlBorder"] = new SolidColorBrush(dark ? Color.FromArgb(0x26, 0xff, 0xff, 0xff) : Color.FromArgb(0x26, 0x00, 0x00, 0x00)),
+                ["SettingsDivider"] = new SolidColorBrush(dark ? Color.FromArgb(0x14, 0xff, 0xff, 0xff) : Color.FromArgb(0x14, 0x00, 0x00, 0x00)),
+                ["SettingsSwitchOffBorder"] = new SolidColorBrush(dark ? Color.FromArgb(0x73, 0xff, 0xff, 0xff) : Color.FromArgb(0x73, 0x00, 0x00, 0x00)),
+                ["SettingsSwitchThumb"] = new SolidColorBrush(dark ? Colors.White : Color.FromRgb(0x33, 0x33, 0x33)),
+            };
+
+            foreach (var brush in dict.Values.OfType<SolidColorBrush>())
+            {
+                brush.Freeze();
+            }
+
+            return dict;
+        }
     }
 }

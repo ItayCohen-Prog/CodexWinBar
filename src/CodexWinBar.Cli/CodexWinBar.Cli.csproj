@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>CodexWinBar.Cli</RootNamespace>
+    <AssemblyName>codexbar</AssemblyName>
+    <!-- Headless console companion; no WPF/Win32. Windows-targeted to match Core's TFM. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CodexWinBar.Core\CodexWinBar.Core.csproj" />
+    <ProjectReference Include="..\CodexWinBar.Providers\CodexWinBar.Providers.csproj" />
+  </ItemGroup>
+</Project>

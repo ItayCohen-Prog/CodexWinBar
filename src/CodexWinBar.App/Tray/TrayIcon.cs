@@ -7,6 +7,7 @@ using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
+using CodexWinBar.App.Notifications;
 
 namespace CodexWinBar.App.Tray;
 
@@ -29,6 +30,7 @@ public sealed class TrayIcon : IDisposable
     private readonly Action openSettings;
     private readonly Action refresh;
     private readonly Action quit;
+    private readonly Action<string> log;
     private readonly HwndSource messageSource;
     private readonly Icon trayIcon;
     private readonly IntPtr iconHandle;
@@ -36,12 +38,13 @@ public sealed class TrayIcon : IDisposable
     private bool disposed;
 
     /// <summary>Creates and adds the CodexWinBar tray icon.</summary>
-    public TrayIcon(Action leftClick, Action openSettings, Action refresh, Action quit)
+    public TrayIcon(Action leftClick, Action openSettings, Action refresh, Action quit, Action<string> log)
     {
         this.leftClick = leftClick;
         this.openSettings = openSettings;
         this.refresh = refresh;
         this.quit = quit;
+        this.log = log;
         var parameters = new HwndSourceParameters("CodexWinBar.Tray")
         {
             Width = 0,
@@ -60,6 +63,11 @@ public sealed class TrayIcon : IDisposable
     public void ShowBalloon(string title, string text)
     {
         ObjectDisposedException.ThrowIf(this.disposed, this);
+        if (ToastService.Show(title, text, this.log))
+        {
+            return;
+        }
+
         var data = this.BaseData();
         data.uFlags = NifInfo;
         data.szInfoTitle = title;

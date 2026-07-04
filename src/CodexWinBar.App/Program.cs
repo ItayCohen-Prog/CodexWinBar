@@ -27,8 +27,19 @@ public static class Program
 
     /// <summary>Starts CodexWinBar.</summary>
     [STAThread]
-    public static int Main()
+    public static int Main(string[] args)
     {
+        if (args.Contains("--test-notification", StringComparer.OrdinalIgnoreCase))
+        {
+            ToastService.Initialize(message => Debug.WriteLine(message));
+            _ = ToastService.Show(
+                "Test notification",
+                "CodexWinBar notifications are working.",
+                message => Debug.WriteLine(message));
+            Thread.Sleep(3000);
+            return 0;
+        }
+
         singleInstanceMutex = new Mutex(initiallyOwned: true, MutexName, out var createdNew);
         if (!createdNew)
         {
@@ -102,6 +113,7 @@ internal sealed class AppShell : IDisposable
         this.usageStore = new UsageStore(this.descriptors, this.configStore, this.uiStore, this.Log);
         this.widgetHost = new WidgetHost();
         WidgetHost.SetLogger(this.Log);
+        ToastService.Initialize(this.Log);
 
         this.flyout = new FlyoutWindow(
             this.usageStore,
@@ -113,7 +125,8 @@ internal sealed class AppShell : IDisposable
             () => this.ToggleFlyout(this.GetActivationAnchor()),
             this.OpenSettings,
             this.Refresh,
-            this.Quit);
+            this.Quit,
+            this.Log);
         this.quotaNotifier = new QuotaNotifier(this.usageStore, this.configStore, this.uiStore, this.trayIcon);
         this.usageStateChangedHandler = () => this.app.Dispatcher.BeginInvoke(() => this.UpdateWidget());
     }

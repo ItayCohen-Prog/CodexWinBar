@@ -56,6 +56,7 @@ public sealed class FlyoutWindow : Window
     private readonly Action<string>? log;
     private readonly Dictionary<ProviderId, ProviderDescriptor> descriptors;
     private readonly StackPanel stack = new() { Orientation = Orientation.Vertical };
+    private readonly ScrollViewer scroll;
     private readonly ContentControl footerHost = new();
     private readonly Border root;
     private readonly TranslateTransform rootTranslate = new();
@@ -72,6 +73,7 @@ public sealed class FlyoutWindow : Window
     private bool wasActivated;
     private bool isClosing;
     private int animationGeneration;
+    private int measureNonce;
     private ProviderId? currentFocusProvider;
 
     // The HWND is sized ONCE per open session to the tallest provider and never resized during a
@@ -100,6 +102,14 @@ public sealed class FlyoutWindow : Window
         this.Width = FlyoutWidthDip + (ShadowMarginDip * 2);
         this.Background = Brushes.Transparent;
         this.Focusable = true;
+        this.scroll = new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Background = Brushes.Transparent,
+            Padding = new Thickness(0),
+            Focusable = false,
+        };
         this.root = new Border
         {
             Padding = new Thickness(12),
@@ -170,6 +180,12 @@ public sealed class FlyoutWindow : Window
                 this.log?.Invoke($"toggle-rescope at {anchorPhysicalPx}; focus={focusProvider?.ConfigId() ?? "all"}");
                 this.currentFocusProvider = focusProvider;
                 this.RebuildCards();
+                // Re-run session sizing: rescoping between the all-providers view and a single provider
+                // changes the required height, so the window must resize (it is not animated here). On an
+                // already-shown window WPF applies this.Height too late for PlacePhysical's size read, so
+                // resize the HWND explicitly first.
+                this.PrepareSessionWindow(anchorPhysicalPx);
+                this.ResizeHwndHeight(this.sessionWindowHeightDip);
                 this.UpdateLayout();
                 this.PlacePhysical(anchorPhysicalPx);
                 this.openedAt = DateTimeOffset.UtcNow;
@@ -190,14 +206,7 @@ public sealed class FlyoutWindow : Window
             _ = new WindowInteropHelper(this).EnsureHandle();
             this.UpdateLayout();
 
-            // Size the HWND once to the TALLEST provider and freeze it for the whole open session.
-            // The inner panel is bottom-anchored, so a shorter provider simply leaves invisible
-            // transparent space above it; switching only animates the panel, never the window.
-            this.sessionWindowHeightDip = this.MeasureMaxWindowHeightDip();
-            this.SizeToContent = SizeToContent.Manual;
-            this.Height = this.sessionWindowHeightDip;
-            this.root.BeginAnimation(FrameworkElement.HeightProperty, null);
-            this.root.Height = double.NaN;
+            this.PrepareSessionWindow(anchorPhysicalPx);
             this.UpdateLayout();
             var placement = this.ComputePlacement(anchorPhysicalPx, this.sessionWindowHeightDip);
             this.Left = placement.X;
@@ -236,11 +245,14 @@ public sealed class FlyoutWindow : Window
 
     private DockPanel CreateFlyoutLayout()
     {
-        var layout = new DockPanel { LastChildFill = false };
+        var layout = new DockPanel { LastChildFill = true };
         DockPanel.SetDock(this.footerHost, Dock.Bottom);
-        DockPanel.SetDock(this.stack, Dock.Top);
         layout.Children.Add(this.footerHost);
-        layout.Children.Add(this.stack);
+        // The card list scrolls when there are too many providers to fit the screen (the footer stays
+        // pinned below it). For the common short cases the ScrollViewer just reports its content size,
+        // so nothing scrolls and the panel sizes naturally.
+        this.scroll.Content = this.stack;
+        layout.Children.Add(this.scroll);
         return layout;
     }
 
@@ -376,18 +388,45 @@ public sealed class FlyoutWindow : Window
     }
 
     /// <summary>
+    /// Sizes the HWND for the current focus's session: once to the TALLEST provider (so switching only
+    /// animates the bottom-anchored panel, never the window — the jitter-free path), capped to the
+    /// monitor work area so the all-providers view can't exceed the screen. When the current content is
+    /// taller than the capped window it pins the panel to the full height and enables the ScrollViewer;
+    /// otherwise the panel sizes naturally, sits bottom-anchored, and the scrollbar stays hidden.
+    /// Called on open and on rescope so both size correctly.
+    /// </summary>
+    private void PrepareSessionWindow(DrawingRectangle anchorPhysicalPx)
+    {
+        var measuredMax = this.MeasureMaxWindowHeightDip();
+        var heightCap = Math.Max(160, this.WorkAreaHeightDip(anchorPhysicalPx) - 8);
+        this.sessionWindowHeightDip = Math.Min(measuredMax, heightCap);
+        this.SizeToContent = SizeToContent.Manual;
+        this.Height = this.sessionWindowHeightDip;
+
+        var currentNatural = this.MeasureNaturalHeight();
+        var overflow = currentNatural > this.sessionWindowHeightDip + 0.5;
+        this.root.BeginAnimation(FrameworkElement.HeightProperty, null);
+        this.root.Height = overflow ? this.sessionWindowHeightDip - (2 * ShadowMarginDip) : double.NaN;
+        this.scroll.VerticalScrollBarVisibility = overflow ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled;
+    }
+
+    /// <summary>
     /// Measures the panel height (including shadow margins) for every focusable provider and returns
     /// the tallest, so the HWND can be fixed to that size for the whole open session. Rebuilds the
     /// cards for the current focus before returning.
     /// </summary>
     private double MeasureMaxWindowHeightDip()
     {
+        // Release any pinned panel height (e.g. left over from an all-providers overflow session) so
+        // each provider measures its NATURAL content height, not the previous explicit root.Height.
+        this.root.BeginAnimation(FrameworkElement.HeightProperty, null);
+        this.root.Height = double.NaN;
         var savedFocus = this.currentFocusProvider;
-        var focuses = this.store.States.Select(state => (ProviderId?)state.Provider).Distinct().ToList();
-        if (focuses.Count == 0)
-        {
-            focuses.Add(savedFocus);
-        }
+        // Include the current focus (which may be null = the all-providers view opened from the tray,
+        // taller than any single card) alongside every single-provider switch target.
+        var focuses = new List<ProviderId?> { savedFocus };
+        focuses.AddRange(this.store.States.Select(state => (ProviderId?)state.Provider));
+        focuses = focuses.Distinct().ToList();
 
         var max = 0.0;
         foreach (var focus in focuses)
@@ -519,7 +558,14 @@ public sealed class FlyoutWindow : Window
 
     private double MeasureNaturalHeight()
     {
-        this.root.Measure(new Size(this.Width, double.PositiveInfinity));
+        // Vary the available width by a sub-pixel amount each call. RebuildCards dirties only the inner
+        // stack; measuring root with an unchanged (Width, infinity) constraint early-returns the
+        // PREVIOUS provider's cached DesiredSize because the intermediate DockPanel/Border nodes stay
+        // valid at that constraint. A tiny width delta changes the constraint at every level, forcing a
+        // full re-measure down to the rebuilt cards (0.01 DIP is layout-invisible). Without this,
+        // MeasureMaxWindowHeightDip collapsed to the first provider measured and taller switch targets clipped.
+        var width = this.Width - ((this.measureNonce++ & 1) * 0.01);
+        this.root.Measure(new Size(width, double.PositiveInfinity));
         return Math.Max(this.root.DesiredSize.Height, 80);
     }
 
@@ -624,8 +670,47 @@ public sealed class FlyoutWindow : Window
 
         foreach (var extra in snapshot.ExtraWindows)
         {
-            content.Children.Add(this.CreateUsageRow(extra.Title, extra.Window, brand));
+            // A window whose utilization is unknown is a scalar metric (a count/amount like
+            // "3 available" or "$12.30 today"), not a rate limit — render it as a plain label -> value
+            // field, never as a bar (a bar would imply a percentage the provider never reported).
+            if (extra.UsageKnown)
+            {
+                content.Children.Add(this.CreateUsageRow(extra.Title, extra.Window, brand));
+            }
+            else
+            {
+                content.Children.Add(this.CreateValueRow(extra.Title, extra.Window.ResetDescription ?? "—"));
+            }
         }
+    }
+
+    /// <summary>A label -> value field row (no bar), used for scalar metrics and credit balances.</summary>
+    private UIElement CreateValueRow(string label, string value)
+    {
+        var grid = new Grid { Margin = new Thickness(0, 5, 0, 0) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.Children.Add(new TextBlock
+        {
+            Text = label,
+            FontSize = 11,
+            Foreground = this.ResourceBrush("FlyoutForeground"),
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        });
+
+        var valueText = new TextBlock
+        {
+            Text = value,
+            FontSize = 12,
+            Foreground = this.ResourceBrush("FlyoutForeground"),
+            VerticalAlignment = VerticalAlignment.Center,
+            TextAlignment = TextAlignment.Right,
+            Margin = new Thickness(8, 0, 0, 0),
+        };
+        Grid.SetColumn(valueText, 1);
+        grid.Children.Add(valueText);
+        return grid;
     }
 
     private UIElement CreateUsageRow(string label, RateWindow window, Brush brand)
@@ -664,13 +749,10 @@ public sealed class FlyoutWindow : Window
 
     private UIElement CreateCreditsRow(CreditsSnapshot credits)
     {
-        var text = string.Create(CultureInfo.InvariantCulture, $"Credits: {credits.Remaining:0.##} {credits.Unit}");
-        if (credits.Limit is { } limit)
-        {
-            text += string.Create(CultureInfo.InvariantCulture, $" of {limit:0.##}");
-        }
-
-        return new TextBlock { Text = text, Margin = new Thickness(0, 8, 0, 0), FontSize = 11, Foreground = this.ResourceBrush("FlyoutSecondaryForeground") };
+        var value = credits.Limit is { } limit
+            ? string.Create(CultureInfo.InvariantCulture, $"{credits.Remaining:0.##} of {limit:0.##} {credits.Unit}")
+            : string.Create(CultureInfo.InvariantCulture, $"{credits.Remaining:0.##} {credits.Unit}");
+        return this.CreateValueRow("Credits", value);
     }
 
     private UIElement CreateIncidentRow(ProviderStatus status)
@@ -870,6 +952,17 @@ public sealed class FlyoutWindow : Window
         return string.Create(CultureInfo.InvariantCulture, $"resets in {Math.Max(1, (int)Math.Ceiling(remaining.TotalMinutes))}m");
     }
 
+    /// <summary>Height of the work area (screen minus taskbar) for the anchor's monitor, in DIP.</summary>
+    private double WorkAreaHeightDip(DrawingRectangle anchorPhysicalPx)
+    {
+        var monitor = MonitorFromRect(ref anchorPhysicalPx, MonitorDefaultToNearest);
+        var info = MonitorInfo.Create();
+        _ = GetMonitorInfo(monitor, ref info);
+        var transform = (this.source ?? (HwndSource?)PresentationSource.FromVisual(this))?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
+        var heightPx = info.Work.Bottom - info.Work.Top;
+        return heightPx * (transform.M22 <= 0 ? 1 : transform.M22);
+    }
+
     private Point ComputePlacement(DrawingRectangle anchorPhysicalPx, double heightDip)
     {
         var hwnd = new WindowInteropHelper(this).EnsureHandle();
@@ -895,6 +988,24 @@ public sealed class FlyoutWindow : Window
         y = Math.Max(work.Top, Math.Min(y, work.Bottom - heightPx));
         _ = SetWindowPos(hwnd, HwndTop, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
         return transform.Transform(new Point(x, y));
+    }
+
+    /// <summary>
+    /// Resizes the shown HWND to <paramref name="heightDip"/> tall (top-left preserved). Rescope needs
+    /// this because WPF applies a <c>this.Height</c> change too late for the following PlacePhysical
+    /// size read; PlacePhysical then repositions with the corrected size.
+    /// </summary>
+    private void ResizeHwndHeight(double heightDip)
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out var wr))
+        {
+            return;
+        }
+
+        var transform = (this.source ?? (HwndSource?)PresentationSource.FromVisual(this))?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
+        var heightPx = Math.Max(1, (int)Math.Round(heightDip / Math.Max(transform.M22, 0.01)));
+        _ = SetWindowPos(hwnd, HwndTop, wr.Left, wr.Top, wr.Right - wr.Left, heightPx, SwpNoZorder | SwpNoActivate);
     }
 
     /// <summary>

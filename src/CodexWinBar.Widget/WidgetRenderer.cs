@@ -10,6 +10,11 @@ namespace CodexWinBar.Widget;
 internal sealed class WidgetRenderer : IDisposable
 {
     private const int LogoCacheLimit = 32;
+
+    // Above this many providers the rich chip (logo + dual gauge + text) is too wide for a taskbar,
+    // so the widget switches to compact chips: just the logo with a usage underline and incident dot.
+    // The details stay one click away in the flyout. Chosen so the common 1-3 provider setups stay rich.
+    private const int CompactChipThreshold = 3;
     private readonly ThemeReader _theme;
     private readonly Dictionary<(string GlyphKey, int TargetPixelSize, bool Dark), Bitmap> _logoCache = [];
     private Font? _font;
@@ -35,22 +40,26 @@ internal sealed class WidgetRenderer : IDisposable
         // ClearType's subpixel blend assumes an opaque background and produces heavy, fringed text.
         graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
         Font font = GetFont(dpi);
+        bool compact = IsCompact(state);
+        int gap = Px(compact ? 6 : 10, scale);
         int width = 0;
         chipBounds?.Clear();
         for (int i = 0; i < state.Chips.Count; i++)
         {
             WidgetChipState chip = state.Chips[i];
-            int chipWidth = MeasureChip(graphics, font, chip, scale);
+            int chipWidth = compact ? MeasureChipCompact(scale) : MeasureChip(graphics, font, chip, scale);
             chipBounds?.Add(new Rectangle(width, 0, chipWidth, 0));
             width += chipWidth;
             if (i < state.Chips.Count - 1)
             {
-                width += Px(10, scale);
+                width += gap;
             }
         }
 
         return Math.Max(Px(1, scale), width);
     }
+
+    private static bool IsCompact(WidgetRenderState state) => state.Chips.Count > CompactChipThreshold;
 
     internal bool RenderToWindow(IntPtr hwnd, WidgetRenderState state, int width, int height, uint dpi, int hoveredIndex, Point? screenLocation)
     {
@@ -117,15 +126,101 @@ internal sealed class WidgetRenderer : IDisposable
         Font font = GetFont(dpi);
         Color foreground = _theme.SystemUsesLightTheme ? Color.FromArgb(230, 27, 27, 27) : Color.FromArgb(230, 255, 255, 255);
         Color track = Color.FromArgb(64, foreground.R, foreground.G, foreground.B);
+        bool compact = IsCompact(state);
+        int gap = Px(compact ? 6 : 10, scale);
         int x = 0;
         for (int i = 0; i < state.Chips.Count; i++)
         {
             WidgetChipState chip = state.Chips[i];
-            int chipWidth = MeasureChip(graphics, font, chip, scale);
-            DrawChip(graphics, font, chip, new Rectangle(x, 0, chipWidth, height), scale, foreground, track, i == hoveredIndex);
-            x += chipWidth + (i < state.Chips.Count - 1 ? Px(10, scale) : 0);
+            int chipWidth = compact ? MeasureChipCompact(scale) : MeasureChip(graphics, font, chip, scale);
+            Rectangle bounds = new(x, 0, chipWidth, height);
+            if (compact)
+            {
+                DrawChipCompact(graphics, font, chip, bounds, scale, foreground, track, i == hoveredIndex);
+            }
+            else
+            {
+                DrawChip(graphics, font, chip, bounds, scale, foreground, track, i == hoveredIndex);
+            }
+
+            x += chipWidth + (i < state.Chips.Count - 1 ? gap : 0);
         }
     }
+
+    /// <summary>
+    /// Compact chip for the many-providers case: the provider logo with a single usage underline
+    /// (session, falling back to weekly) and an incident dot. No gauges-to-the-side or text, so eight
+    /// providers still fit the taskbar; the numbers live in the flyout one click away.
+    /// </summary>
+    private void DrawChipCompact(Graphics graphics, Font font, WidgetChipState chip, Rectangle bounds, float scale, Color foreground, Color track, bool hover)
+    {
+        float opacity = chip.IsStale ? 0.55f : 1.0f;
+        int padding = Px(6, scale);
+        int glyphSize = Px(18, scale);
+        int gaugeHeight = Px(3, scale);
+        int gaugeGap = Px(2, scale);
+        int contentHeight = glyphSize + gaugeGap + gaugeHeight;
+        int y = bounds.Top + (bounds.Height - contentHeight) / 2;
+        int x = bounds.Left + padding;
+        Color brand = Color.FromArgb(ApplyOpacity(255, opacity), chip.BrandR, chip.BrandG, chip.BrandB);
+
+        if (hover)
+        {
+            using SolidBrush hoverBrush = new(Color.FromArgb(20, foreground.R, foreground.G, foreground.B));
+            FillRoundRect(graphics, hoverBrush, bounds with { Y = Px(3, scale), Height = Math.Max(1, bounds.Height - Px(6, scale)) }, Px(8, scale));
+        }
+
+        if (this.GetLogo(chip.GlyphKey, glyphSize, dark: !_theme.SystemUsesLightTheme) is { } logo)
+        {
+            var previousInterpolation = graphics.InterpolationMode;
+            var previousPixelOffset = graphics.PixelOffsetMode;
+            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            graphics.DrawImage(logo, new Rectangle(x, y, glyphSize, glyphSize));
+            graphics.InterpolationMode = previousInterpolation;
+            graphics.PixelOffsetMode = previousPixelOffset;
+        }
+        else
+        {
+            using SolidBrush brandBrush = new(brand);
+            graphics.FillEllipse(brandBrush, x, y, glyphSize, glyphSize);
+            string letter = string.IsNullOrWhiteSpace(chip.GlyphKey) ? "?" : chip.GlyphKey[..1].ToUpperInvariant();
+            using StringFormat centered = new() { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+            using Font glyphFont = new(font.FontFamily, Math.Max(6, glyphSize * 0.62f), FontStyle.Bold, GraphicsUnit.Pixel);
+            using SolidBrush glyphText = new(Color.FromArgb(ApplyOpacity(230, opacity), 255, 255, 255));
+            graphics.DrawString(letter, glyphFont, glyphText, new RectangleF(x, y, glyphSize, glyphSize), centered);
+        }
+
+        // Usage underline directly beneath the logo. The track is always drawn so every chip shares a
+        // baseline; the brand-colored fill shows session usage (or weekly when there's no session window).
+        int gaugeY = y + glyphSize + gaugeGap;
+        int radius = Math.Max(1, Px(2, scale));
+        using (SolidBrush trackBrush = new(Color.FromArgb(ApplyOpacity(track.A, opacity), track.R, track.G, track.B)))
+        {
+            FillRoundRect(graphics, trackBrush, new Rectangle(x, gaugeY, glyphSize, gaugeHeight), radius);
+        }
+
+        double? usage = chip.SessionPercent ?? chip.WeeklyPercent;
+        if (usage.HasValue)
+        {
+            int fillWidth = Math.Clamp((int)Math.Round(glyphSize * Math.Clamp(usage.Value, 0, 100) / 100.0), 0, glyphSize);
+            if (fillWidth > 0)
+            {
+                using SolidBrush fillBrush = new(brand);
+                FillRoundRect(graphics, fillBrush, new Rectangle(x, gaugeY, fillWidth, gaugeHeight), radius);
+            }
+        }
+
+        if (chip.IncidentLevel > 0)
+        {
+            Color dot = chip.IncidentLevel == 1 ? Color.FromArgb(0xF8, 0xA8, 0x00) : Color.FromArgb(0xC4, 0x2B, 0x1C);
+            using SolidBrush dotBrush = new(Color.FromArgb(ApplyOpacity(255, opacity), dot.R, dot.G, dot.B));
+            int dotSize = Px(5, scale);
+            graphics.FillEllipse(dotBrush, x + glyphSize - dotSize, y - Px(1, scale), dotSize, dotSize);
+        }
+    }
+
+    private static int MeasureChipCompact(float scale) => Px(6, scale) * 2 + Px(18, scale);
 
     private void DrawChip(Graphics graphics, Font font, WidgetChipState chip, Rectangle bounds, float scale, Color foreground, Color track, bool hover)
     {

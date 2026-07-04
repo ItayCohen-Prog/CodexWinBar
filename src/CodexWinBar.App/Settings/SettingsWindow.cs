@@ -378,7 +378,7 @@ public sealed class SettingsWindow : Window
         else
         {
             this.providerDetail.Children.Add(Text(this.CredentialHint(descriptor.Id)));
-            this.providerDetail.Children.Add(Button("Refresh now", async () => await this.RefreshProviderAsync(descriptor.Id)));
+            this.providerDetail.Children.Add(ButtonWithIcon(LogoImages.RefreshGlyph, "Refresh now", async () => await this.RefreshProviderAsync(descriptor.Id)));
         }
     }
 
@@ -401,14 +401,14 @@ public sealed class SettingsWindow : Window
             this.RefreshProviderDetail();
         }));
         this.providerDetail.Children.Add(buttons);
-        this.providerDetail.Children.Add(Button("Refresh now", async () => await this.RefreshProviderAsync(descriptor.Id)));
+        this.providerDetail.Children.Add(ButtonWithIcon(LogoImages.RefreshGlyph, "Refresh now", async () => await this.RefreshProviderAsync(descriptor.Id)));
     }
 
     private void AddCopilotEditor()
     {
         this.providerDetail.Children.Add(Text("Sign in with GitHub device flow. The token is stored in the Copilot apiKey field."));
-        this.providerDetail.Children.Add(Button("Sign in with GitHub", async () => await this.StartCopilotSignInAsync()));
-        this.providerDetail.Children.Add(Button("Refresh now", async () => await this.RefreshProviderAsync(ProviderId.Copilot)));
+        this.providerDetail.Children.Add(ButtonWithIcon(LogoImages.SignInGlyph, "Sign in with GitHub", async () => await this.StartCopilotSignInAsync()));
+        this.providerDetail.Children.Add(ButtonWithIcon(LogoImages.RefreshGlyph, "Refresh now", async () => await this.RefreshProviderAsync(ProviderId.Copilot)));
     }
 
     private async Task StartCopilotSignInAsync()
@@ -423,8 +423,8 @@ public sealed class SettingsWindow : Window
             this.providerStatus.Text = "Starting GitHub device flow...";
             var info = await CopilotAuth.StartAsync(this.http, ct);
             this.providerDetail.Children.Add(Header(info.UserCode));
-            this.providerDetail.Children.Add(Button("Copy code", () => Clipboard.SetText(info.UserCode)));
-            this.providerDetail.Children.Add(Button("Open GitHub", () => OpenUri(info.VerificationUri)));
+            this.providerDetail.Children.Add(ButtonWithIcon(LogoImages.CopyGlyph, "Copy code", () => Clipboard.SetText(info.UserCode)));
+            this.providerDetail.Children.Add(ButtonWithIcon(LogoImages.ExternalLinkGlyph, "Open GitHub", () => OpenUri(info.VerificationUri)));
             this.providerDetail.Children.Add(Button("Cancel", () => this.copilotSignIn?.Cancel()));
             OpenUri(info.VerificationUri);
             this.providerStatus.Text = $"Waiting for GitHub authorization. Expires at {info.ExpiresAt.LocalDateTime:t}.";
@@ -608,6 +608,33 @@ public sealed class SettingsWindow : Window
         };
         button.Click += async (_, _) => await action();
         return button;
+    }
+
+    private static Button ButtonWithIcon(string glyph, string text, Action action)
+    {
+        var button = Button(text, action);
+        button.Content = IconLabel(glyph, text);
+        return button;
+    }
+
+    private static Button ButtonWithIcon(string glyph, string text, Func<Task> action)
+    {
+        var button = Button(text, action);
+        button.Content = IconLabel(glyph, text);
+        return button;
+    }
+
+    private static StackPanel IconLabel(string glyph, string text)
+    {
+        var panel = new StackPanel { Orientation = Orientation.Horizontal };
+        panel.Children.Add(LogoImages.IconGlyph(glyph, 13));
+        panel.Children.Add(new TextBlock
+        {
+            Text = text,
+            Margin = new Thickness(8, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        return panel;
     }
 
     private static TextBlock LinkText(string text, string uri)

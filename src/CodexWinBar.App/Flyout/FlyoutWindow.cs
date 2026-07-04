@@ -438,11 +438,11 @@ public sealed class FlyoutWindow : Window
         var refresh = this.CreateIconButton(this.CreateRefreshGlyph(), "Refresh");
         refresh.Click += async (_, _) => await this.RefreshAllAsync();
         footer.Children.Add(refresh);
-        var settingsButton = this.CreateIconButton(new TextBlock { Text = "\u2699", FontSize = 15 }, "Settings");
+        var settingsButton = this.CreateIconButton(LogoImages.IconGlyph(LogoImages.SettingsGlyph, 13), "Settings");
         settingsButton.Click += (_, _) => { this.HideFlyout("close: settings"); this.openSettings(); };
         Grid.SetColumn(settingsButton, 2);
         footer.Children.Add(settingsButton);
-        var quitButton = this.CreateIconButton(new TextBlock { Text = "X", FontSize = 12, FontWeight = FontWeights.SemiBold }, "Quit");
+        var quitButton = this.CreateIconButton(LogoImages.IconGlyph(LogoImages.CloseGlyph, 10), "Quit");
         quitButton.Click += (_, _) => this.quit();
         Grid.SetColumn(quitButton, 3);
         footer.Children.Add(quitButton);
@@ -451,16 +451,10 @@ public sealed class FlyoutWindow : Window
 
     private FrameworkElement CreateRefreshGlyph()
     {
-        var canvas = new Canvas { Width = 12, Height = 12, RenderTransform = this.refreshRotate, RenderTransformOrigin = new Point(0.5, 0.5) };
-        canvas.Children.Add(new Path
-        {
-            Stroke = this.ResourceBrush("FlyoutForeground"),
-            StrokeThickness = 1.6,
-            StrokeStartLineCap = PenLineCap.Round,
-            StrokeEndLineCap = PenLineCap.Round,
-            Data = Geometry.Parse("M 10 6 A 4 4 0 1 1 7 2"),
-        });
-        return canvas;
+        var glyph = LogoImages.IconGlyph(LogoImages.RefreshGlyph, 13);
+        glyph.RenderTransform = this.refreshRotate;
+        glyph.RenderTransformOrigin = new Point(0.5, 0.5);
+        return glyph;
     }
 
     private Button CreateIconButton(object content, string label)

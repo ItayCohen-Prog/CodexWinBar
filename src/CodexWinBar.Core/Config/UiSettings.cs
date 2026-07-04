@@ -137,6 +137,30 @@ public sealed class UiSettings
     public bool QuotaNotificationsEnabled { get; set; } = true;
 
     /// <summary>
+    /// Default remaining-quota thresholds for session window notifications when a provider has no override.
+    /// </summary>
+    [JsonPropertyName("quotaSessionThresholds")]
+    public IReadOnlyList<int> QuotaSessionThresholds { get; set; } = [50, 20];
+
+    /// <summary>
+    /// Whether default session window quota threshold notifications are enabled.
+    /// </summary>
+    [JsonPropertyName("quotaSessionEnabled")]
+    public bool QuotaSessionEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Default remaining-quota thresholds for weekly window notifications when a provider has no override.
+    /// </summary>
+    [JsonPropertyName("quotaWeeklyThresholds")]
+    public IReadOnlyList<int> QuotaWeeklyThresholds { get; set; } = [50, 20];
+
+    /// <summary>
+    /// Whether default weekly window quota threshold notifications are enabled.
+    /// </summary>
+    [JsonPropertyName("quotaWeeklyEnabled")]
+    public bool QuotaWeeklyEnabled { get; set; } = true;
+
+    /// <summary>
     /// Widget hosting mode.
     /// </summary>
     [JsonPropertyName("widgetMode")]

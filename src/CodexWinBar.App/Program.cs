@@ -114,7 +114,7 @@ internal sealed class AppShell : IDisposable
             this.OpenSettings,
             this.Refresh,
             this.Quit);
-        this.quotaNotifier = new QuotaNotifier(this.usageStore, this.configStore, this.trayIcon);
+        this.quotaNotifier = new QuotaNotifier(this.usageStore, this.configStore, this.uiStore, this.trayIcon);
         this.usageStateChangedHandler = () => this.app.Dispatcher.BeginInvoke(() => this.UpdateWidget());
     }
 

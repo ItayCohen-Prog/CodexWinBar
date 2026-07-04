@@ -17,7 +17,7 @@ public sealed class QuotaNotifier : IDisposable
 
     private readonly IUsageStore store;
     private readonly ConfigStore configStore;
-    private readonly UiSettingsStore uiStore = new(_ => { });
+    private readonly UiSettingsStore uiStore;
     private readonly TrayIcon tray;
     private readonly IReadOnlyDictionary<ProviderId, string> names;
     private readonly object gate = new();
@@ -30,10 +30,11 @@ public sealed class QuotaNotifier : IDisposable
     /// <summary>
     /// Initializes a notifier bound to usage-store state changes.
     /// </summary>
-    public QuotaNotifier(IUsageStore store, ConfigStore cfg, TrayIcon tray)
+    public QuotaNotifier(IUsageStore store, ConfigStore cfg, UiSettingsStore uiStore, TrayIcon tray)
     {
         this.store = store;
         this.configStore = cfg;
+        this.uiStore = uiStore;
         this.tray = tray;
         this.names = ProviderCatalog.CreateAll().ToDictionary(item => item.Id, item => item.Metadata.DisplayName);
         this.store.StateChanged += this.OnStateChanged;
@@ -57,7 +58,8 @@ public sealed class QuotaNotifier : IDisposable
     {
         lock (this.gate)
         {
-            if (!this.uiStore.Load().QuotaNotificationsEnabled)
+            var settings = this.uiStore.Load();
+            if (!settings.QuotaNotificationsEnabled)
             {
                 return;
             }
@@ -66,21 +68,28 @@ public sealed class QuotaNotifier : IDisposable
             foreach (var state in this.store.States)
             {
                 var entry = this.configStore.EntryFor(config, state.Provider);
-                this.ProcessWindow(state.Provider, "session", state.Snapshot?.Primary, entry.QuotaWarnings?.Session);
-                this.ProcessWindow(state.Provider, "weekly", state.Snapshot?.Secondary, entry.QuotaWarnings?.Weekly);
+                this.ProcessWindow(
+                    state.Provider,
+                    "session",
+                    state.Snapshot?.Primary,
+                    ResolveWindow(entry.QuotaWarnings?.Session, settings.QuotaSessionEnabled, settings.QuotaSessionThresholds));
+                this.ProcessWindow(
+                    state.Provider,
+                    "weekly",
+                    state.Snapshot?.Secondary,
+                    ResolveWindow(entry.QuotaWarnings?.Weekly, settings.QuotaWeeklyEnabled, settings.QuotaWeeklyThresholds));
             }
         }
     }
 
-    private void ProcessWindow(ProviderId provider, string slot, RateWindow? window, QuotaWarningWindow? warningWindow)
+    private void ProcessWindow(ProviderId provider, string slot, RateWindow? window, QuotaWarningWindow warningWindow)
     {
         if (window is null || window.IsSyntheticPlaceholder)
         {
             return;
         }
 
-        var normalized = ConfigStore.Normalize(warningWindow);
-        if (normalized.Enabled == false)
+        if (warningWindow.Enabled == false)
         {
             return;
         }
@@ -113,7 +122,7 @@ public sealed class QuotaNotifier : IDisposable
             return;
         }
 
-        foreach (var threshold in normalized.Thresholds ?? QuotaWarningWindow.DefaultThresholds)
+        foreach (var threshold in warningWindow.Thresholds ?? QuotaWarningWindow.DefaultThresholds)
         {
             if (previous > threshold && remaining <= threshold)
             {
@@ -128,6 +137,30 @@ public sealed class QuotaNotifier : IDisposable
             }
         }
     }
+
+    private static QuotaWarningWindow ResolveWindow(
+        QuotaWarningWindow? providerWindow,
+        bool globalEnabled,
+        IReadOnlyList<int> globalThresholds)
+    {
+        if (providerWindow is not null)
+        {
+            return ConfigStore.Normalize(providerWindow);
+        }
+
+        return new QuotaWarningWindow
+        {
+            Enabled = globalEnabled,
+            Thresholds = NormalizeThresholds(globalThresholds),
+        };
+    }
+
+    private static IReadOnlyList<int> NormalizeThresholds(IReadOnlyList<int> thresholds) =>
+        thresholds
+            .Select(threshold => Math.Clamp(threshold, 0, 99))
+            .Distinct()
+            .OrderDescending()
+            .ToArray();
 
     private bool MarkFired(string key)
     {

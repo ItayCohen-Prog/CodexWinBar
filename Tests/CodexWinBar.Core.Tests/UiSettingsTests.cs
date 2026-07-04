@@ -18,6 +18,10 @@ public sealed class UiSettingsTests
         Assert.False(settings.LaunchAtLogin);
         Assert.True(settings.StatusChecksEnabled);
         Assert.True(settings.QuotaNotificationsEnabled);
+        Assert.Equal([50, 20], settings.QuotaSessionThresholds);
+        Assert.True(settings.QuotaSessionEnabled);
+        Assert.Equal([50, 20], settings.QuotaWeeklyThresholds);
+        Assert.True(settings.QuotaWeeklyEnabled);
         Assert.Equal(WidgetMode.Auto, settings.WidgetMode);
         Assert.Equal(WidgetSide.Right, settings.WidgetSide);
     }
@@ -57,6 +61,10 @@ public sealed class UiSettingsTests
         Assert.False(settings.LaunchAtLogin);
         Assert.True(settings.StatusChecksEnabled);
         Assert.True(settings.QuotaNotificationsEnabled);
+        Assert.Equal([50, 20], settings.QuotaSessionThresholds);
+        Assert.True(settings.QuotaSessionEnabled);
+        Assert.Equal([50, 20], settings.QuotaWeeklyThresholds);
+        Assert.True(settings.QuotaWeeklyEnabled);
         Assert.Equal(WidgetMode.Auto, settings.WidgetMode);
         Assert.Equal(expectedWidgetSide, settings.WidgetSide);
     }

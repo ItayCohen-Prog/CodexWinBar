@@ -231,8 +231,7 @@ public sealed class SettingsWindow : Window
         group.Children.Add(this.SettingCard("\uE9D9", "Provider status checks", "Poll provider status pages for incidents",
             new ToggleSwitch(settings.StatusChecksEnabled, isChecked => this.SaveUi(ui => ui.StatusChecksEnabled = isChecked))));
 
-        group.Children.Add(this.SettingCard("\uE7F4", "Quota notifications", "Notify when a usage window crosses a threshold",
-            new ToggleSwitch(settings.QuotaNotificationsEnabled, isChecked => this.SaveUi(ui => ui.QuotaNotificationsEnabled = isChecked))));
+        group.Children.Add(this.CreateQuotaNotificationsCard(settings));
 
         panel.Children.Add(group);
         this.SetContent(panel);
@@ -566,6 +565,82 @@ public sealed class SettingsWindow : Window
         var entry = this.configStore.EntryFor(config, id);
         this.configStore.Save(this.configStore.WithEntry(config, update(entry)));
         this.applySettings();
+    }
+
+    private QuotaSettingsCard CreateQuotaNotificationsCard(UiSettings settings)
+    {
+        var detail = new StackPanel { Margin = new Thickness(40, 14, 0, 0) };
+        detail.Children.Add(Text(
+            "You'll get a notification when a provider's remaining quota drops below each threshold — e.g. at 50%, then again at 20%. Alerts re-arm after every window reset. Providers with their own thresholds in config.json keep them."));
+        detail.Children.Add(this.CreateQuotaWindowRow(
+            "Session window",
+            settings.QuotaSessionEnabled,
+            settings.QuotaSessionThresholds,
+            (ui, enabled) => ui.QuotaSessionEnabled = enabled,
+            (ui, thresholds) => ui.QuotaSessionThresholds = thresholds));
+        detail.Children.Add(this.CreateQuotaWindowRow(
+            "Weekly window",
+            settings.QuotaWeeklyEnabled,
+            settings.QuotaWeeklyThresholds,
+            (ui, enabled) => ui.QuotaWeeklyEnabled = enabled,
+            (ui, thresholds) => ui.QuotaWeeklyThresholds = thresholds));
+
+        QuotaSettingsCard? card = null;
+        var toggle = new ToggleSwitch(settings.QuotaNotificationsEnabled, isChecked =>
+        {
+            this.SaveUi(ui => ui.QuotaNotificationsEnabled = isChecked);
+            if (isChecked && card is not null)
+            {
+                card.IsExpanded = true;
+            }
+        });
+        card = new QuotaSettingsCard(LogoImages.IconGlyph("\uE7F4", 20), toggle, detail);
+        return card;
+    }
+
+    private FrameworkElement CreateQuotaWindowRow(
+        string title,
+        bool isEnabled,
+        IReadOnlyList<int> thresholds,
+        Action<UiSettings, bool> saveEnabled,
+        Action<UiSettings, IReadOnlyList<int>> saveThresholds)
+    {
+        var panel = new StackPanel { Margin = new Thickness(0, 12, 0, 0) };
+        var row = new Grid();
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontSize = 14,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+
+        QuotaThresholdEditor? editor = null;
+        var toggle = new ToggleSwitch(isEnabled, enabled =>
+        {
+            this.SaveUi(ui => saveEnabled(ui, enabled));
+            if (editor is not null)
+            {
+                editor.IsEnabled = enabled;
+                editor.Opacity = enabled ? 1 : 0.55;
+            }
+        });
+        Grid.SetColumn(toggle, 1);
+        row.Children.Add(toggle);
+        panel.Children.Add(row);
+
+        editor = new QuotaThresholdEditor(
+            thresholds,
+            updated => this.SaveUi(ui => saveThresholds(ui, updated)),
+            () => this.Brush("SettingsSubtleFill"),
+            () => this.Brush("SettingsControlBackground"),
+            () => this.Brush("SettingsControlBorder"));
+        editor.Margin = new Thickness(0, 8, 0, 0);
+        editor.IsEnabled = isEnabled;
+        editor.Opacity = isEnabled ? 1 : 0.55;
+        panel.Children.Add(editor);
+        return panel;
     }
 
     private void OnUsageStateChanged()
@@ -1096,6 +1171,293 @@ public sealed class SettingsWindow : Window
             if (notify)
             {
                 this.changed(on);
+            }
+        }
+    }
+
+    private sealed class QuotaSettingsCard : Border
+    {
+        private readonly Border divider = new();
+        private readonly StackPanel detail;
+        private readonly TextBlock chevron;
+        private bool expanded;
+
+        public QuotaSettingsCard(FrameworkElement leading, ToggleSwitch toggle, StackPanel detail)
+        {
+            this.detail = detail;
+            this.CornerRadius = new CornerRadius(4);
+            this.MinHeight = 64;
+            this.Padding = new Thickness(16, 14, 16, 14);
+            this.Margin = new Thickness(0, 0, 0, 2);
+            this.BorderThickness = new Thickness(1);
+            this.Cursor = Cursors.Hand;
+            this.SetResourceReference(Border.BackgroundProperty, "SettingsCardBackground");
+            this.SetResourceReference(Border.BorderBrushProperty, "SettingsCardBorder");
+
+            var root = new StackPanel();
+            var row = new Grid();
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(20) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(16) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(28) });
+
+            leading.Width = 20;
+            leading.Height = 20;
+            leading.VerticalAlignment = VerticalAlignment.Center;
+            leading.SetResourceReference(Control.ForegroundProperty, "SettingsForeground");
+            Grid.SetColumn(leading, 0);
+            row.Children.Add(leading);
+
+            var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            text.Children.Add(new TextBlock
+            {
+                Text = "Quota notifications",
+                FontSize = 14,
+                TextWrapping = TextWrapping.Wrap,
+            });
+            var desc = new TextBlock
+            {
+                Text = "Notify when a usage window crosses a threshold",
+                FontSize = 12,
+                Margin = new Thickness(0, 2, 0, 0),
+                TextWrapping = TextWrapping.Wrap,
+            };
+            desc.SetResourceReference(TextBlock.ForegroundProperty, "SettingsMutedForeground");
+            text.Children.Add(desc);
+            Grid.SetColumn(text, 2);
+            row.Children.Add(text);
+
+            Grid.SetColumn(toggle, 3);
+            row.Children.Add(toggle);
+
+            this.chevron = LogoImages.IconGlyph("\uE70D", 12);
+            this.chevron.Margin = new Thickness(12, 0, 0, 0);
+            this.chevron.VerticalAlignment = VerticalAlignment.Center;
+            this.chevron.RenderTransformOrigin = new Point(0.5, 0.5);
+            this.chevron.RenderTransform = new RotateTransform(0);
+            Grid.SetColumn(this.chevron, 4);
+            row.Children.Add(this.chevron);
+
+            root.Children.Add(row);
+            this.divider.Height = 1;
+            this.divider.Margin = new Thickness(40, 14, 0, 0);
+            this.divider.SetResourceReference(Border.BackgroundProperty, "SettingsDivider");
+            this.divider.Visibility = Visibility.Collapsed;
+            detail.Visibility = Visibility.Collapsed;
+            root.Children.Add(this.divider);
+            root.Children.Add(detail);
+            this.Child = root;
+
+            this.MouseLeftButtonUp += (_, args) =>
+            {
+                if (args.OriginalSource is DependencyObject source && IsInsideInteractiveControl(source))
+                {
+                    return;
+                }
+
+                this.IsExpanded = !this.IsExpanded;
+            };
+        }
+
+        public bool IsExpanded
+        {
+            get => this.expanded;
+            set
+            {
+                this.expanded = value;
+                this.divider.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+                this.detail.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+                if (this.chevron.RenderTransform is RotateTransform rotate)
+                {
+                    rotate.BeginAnimation(RotateTransform.AngleProperty, new DoubleAnimation(value ? 90 : 0, TimeSpan.FromMilliseconds(120)));
+                }
+            }
+        }
+
+        private static bool IsInsideInteractiveControl(DependencyObject source)
+        {
+            var current = source;
+            while (current is not null)
+            {
+                if (current is ToggleSwitch or ButtonBase or TextBox)
+                {
+                    return true;
+                }
+
+                current = VisualTreeHelper.GetParent(current);
+            }
+
+            return false;
+        }
+    }
+
+    private sealed class QuotaThresholdEditor : StackPanel
+    {
+        private readonly Action<IReadOnlyList<int>> save;
+        private readonly Func<Brush> subtleFill;
+        private readonly Func<Brush> controlFill;
+        private readonly Func<Brush> controlBorder;
+        private readonly WrapPanel chips = new();
+        private readonly TextBlock emptyNote = new();
+        private readonly List<int> thresholds;
+        private readonly TextBox input;
+
+        public QuotaThresholdEditor(
+            IReadOnlyList<int> thresholds,
+            Action<IReadOnlyList<int>> save,
+            Func<Brush> subtleFill,
+            Func<Brush> controlFill,
+            Func<Brush> controlBorder)
+        {
+            this.save = save;
+            this.subtleFill = subtleFill;
+            this.controlFill = controlFill;
+            this.controlBorder = controlBorder;
+            this.thresholds = NormalizeThresholds(thresholds).ToList();
+            this.Orientation = Orientation.Vertical;
+
+            this.input = this.CreateInput();
+            this.Children.Add(this.chips);
+            this.emptyNote.Text = "No thresholds set; only depleted and restored alerts will show.";
+            this.emptyNote.FontSize = 11;
+            this.emptyNote.Margin = new Thickness(0, 4, 0, 0);
+            this.emptyNote.TextWrapping = TextWrapping.Wrap;
+            this.emptyNote.SetResourceReference(TextBlock.ForegroundProperty, "SettingsMutedForeground");
+            this.Children.Add(this.emptyNote);
+            this.RenderChips();
+        }
+
+        private void RenderChips()
+        {
+            this.chips.Children.Clear();
+            foreach (var threshold in this.thresholds)
+            {
+                this.chips.Children.Add(this.CreateChip(threshold));
+            }
+
+            this.chips.Children.Add(this.CreateAddControls());
+            this.emptyNote.Visibility = this.thresholds.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private FrameworkElement CreateChip(int threshold)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            row.Children.Add(new TextBlock
+            {
+                Text = $"{threshold.ToString(CultureInfo.InvariantCulture)}%",
+                FontSize = 12,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+
+            var remove = new Button
+            {
+                Content = LogoImages.IconGlyph("\uE711", 10),
+                Width = 20,
+                Height = 20,
+                Margin = new Thickness(6, 0, -4, 0),
+                Padding = new Thickness(0),
+                BorderThickness = new Thickness(0),
+                Background = Brushes.Transparent,
+                Cursor = Cursors.Hand,
+                ToolTip = "Remove",
+            };
+            remove.Click += (_, _) =>
+            {
+                _ = this.thresholds.Remove(threshold);
+                this.SaveAndRender();
+            };
+            remove.MouseEnter += (_, _) => remove.Background = this.controlFill();
+            remove.MouseLeave += (_, _) => remove.Background = Brushes.Transparent;
+            row.Children.Add(remove);
+
+            var chip = new Border
+            {
+                CornerRadius = new CornerRadius(12),
+                Padding = new Thickness(10, 4, 10, 4),
+                Margin = new Thickness(0, 0, 8, 8),
+                Background = this.subtleFill(),
+                Child = row,
+            };
+            return chip;
+        }
+
+        private FrameworkElement CreateAddControls()
+        {
+            var panel = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Margin = new Thickness(0, 0, 0, 8),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            panel.Children.Add(this.input);
+            panel.Children.Add(Button("Add", this.CommitAdd));
+            return panel;
+        }
+
+        private TextBox CreateInput()
+        {
+            var box = new TextBox
+            {
+                Width = 56,
+                Height = 32,
+                Padding = new Thickness(10, 5, 10, 5),
+                Margin = new Thickness(0, 0, 8, 0),
+                BorderThickness = new Thickness(1),
+                VerticalContentAlignment = VerticalAlignment.Center,
+            };
+            box.SetResourceReference(Control.BackgroundProperty, "SettingsControlBackground");
+            box.SetResourceReference(Control.BorderBrushProperty, "SettingsControlBorder");
+            box.SetResourceReference(Control.ForegroundProperty, "SettingsForeground");
+            box.PreviewTextInput += (_, args) => args.Handled = args.Text.Any(static ch => !char.IsDigit(ch));
+            DataObject.AddPastingHandler(box, OnPaste);
+            box.KeyDown += (_, args) =>
+            {
+                if (args.Key == Key.Enter)
+                {
+                    this.CommitAdd();
+                    args.Handled = true;
+                }
+            };
+            return box;
+        }
+
+        private void CommitAdd()
+        {
+            if (!int.TryParse(this.input.Text, CultureInfo.InvariantCulture, out var threshold)
+                || threshold < 0
+                || threshold > 99
+                || this.thresholds.Contains(threshold))
+            {
+                return;
+            }
+
+            this.thresholds.Add(threshold);
+            this.input.Clear();
+            this.SaveAndRender();
+        }
+
+        private void SaveAndRender()
+        {
+            var normalized = NormalizeThresholds(this.thresholds).ToArray();
+            this.thresholds.Clear();
+            this.thresholds.AddRange(normalized);
+            this.save(normalized);
+            this.RenderChips();
+        }
+
+        private static IReadOnlyList<int> NormalizeThresholds(IEnumerable<int> thresholds) =>
+            thresholds
+                .Select(threshold => Math.Clamp(threshold, 0, 99))
+                .Distinct()
+                .OrderDescending()
+                .ToArray();
+
+        private static void OnPaste(object sender, DataObjectPastingEventArgs args)
+        {
+            if (args.DataObject.GetData(typeof(string)) is not string text || text.Any(static ch => !char.IsDigit(ch)))
+            {
+                args.CancelCommand();
             }
         }
     }

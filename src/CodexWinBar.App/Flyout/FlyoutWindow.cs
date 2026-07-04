@@ -43,6 +43,9 @@ public sealed class FlyoutWindow : Window
     private static readonly Duration OpenFadeDuration = new(TimeSpan.FromMilliseconds(120));
     private static readonly Duration CloseSlideDuration = new(TimeSpan.FromMilliseconds(200));
     private static readonly Duration CloseFadeDuration = new(TimeSpan.FromMilliseconds(140));
+    private static readonly Duration SwitchFadeOutDuration = new(TimeSpan.FromMilliseconds(110));
+    private static readonly Duration SwitchResizeDuration = new(TimeSpan.FromMilliseconds(200));
+    private static readonly Duration SwitchFadeInDuration = new(TimeSpan.FromMilliseconds(140));
 
     private static readonly IntPtr HwndTop = IntPtr.Zero;
     private readonly IUsageStore store;
@@ -52,6 +55,7 @@ public sealed class FlyoutWindow : Window
     private readonly Action<string>? log;
     private readonly Dictionary<ProviderId, ProviderDescriptor> descriptors;
     private readonly StackPanel stack = new() { Orientation = Orientation.Vertical };
+    private readonly ContentControl footerHost = new();
     private readonly Border root;
     private readonly TranslateTransform rootTranslate = new();
     private readonly DispatcherTimer countdownTimer;
@@ -94,7 +98,7 @@ public sealed class FlyoutWindow : Window
         {
             Padding = new Thickness(12),
             Margin = new Thickness(ShadowMarginDip),
-            Child = this.stack,
+            Child = this.CreateFlyoutLayout(),
             RenderTransform = this.rootTranslate,
             CornerRadius = new CornerRadius(8),
             BorderThickness = new Thickness(1),
@@ -135,11 +139,26 @@ public sealed class FlyoutWindow : Window
             {
                 if (this.currentFocusProvider == focusProvider)
                 {
+                    if (focusProvider is { } sameProvider)
+                    {
+                        this.log?.Invoke($"toggle-same-provider at {anchorPhysicalPx}; focus={sameProvider.ConfigId()}");
+                        this.openedAt = DateTimeOffset.UtcNow;
+                        return;
+                    }
+
                     this.HideFlyout("close: toggle");
                     return;
                 }
 
-                this.log?.Invoke($"toggle-switch at {anchorPhysicalPx}; focus={focusProvider?.ConfigId() ?? "all"}");
+                if (focusProvider is { } provider && this.currentFocusProvider is { } currentProvider && provider != currentProvider)
+                {
+                    this.log?.Invoke($"toggle-switch at {anchorPhysicalPx}; focus={provider.ConfigId()}");
+                    _ = this.SwitchProviderAsync(provider);
+                    this.openedAt = DateTimeOffset.UtcNow;
+                    return;
+                }
+
+                this.log?.Invoke($"toggle-rescope at {anchorPhysicalPx}; focus={focusProvider?.ConfigId() ?? "all"}");
                 this.currentFocusProvider = focusProvider;
                 this.RebuildCards();
                 this.UpdateLayout();
@@ -156,6 +175,7 @@ public sealed class FlyoutWindow : Window
             this.isDark = !ReadSystemUsesLightTheme();
             this.log?.Invoke($"flyout theme: dark={this.isDark}");
             this.ApplyThemeResources(this.isDark);
+            this.footerHost.Content = null;
             this.RebuildCards();
 
             _ = new WindowInteropHelper(this).EnsureHandle();
@@ -195,6 +215,16 @@ public sealed class FlyoutWindow : Window
         {
             this.log?.Invoke($"toggle exception: {ex}");
         }
+    }
+
+    private DockPanel CreateFlyoutLayout()
+    {
+        var layout = new DockPanel { LastChildFill = false };
+        DockPanel.SetDock(this.footerHost, Dock.Bottom);
+        DockPanel.SetDock(this.stack, Dock.Top);
+        layout.Children.Add(this.footerHost);
+        layout.Children.Add(this.stack);
+        return layout;
     }
 
     private void OnSourceInitialized(object? sender, EventArgs e)
@@ -263,7 +293,58 @@ public sealed class FlyoutWindow : Window
         this.countdownTimer.Stop();
         this.spinnerTimer.Stop();
         var generation = ++this.animationGeneration;
+        this.stack.BeginAnimation(UIElement.OpacityProperty, null);
         this.BeginCloseAnimation(generation);
+    }
+
+    private async Task SwitchProviderAsync(ProviderId focusProvider)
+    {
+        var generation = ++this.animationGeneration;
+        this.rootTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+        this.rootTranslate.Y = 0;
+        this.root.BeginAnimation(UIElement.OpacityProperty, null);
+        this.root.Opacity = 1;
+
+        await this.AnimateCardsOpacityAsync(this.stack.Opacity, 0, SwitchFadeOutDuration, EasingMode.EaseIn, generation).ConfigureAwait(true);
+        if (!this.IsCurrentAnimation(generation))
+        {
+            return;
+        }
+
+        var oldSizeToContent = this.SizeToContent;
+        var currentHeight = this.ActualHeight > 0 ? this.ActualHeight : this.Height;
+        if (double.IsNaN(currentHeight) || currentHeight <= 0)
+        {
+            currentHeight = Math.Max(this.DesiredSize.Height, 80);
+        }
+
+        var currentTop = this.Top;
+        var currentBottom = currentTop + currentHeight;
+        this.SizeToContent = SizeToContent.Manual;
+        this.Height = currentHeight;
+        this.currentFocusProvider = focusProvider;
+        this.RebuildCards();
+        this.UpdateLayout();
+        var targetHeight = this.MeasureNaturalHeight();
+        var targetTop = currentBottom - targetHeight;
+        this.stack.BeginAnimation(UIElement.OpacityProperty, null);
+        this.stack.Opacity = 0;
+
+        var resizeTask = this.AnimateWindowBoundsAsync(currentHeight, targetHeight, currentTop, targetTop, generation);
+        var fadeInTask = this.AnimateCardsOpacityAsync(0, 1, SwitchFadeInDuration, EasingMode.EaseOut, generation);
+        await Task.WhenAll(resizeTask, fadeInTask).ConfigureAwait(true);
+        if (!this.IsCurrentAnimation(generation))
+        {
+            return;
+        }
+
+        this.Height = targetHeight;
+        this.Top = targetTop;
+        this.stack.Opacity = 1;
+        if (oldSizeToContent == SizeToContent.Height)
+        {
+            this.SizeToContent = SizeToContent.Height;
+        }
     }
 
     private void BeginOpenAnimation()
@@ -328,8 +409,11 @@ public sealed class FlyoutWindow : Window
         this.Hide();
         this.rootTranslate.BeginAnimation(TranslateTransform.YProperty, null);
         this.root.BeginAnimation(UIElement.OpacityProperty, null);
+        this.stack.BeginAnimation(UIElement.OpacityProperty, null);
         this.rootTranslate.Y = this.AnimationDistanceDip();
         this.root.Opacity = 0;
+        this.stack.Opacity = 1;
+        this.SizeToContent = SizeToContent.Height;
         this.isClosing = false;
         this.currentFocusProvider = null;
     }
@@ -354,9 +438,85 @@ public sealed class FlyoutWindow : Window
             }
         }
 
-        this.stack.Children.Add(this.CreateFooter());
+        this.footerHost.Content ??= this.CreateFooter();
         this.UpdateRefreshSpinner(states.Any(static state => state.IsRefreshing));
     }
+
+    private double MeasureNaturalHeight()
+    {
+        this.root.Measure(new Size(this.Width, double.PositiveInfinity));
+        return Math.Max(this.root.DesiredSize.Height, 80);
+    }
+
+    private Task AnimateCardsOpacityAsync(double from, double to, Duration duration, EasingMode easingMode, int generation)
+    {
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var animation = new DoubleAnimation
+        {
+            From = from,
+            To = to,
+            Duration = duration,
+            EasingFunction = new CubicEase { EasingMode = easingMode },
+            FillBehavior = FillBehavior.HoldEnd,
+        };
+        animation.Completed += (_, _) =>
+        {
+            if (this.IsCurrentAnimation(generation))
+            {
+                this.stack.Opacity = to;
+            }
+
+            completion.TrySetResult();
+        };
+        this.stack.BeginAnimation(UIElement.OpacityProperty, animation);
+        return completion.Task;
+    }
+
+    private Task AnimateWindowBoundsAsync(double fromHeight, double toHeight, double fromTop, double toTop, int generation)
+    {
+        var heightCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var topCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var easing = new CubicEase { EasingMode = EasingMode.EaseInOut };
+        var height = new DoubleAnimation
+        {
+            From = fromHeight,
+            To = toHeight,
+            Duration = SwitchResizeDuration,
+            EasingFunction = easing,
+            FillBehavior = FillBehavior.HoldEnd,
+        };
+        height.Completed += (_, _) =>
+        {
+            if (this.IsCurrentAnimation(generation))
+            {
+                this.Height = toHeight;
+            }
+
+            heightCompletion.TrySetResult();
+        };
+        var top = new DoubleAnimation
+        {
+            From = fromTop,
+            To = toTop,
+            Duration = SwitchResizeDuration,
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut },
+            FillBehavior = FillBehavior.HoldEnd,
+        };
+        top.Completed += (_, _) =>
+        {
+            if (this.IsCurrentAnimation(generation))
+            {
+                this.Top = toTop;
+            }
+
+            topCompletion.TrySetResult();
+        };
+        this.BeginAnimation(HeightProperty, height);
+        this.BeginAnimation(TopProperty, top);
+        return Task.WhenAll(heightCompletion.Task, topCompletion.Task);
+    }
+
+    private bool IsCurrentAnimation(int generation) => generation == this.animationGeneration && this.IsVisible && !this.isClosing;
 
     private UIElement CreateProviderCard(ProviderState state)
     {

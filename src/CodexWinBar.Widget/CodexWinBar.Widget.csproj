@@ -6,4 +6,8 @@
   <ItemGroup>
     <ProjectReference Include="..\CodexWinBar.Core\CodexWinBar.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- System.Drawing.Common (GDI+) for the layered-window renderer, without WinForms/WPF flags. -->
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App" />
+  </ItemGroup>
 </Project>

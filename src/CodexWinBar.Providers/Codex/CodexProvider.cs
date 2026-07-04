@@ -122,7 +122,7 @@ internal sealed class CodexOAuthFetchStrategy : IFetchStrategy
         }
 
         var refreshed = CodexCredentialStore.MergeRefreshResponse(credentials, body, ctx.Now());
-        CodexCredentialStore.Save(path, refreshed);
+        CodexCredentialStore.Save(path, refreshed, ctx.Log);
         return refreshed;
     }
 
@@ -289,7 +289,7 @@ internal static class CodexCredentialStore
         };
     }
 
-    public static void Save(string path, CodexCredentials credentials)
+    public static void Save(string path, CodexCredentials credentials, Action<string>? log = null)
     {
         var root = credentials.RawRoot.DeepClone().AsObject();
         root["OPENAI_API_KEY"] = null;
@@ -308,18 +308,29 @@ internal static class CodexCredentialStore
             Directory.CreateDirectory(directory);
         }
 
-        var tempPath = path + ".tmp";
-        File.WriteAllText(tempPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-        if (File.Exists(path))
+        var tempPath = Path.Combine(directory ?? ".", $".{Path.GetFileName(path)}.{Path.GetRandomFileName()}.tmp");
+        try
         {
-            File.Replace(tempPath, path, null);
-        }
-        else
-        {
-            File.Move(tempPath, path);
-        }
+            File.WriteAllText(tempPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            if (File.Exists(path))
+            {
+                File.Replace(tempPath, path, null);
+            }
+            else
+            {
+                File.Move(tempPath, path);
+            }
 
-        TryRestrictAcl(path);
+            TryRestrictAcl(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SystemException)
+        {
+            log?.Invoke($"Codex credential write-back skipped. {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            TryDelete(tempPath);
+        }
     }
 
     private static string? ReadString(JsonNode? node) => node?.GetValueKind() == JsonValueKind.String
@@ -337,6 +348,21 @@ internal static class CodexCredentialStore
         return DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed)
             ? parsed.ToUniversalTime()
             : null;
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception)
+        {
+            // Best-effort cleanup only.
+        }
     }
 
     private static void TryRestrictAcl(string path)

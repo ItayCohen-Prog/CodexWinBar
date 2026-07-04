@@ -96,6 +96,7 @@ public sealed class ConfigStore(Func<string, string?> env, string userProfileDir
                 JsonSerializer.Serialize(stream, config, CoreJsonContext.Default.CodexBarConfig);
             }
 
+            RestrictToCurrentUser(tempPath);
             if (File.Exists(path))
             {
                 File.Replace(tempPath, path, null);
@@ -112,8 +113,6 @@ public sealed class ConfigStore(Func<string, string?> env, string userProfileDir
                 File.Delete(tempPath);
             }
         }
-
-        RestrictToCurrentUser(path);
     }
 
     /// <summary>

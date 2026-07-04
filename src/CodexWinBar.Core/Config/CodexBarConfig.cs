@@ -24,5 +24,5 @@ public sealed record CodexBarConfig
     /// Unknown root fields preserved across saves.
     /// </summary>
     [JsonExtensionData]
-    public Dictionary<string, JsonElement>? Extra { get; init; }
+    public Dictionary<string, JsonElement>? Extra { get; set; }
 }

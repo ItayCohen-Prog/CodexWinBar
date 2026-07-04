@@ -129,7 +129,7 @@ internal sealed partial class GeminiOAuthFetchStrategy : IFetchStrategy
             throw new HttpRequestException($"Gemini token refresh failed with HTTP {(int)response.StatusCode}.");
         }
 
-        return PersistRefresh(credentialsPath, body, ctx.Now());
+        return PersistRefresh(credentialsPath, body, ctx.Now(), ctx.Log);
     }
 
     private static async Task<string?> LoadProjectIdAsync(HttpClient http, string accessToken, CancellationToken ct)
@@ -180,7 +180,7 @@ internal sealed partial class GeminiOAuthFetchStrategy : IFetchStrategy
         return new GeminiCredentials(accessToken, refreshToken, expiresAt);
     }
 
-    private static string PersistRefresh(string credentialsPath, string refreshJson, DateTimeOffset now)
+    private static string PersistRefresh(string credentialsPath, string refreshJson, DateTimeOffset now, Action<string> log)
     {
         var existing = JsonNode.Parse(File.ReadAllText(credentialsPath))?.AsObject()
             ?? throw new InvalidOperationException("Gemini credentials file is not a JSON object.");
@@ -200,10 +200,45 @@ internal sealed partial class GeminiOAuthFetchStrategy : IFetchStrategy
             existing["expiry_date"] = now.ToUniversalTime().AddSeconds(expiresIn).ToUnixTimeMilliseconds();
         }
 
-        var tempPath = $"{credentialsPath}.{Guid.NewGuid():N}.tmp";
-        File.WriteAllText(tempPath, existing.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-        File.Move(tempPath, credentialsPath, overwrite: true);
+        var directory = Path.GetDirectoryName(credentialsPath);
+        var tempPath = Path.Combine(directory ?? ".", $".{Path.GetFileName(credentialsPath)}.{Path.GetRandomFileName()}.tmp");
+        try
+        {
+            File.WriteAllText(tempPath, existing.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            if (File.Exists(credentialsPath))
+            {
+                File.Replace(tempPath, credentialsPath, null);
+            }
+            else
+            {
+                File.Move(tempPath, credentialsPath);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SystemException)
+        {
+            log($"Gemini credential write-back skipped. {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            TryDelete(tempPath);
+        }
+
         return accessToken;
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception)
+        {
+            // Best-effort cleanup only.
+        }
     }
 
     private static void ThrowIfUnsupportedAuthType(string settingsPath)

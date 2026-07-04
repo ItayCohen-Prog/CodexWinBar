@@ -54,7 +54,7 @@ internal sealed class ClaudeOAuthFetchStrategy : IFetchStrategy
 
         if (credentials.IsExpired(ctx.Now()))
         {
-            credentials = await RefreshAsync(credentials, path, ctx.Now(), ct).ConfigureAwait(false);
+            credentials = await RefreshAsync(credentials, path, ctx.Now(), ctx.Log, ct).ConfigureAwait(false);
         }
 
         var usageJson = await GetUsageAsync(credentials, ct).ConfigureAwait(false);
@@ -74,6 +74,7 @@ internal sealed class ClaudeOAuthFetchStrategy : IFetchStrategy
         ClaudeCredentials credentials,
         string path,
         DateTimeOffset now,
+        Action<string> log,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(credentials.RefreshToken))
@@ -105,7 +106,7 @@ internal sealed class ClaudeOAuthFetchStrategy : IFetchStrategy
         }
 
         var refreshed = ClaudeCredentialStore.MergeRefreshResponse(credentials, body, now);
-        ClaudeCredentialStore.Save(path, refreshed);
+        ClaudeCredentialStore.Save(path, refreshed, log);
         return refreshed;
     }
 
@@ -220,7 +221,7 @@ internal static class ClaudeCredentialStore
         };
     }
 
-    public static void Save(string path, ClaudeCredentials credentials)
+    public static void Save(string path, ClaudeCredentials credentials, Action<string>? log = null)
     {
         var root = credentials.RawRoot.DeepClone().AsObject();
         var oauth = root["claudeAiOauth"] as JsonObject ?? [];
@@ -238,18 +239,29 @@ internal static class ClaudeCredentialStore
             Directory.CreateDirectory(directory);
         }
 
-        var tempPath = path + ".tmp";
-        File.WriteAllText(tempPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-        if (File.Exists(path))
+        var tempPath = Path.Combine(directory ?? ".", $".{Path.GetFileName(path)}.{Path.GetRandomFileName()}.tmp");
+        try
         {
-            File.Replace(tempPath, path, null);
-        }
-        else
-        {
-            File.Move(tempPath, path);
-        }
+            File.WriteAllText(tempPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            if (File.Exists(path))
+            {
+                File.Replace(tempPath, path, null);
+            }
+            else
+            {
+                File.Move(tempPath, path);
+            }
 
-        TryRestrictAcl(path);
+            TryRestrictAcl(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SystemException)
+        {
+            log?.Invoke($"Claude credential write-back skipped. {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            TryDelete(tempPath);
+        }
     }
 
     private static string? ReadString(JsonNode? node) => node?.GetValueKind() == JsonValueKind.String
@@ -318,6 +330,21 @@ internal static class ClaudeCredentialStore
             : null;
     }
 
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception)
+        {
+            // Best-effort cleanup only.
+        }
+    }
+
     private static void TryRestrictAcl(string path)
     {
         try
@@ -369,7 +396,19 @@ internal static class ClaudeUsageParser
         var root = document.RootElement;
         var fiveHour = ParseWindow(GetProperty(root, "five_hour"), 300);
         var sevenDay = ParseWindow(GetProperty(root, "seven_day"), 10080);
-        var primary = fiveHour ?? sevenDay;
+        RateWindow? primary;
+        RateWindow? secondary;
+        if (fiveHour is not null)
+        {
+            primary = fiveHour;
+            secondary = sevenDay;
+        }
+        else
+        {
+            primary = sevenDay;
+            secondary = null;
+        }
+
         var extras = new List<NamedRateWindow>();
 
         AddExtra(extras, "claude-sonnet-weekly", "Sonnet weekly", ParseWindow(GetProperty(root, "seven_day_sonnet"), 10080));
@@ -383,7 +422,7 @@ internal static class ClaudeUsageParser
         {
             Provider = ProviderId.Claude,
             Primary = primary,
-            Secondary = sevenDay,
+            Secondary = secondary,
             Tertiary = ParseWindow(GetProperty(root, "seven_day_opus"), 10080),
             ExtraWindows = extras,
             Credits = ParseExtraUsage(root, now),

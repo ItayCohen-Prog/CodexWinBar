@@ -77,6 +77,7 @@ internal sealed class AppShell : IDisposable
     private readonly TrayIcon trayIcon;
     private readonly QuotaNotifier quotaNotifier;
     private readonly CancellationTokenSource pipeCancellation = new();
+    private readonly Action usageStateChangedHandler;
     private bool modeBalloonShown;
     private bool disposed;
 
@@ -107,6 +108,7 @@ internal sealed class AppShell : IDisposable
             this.Refresh,
             this.Quit);
         this.quotaNotifier = new QuotaNotifier(this.usageStore, this.configStore, this.trayIcon);
+        this.usageStateChangedHandler = () => this.app.Dispatcher.BeginInvoke(this.UpdateWidget);
     }
 
     public void Start()
@@ -129,10 +131,11 @@ internal sealed class AppShell : IDisposable
 
         this.disposed = true;
         this.pipeCancellation.Cancel();
+        this.usageStore.StateChanged -= this.usageStateChangedHandler;
+        this.usageStore.Dispose();
         this.quotaNotifier.Dispose();
         this.trayIcon.Dispose();
         this.widgetHost.Dispose();
-        this.usageStore.Dispose();
         this.pipeCancellation.Dispose();
         this.log.Dispose();
     }
@@ -154,7 +157,7 @@ internal sealed class AppShell : IDisposable
                 this.app.Dispatcher.BeginInvoke(() => this.trayIcon.ShowBalloon("CodexWinBar", $"Widget mode: {mode}"));
             }
         };
-        this.usageStore.StateChanged += () => this.app.Dispatcher.BeginInvoke(this.UpdateWidget);
+        this.usageStore.StateChanged += this.usageStateChangedHandler;
     }
 
     private void StartWidgetFromSettings()

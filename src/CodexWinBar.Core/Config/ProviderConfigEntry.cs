@@ -70,7 +70,7 @@ public sealed record ProviderConfigEntry
     public string? AwsAuthMode { get; init; }
 
     [JsonExtensionData]
-    public Dictionary<string, JsonElement>? Extra { get; init; }
+    public Dictionary<string, JsonElement>? Extra { get; set; }
 }
 
 /// <summary>Threshold notification settings; upstream defaults are [50, 20], range 0–99.</summary>

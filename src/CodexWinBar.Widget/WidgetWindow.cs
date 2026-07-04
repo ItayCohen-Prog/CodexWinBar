@@ -135,6 +135,15 @@ internal sealed class WidgetWindow : IDisposable
             _controller = IntPtr.Zero;
         }
 
+        // Unregister the window classes (safe now that both windows are destroyed) so the NEXT Start
+        // re-registers them with fresh WndProc delegates. If the class keeps pointing at this instance's
+        // delegates, they get garbage-collected on teardown and a later message into the stale delegate
+        // hard-crashes the whole process via Environment.FailFast — this is what killed the app when the
+        // widget mode was changed (e.g. to Hidden), because a restart's RegisterClassExW silently no-ops
+        // on the still-registered class and the window keeps calling the dead delegate.
+        _ = NativeMethods.UnregisterClassW(WidgetClassName, _module);
+        _ = NativeMethods.UnregisterClassW(ControllerClassName, _module);
+
         _renderer.Dispose();
     }
 

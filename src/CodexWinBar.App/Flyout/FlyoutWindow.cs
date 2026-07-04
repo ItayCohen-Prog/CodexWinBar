@@ -36,6 +36,7 @@ public sealed class FlyoutWindow : Window
     private const int MonitorDefaultToNearest = 0x00000002;
     private const uint SwpNoSize = 0x0001;
     private const uint SwpNoMove = 0x0002;
+    private const uint SwpNoZorder = 0x0004;
     private const uint SwpNoActivate = 0x0010;
     private const double ShadowMarginDip = 16;
     private static readonly TimeSpan OpenDismissGrace = TimeSpan.FromMilliseconds(500);
@@ -65,6 +66,13 @@ public sealed class FlyoutWindow : Window
     private HwndSource? source;
     private IntPtr hookHandle;
     private DateTimeOffset openedAt;
+    private readonly System.Diagnostics.Stopwatch resizeClock = new();
+    private EventHandler? resizeRenderHandler;
+    private double resizeStartHeightPx;
+    private double resizeTargetHeightPx;
+    private double resizeFixedBottomPx;
+    private double resizeXPx;
+    private double resizeWidthPx;
     private UiSettings settings = new();
     private bool isDark;
     private bool isRefreshingUi;
@@ -300,10 +308,18 @@ public sealed class FlyoutWindow : Window
     private async Task SwitchProviderAsync(ProviderId focusProvider)
     {
         var generation = ++this.animationGeneration;
+
+        // Any slide-open translate/opacity leftovers snap to their resting values so the switch
+        // works from a clean state regardless of what was mid-flight.
         this.rootTranslate.BeginAnimation(TranslateTransform.YProperty, null);
         this.rootTranslate.Y = 0;
         this.root.BeginAnimation(UIElement.OpacityProperty, null);
         this.root.Opacity = 1;
+
+        // Freeze auto-sizing NOW so rebuilding to a taller provider does not instantly snap the
+        // window bigger (that snap was the "grow doesn't animate" bug). The physical size is left
+        // exactly as-is; the resize driver takes over from ground truth.
+        this.SizeToContent = SizeToContent.Manual;
 
         await this.AnimateCardsOpacityAsync(this.stack.Opacity, 0, SwitchFadeOutDuration, EasingMode.EaseIn, generation).ConfigureAwait(true);
         if (!this.IsCurrentAnimation(generation))
@@ -311,41 +327,116 @@ public sealed class FlyoutWindow : Window
             return;
         }
 
-        var oldSizeToContent = this.SizeToContent;
-        var currentHeight = this.ActualHeight > 0 ? this.ActualHeight : this.Height;
-        if (double.IsNaN(currentHeight) || currentHeight <= 0)
-        {
-            currentHeight = Math.Max(this.DesiredSize.Height, 80);
-        }
-
-        var currentTop = this.Top;
-        var currentBottom = currentTop + currentHeight;
-        this.SizeToContent = SizeToContent.Manual;
-        this.Height = currentHeight;
         this.currentFocusProvider = focusProvider;
         this.RebuildCards();
         this.UpdateLayout();
-        var targetHeight = this.MeasureNaturalHeight();
-        var targetTop = currentBottom - targetHeight;
-        this.stack.BeginAnimation(UIElement.OpacityProperty, null);
-        this.stack.Opacity = 0;
+        var targetHeightDip = this.MeasureNaturalHeight();
 
-        var resizeTask = this.AnimateWindowBoundsAsync(currentHeight, targetHeight, currentTop, targetTop, generation);
-        var fadeInTask = this.AnimateCardsOpacityAsync(0, 1, SwitchFadeInDuration, EasingMode.EaseOut, generation);
-        await Task.WhenAll(resizeTask, fadeInTask).ConfigureAwait(true);
-        if (!this.IsCurrentAnimation(generation))
+        // Drive the resize in PHYSICAL pixels off the real current window rect (immune to the WPF
+        // Top/Height DP base-value snap that made rapid switches sink the window under the taskbar).
+        this.StartWindowResizePhysical(targetHeightDip, generation);
+
+        await this.AnimateCardsOpacityAsync(0, 1, SwitchFadeInDuration, EasingMode.EaseOut, generation).ConfigureAwait(true);
+    }
+
+    /// <summary>
+    /// Animates the window height in physical pixels with the bottom edge pinned, retargetable
+    /// mid-flight. Uses a single CompositionTarget.Rendering driver + SetWindowPos so it never
+    /// fights WPF's DIP Top/Height DPs.
+    /// </summary>
+    private void StartWindowResizePhysical(double targetHeightDip, int generation)
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out var wr))
         {
             return;
         }
 
-        this.Height = targetHeight;
-        this.Top = targetTop;
-        this.stack.Opacity = 1;
-        if (oldSizeToContent == SizeToContent.Height)
+        var transform = (this.source ?? (HwndSource?)PresentationSource.FromVisual(this))?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
+        var dipToPx = 1.0 / Math.Max(transform.M22, 0.01);
+
+        this.resizeStartHeightPx = wr.Bottom - wr.Top;
+        this.resizeTargetHeightPx = Math.Max(1, targetHeightDip * dipToPx);
+        this.resizeFixedBottomPx = wr.Bottom;                 // ground-truth bottom edge, stays pinned
+        this.resizeXPx = wr.Left;
+        this.resizeWidthPx = wr.Right - wr.Left;
+        this.resizeClock.Restart();
+
+        if (this.resizeRenderHandler is null)
         {
-            this.SizeToContent = SizeToContent.Height;
+            this.resizeRenderHandler = (_, _) => this.OnResizeRendering(generation);
+            CompositionTarget.Rendering += this.resizeRenderHandler;
         }
     }
+
+    private void OnResizeRendering(int generation)
+    {
+        if (!this.IsCurrentAnimation(generation))
+        {
+            this.StopWindowResize();
+            return;
+        }
+
+        var duration = SwitchResizeDuration.TimeSpan.TotalMilliseconds;
+        var t = duration <= 0 ? 1.0 : Math.Clamp(this.resizeClock.Elapsed.TotalMilliseconds / duration, 0, 1);
+        var eased = EaseInOutCubic(t);
+        var heightPx = this.resizeStartHeightPx + ((this.resizeTargetHeightPx - this.resizeStartHeightPx) * eased);
+        var yPx = this.resizeFixedBottomPx - heightPx;
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd != IntPtr.Zero)
+        {
+            _ = SetWindowPos(
+                hwnd,
+                HwndTop,
+                (int)Math.Round(this.resizeXPx),
+                (int)Math.Round(yPx),
+                (int)Math.Round(this.resizeWidthPx),
+                (int)Math.Round(heightPx),
+                SwpNoZorder | SwpNoActivate);
+        }
+
+        if (t >= 1.0)
+        {
+            this.StopWindowResize();
+        }
+    }
+
+    private void StopWindowResize()
+    {
+        if (this.resizeRenderHandler is not null)
+        {
+            CompositionTarget.Rendering -= this.resizeRenderHandler;
+            this.resizeRenderHandler = null;
+        }
+
+        this.resizeClock.Reset();
+
+        // Deliberately DO NOT restore SizeToContent=Height here: WPF auto-sizing anchors at the
+        // window TOP, which shoves the bottom edge downward — across rapid switches that sinks the
+        // flyout under the taskbar. The window stays Manual for the whole open session; CompleteHide
+        // restores auto-sizing when the flyout actually closes. Pin the final rect exactly so the
+        // bottom is authoritative for the next switch's ground-truth read.
+        if (this.IsVisible && !this.isClosing)
+        {
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd != IntPtr.Zero)
+            {
+                var y = this.resizeFixedBottomPx - this.resizeTargetHeightPx;
+                _ = SetWindowPos(
+                    hwnd,
+                    HwndTop,
+                    (int)Math.Round(this.resizeXPx),
+                    (int)Math.Round(y),
+                    (int)Math.Round(this.resizeWidthPx),
+                    (int)Math.Round(this.resizeTargetHeightPx),
+                    SwpNoZorder | SwpNoActivate);
+            }
+        }
+    }
+
+    private static double EaseInOutCubic(double t) =>
+        t < 0.5 ? 4 * t * t * t : 1 - (Math.Pow((-2 * t) + 2, 3) / 2);
 
     private void BeginOpenAnimation()
     {
@@ -405,6 +496,7 @@ public sealed class FlyoutWindow : Window
             return;
         }
 
+        this.StopWindowResize();
         this.UninstallMouseHook();
         this.Hide();
         this.rootTranslate.BeginAnimation(TranslateTransform.YProperty, null);
@@ -470,50 +562,6 @@ public sealed class FlyoutWindow : Window
         };
         this.stack.BeginAnimation(UIElement.OpacityProperty, animation);
         return completion.Task;
-    }
-
-    private Task AnimateWindowBoundsAsync(double fromHeight, double toHeight, double fromTop, double toTop, int generation)
-    {
-        var heightCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var topCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var easing = new CubicEase { EasingMode = EasingMode.EaseInOut };
-        var height = new DoubleAnimation
-        {
-            From = fromHeight,
-            To = toHeight,
-            Duration = SwitchResizeDuration,
-            EasingFunction = easing,
-            FillBehavior = FillBehavior.HoldEnd,
-        };
-        height.Completed += (_, _) =>
-        {
-            if (this.IsCurrentAnimation(generation))
-            {
-                this.Height = toHeight;
-            }
-
-            heightCompletion.TrySetResult();
-        };
-        var top = new DoubleAnimation
-        {
-            From = fromTop,
-            To = toTop,
-            Duration = SwitchResizeDuration,
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut },
-            FillBehavior = FillBehavior.HoldEnd,
-        };
-        top.Completed += (_, _) =>
-        {
-            if (this.IsCurrentAnimation(generation))
-            {
-                this.Top = toTop;
-            }
-
-            topCompletion.TrySetResult();
-        };
-        this.BeginAnimation(HeightProperty, height);
-        this.BeginAnimation(TopProperty, top);
-        return Task.WhenAll(heightCompletion.Task, topCompletion.Task);
     }
 
     private bool IsCurrentAnimation(int generation) => generation == this.animationGeneration && this.IsVisible && !this.isClosing;

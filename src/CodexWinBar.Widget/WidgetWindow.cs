@@ -28,6 +28,7 @@ internal sealed class WidgetWindow : IDisposable
     private const uint RecreateMessage = NativeMethods.WM_APP + 3;
     private const nuint RepositionTimer = 10;
     private const nuint OverlayPollTimer = 11;
+    private const nuint EmbedProbeRetryTimer = 12;
 
     private readonly WidgetHost _host;
     private readonly ThemeReader _theme = new();
@@ -38,6 +39,7 @@ internal sealed class WidgetWindow : IDisposable
     private readonly IntPtr _module;
     private WidgetMode _requestedMode;
     private WidgetMode _effectiveMode = WidgetMode.Hidden;
+    private WidgetMode? _attemptedMode;
     private WidgetRenderState _state = new() { Chips = [] };
     private IntPtr _controller;
     private IntPtr _widget;
@@ -57,6 +59,7 @@ internal sealed class WidgetWindow : IDisposable
     private DateTime _displayChangingUntilUtc;
     private Rectangle _placementRect;
     private Rectangle _screenRect;
+    private readonly List<Rectangle> _chipBounds = [];
 
     internal WidgetWindow(WidgetHost host, WidgetMode requestedMode)
     {
@@ -220,8 +223,9 @@ internal sealed class WidgetWindow : IDisposable
     private void CreateEmbedded(TaskbarInfo info)
     {
         DestroyWidget();
+        _attemptedMode = WidgetMode.Embedded;
         _height = Math.Max(1, info.ClientRect.Height);
-        _width = _renderer.Measure(_state, _dpi);
+        _width = _renderer.Measure(_state, _dpi, _chipBounds);
         _widget = NativeMethods.CreateWindowExW(NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_LAYERED, WidgetClassName, null, NativeMethods.WS_POPUP, 0, 0, _width, _height, IntPtr.Zero, IntPtr.Zero, _module, IntPtr.Zero);
         IntPtr oldParent = NativeMethods.SetParent(_widget, info.TaskbarHwnd);
 
@@ -240,6 +244,7 @@ internal sealed class WidgetWindow : IDisposable
         if (valid)
         {
             _probeFailures = 0;
+            _attemptedMode = null;
             SetEffectiveMode(WidgetMode.Embedded, "embedded");
             return;
         }
@@ -260,7 +265,7 @@ internal sealed class WidgetWindow : IDisposable
         _taskbar = info.TaskbarHwnd;
         _tray = info.TrayHwnd;
         _height = Math.Max(1, info.ClientRect.Height);
-        _width = _renderer.Measure(_state, _dpi);
+        _width = _renderer.Measure(_state, _dpi, _chipBounds);
         _widget = NativeMethods.CreateWindowExW(NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_TOPMOST | NativeMethods.WS_EX_LAYERED, WidgetClassName, null, NativeMethods.WS_POPUP, 0, 0, _width, _height, IntPtr.Zero, IntPtr.Zero, _module, IntPtr.Zero);
         PositionOverlay(info);
         _ = NativeMethods.SetWindowPos(_widget, NativeMethods.HWND_TOPMOST, _screenRect.X, _screenRect.Y, _width, _height, NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
@@ -271,6 +276,12 @@ internal sealed class WidgetWindow : IDisposable
 
     private void DestroyWidget()
     {
+        if (_controller != IntPtr.Zero)
+        {
+            _ = NativeMethods.KillTimer(_controller, EmbedProbeRetryTimer);
+        }
+
+        _attemptedMode = null;
         if (_widget != IntPtr.Zero)
         {
             _ = NativeMethods.DestroyWindow(_widget);
@@ -307,7 +318,9 @@ internal sealed class WidgetWindow : IDisposable
             return false;
         }
 
-        Point location = _effectiveMode == WidgetMode.Embedded ? Point.Empty : _screenRect.Location;
+        long style = NativeMethods.GetWindowLongPtrW(_widget, NativeMethods.GWL_STYLE).ToInt64();
+        bool embeddedChild = (style & NativeMethods.WS_CHILD) != 0;
+        Point? location = embeddedChild ? null : _screenRect.Location;
         return _renderer.RenderToWindow(_widget, _state, _width, _height, _dpi, _hoveredIndex, location);
     }
 
@@ -361,7 +374,14 @@ internal sealed class WidgetWindow : IDisposable
         if (_probeFailures >= 2)
         {
             _overlayFallbackForSession = true;
+            _attemptedMode = null;
             CreateOverlayOrHidden(reason);
+            return;
+        }
+
+        if (_controller != IntPtr.Zero && _attemptedMode == WidgetMode.Embedded && _widget != IntPtr.Zero)
+        {
+            _ = NativeMethods.SetTimer(_controller, EmbedProbeRetryTimer, 500, IntPtr.Zero);
         }
     }
 
@@ -387,13 +407,19 @@ internal sealed class WidgetWindow : IDisposable
         }
 
         _height = Math.Max(1, info.ClientRect.Height);
-        _width = _renderer.Measure(_state, _dpi);
-        if (_effectiveMode == WidgetMode.Embedded)
+        _width = _renderer.Measure(_state, _dpi, _chipBounds);
+        if (_effectiveMode == WidgetMode.Embedded || _attemptedMode == WidgetMode.Embedded)
         {
             PositionEmbedded(info);
             _ = NativeMethods.SetWindowPos(_widget, NativeMethods.HWND_TOP, _placementRect.X, _placementRect.Y, _width, _height, NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
             bool rendered = Render();
-            if (!ProbeEmbedded(IntPtr.Zero + 1, rendered))
+            if (ProbeEmbedded(IntPtr.Zero + 1, rendered))
+            {
+                _probeFailures = 0;
+                _attemptedMode = null;
+                SetEffectiveMode(WidgetMode.Embedded, "embedded");
+            }
+            else
             {
                 CountProbeFailure("embedded reprobe failed");
             }
@@ -430,6 +456,11 @@ internal sealed class WidgetWindow : IDisposable
         }
 
         _effectiveMode = mode;
+        if (mode != WidgetMode.Hidden)
+        {
+            _attemptedMode = null;
+        }
+
         _host.SetEffectiveModeFromThread(mode, reason);
     }
 
@@ -479,6 +510,11 @@ internal sealed class WidgetWindow : IDisposable
                     {
                         UpdateOverlayVisibility();
                     }
+                    else if ((nuint)wParam == EmbedProbeRetryTimer)
+                    {
+                        _ = NativeMethods.KillTimer(hwnd, EmbedProbeRetryTimer);
+                        Reposition();
+                    }
 
                     return IntPtr.Zero;
                 case NativeMethods.WM_DESTROY:
@@ -502,7 +538,7 @@ internal sealed class WidgetWindow : IDisposable
             {
                 case NativeMethods.WM_MOUSEMOVE:
                     TrackMouse(hwnd);
-                    _hoveredIndex = HitTest(NativeMethods.GetCursorPos(out NativeMethods.POINT point) ? new Point(point.X, point.Y) : Point.Empty);
+                    _hoveredIndex = HitTest(ClientPointFromLParam(lParam));
                     _ = Render();
                     return IntPtr.Zero;
                 case NativeMethods.WM_MOUSELEAVE:
@@ -511,6 +547,7 @@ internal sealed class WidgetWindow : IDisposable
                     _ = Render();
                     return IntPtr.Zero;
                 case NativeMethods.WM_LBUTTONUP:
+                    WidgetLog.Write("widget clicked");
                     _host.RaiseClicked(_screenRect);
                     return IntPtr.Zero;
                 case NativeMethods.WM_RBUTTONUP:
@@ -544,48 +581,31 @@ internal sealed class WidgetWindow : IDisposable
         _trackingMouse = NativeMethods.TrackMouseEvent(ref track);
     }
 
-    private int HitTest(Point screenPoint)
+    private int HitTest(Point clientPoint)
     {
         if (_state.Chips.Count == 0)
         {
             return -1;
         }
 
-        int localX = screenPoint.X - _screenRect.X;
-        using Bitmap bitmap = new(1, 1);
-        using Graphics graphics = Graphics.FromImage(bitmap);
-        using Font font = new("Segoe UI", 12.5f * _dpi / 96f, FontStyle.Regular, GraphicsUnit.Pixel);
-        int x = 0;
-        float scale = _dpi / 96f;
-        for (int i = 0; i < _state.Chips.Count; i++)
+        if (_chipBounds.Count != _state.Chips.Count)
         {
-            int width = ApproximateChipWidth(graphics, font, _state.Chips[i], scale);
-            if (localX >= x && localX <= x + width)
+            _ = _renderer.Measure(_state, _dpi, _chipBounds);
+        }
+
+        for (int i = 0; i < _chipBounds.Count; i++)
+        {
+            Rectangle bounds = _chipBounds[i] with { Height = _height };
+            if (bounds.Contains(clientPoint))
             {
                 return i;
             }
-
-            x += width + Scale(10);
         }
 
         return -1;
     }
 
-    private static int ApproximateChipWidth(Graphics graphics, Font font, WidgetChipState chip, float scale)
-    {
-        int width = (int)Math.Round(16 * scale) + (int)Math.Round(12 * scale);
-        if (chip.SessionPercent.HasValue || chip.WeeklyPercent.HasValue)
-        {
-            width += (int)Math.Round(22 * scale);
-        }
-
-        if (!string.IsNullOrWhiteSpace(chip.Text))
-        {
-            width += (int)Math.Ceiling(graphics.MeasureString(chip.Text, font).Width) + (int)Math.Round(6 * scale);
-        }
-
-        return width;
-    }
+    private static Point ClientPointFromLParam(IntPtr lParam) => new((short)(lParam.ToInt64() & 0xFFFF), (short)((lParam.ToInt64() >> 16) & 0xFFFF));
 
     private void WinEventProc(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
     {

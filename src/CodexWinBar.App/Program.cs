@@ -99,7 +99,8 @@ internal sealed class AppShell : IDisposable
             this.usageStore,
             this.uiStore,
             this.OpenSettings,
-            this.Quit);
+            this.Quit,
+            this.Log);
         this.trayIcon = new TrayIcon(
             () => this.ToggleFlyout(FallbackAnchor),
             this.OpenSettings,
@@ -138,7 +139,11 @@ internal sealed class AppShell : IDisposable
 
     private void WireEvents()
     {
-        this.widgetHost.Clicked += rect => this.app.Dispatcher.BeginInvoke(() => this.ToggleFlyout(rect));
+        this.widgetHost.Clicked += rect => this.app.Dispatcher.BeginInvoke(() =>
+        {
+            this.Log("widget Clicked event received");
+            this.ToggleFlyout(rect);
+        });
         this.widgetHost.RightClicked += () => this.app.Dispatcher.BeginInvoke(() => this.trayIcon.ShowContextMenu());
         this.widgetHost.ModeChanged += (mode, reason) =>
         {

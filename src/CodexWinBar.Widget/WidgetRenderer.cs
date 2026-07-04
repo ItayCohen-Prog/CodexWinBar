@@ -2,6 +2,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
+using System.Runtime.InteropServices;
 
 namespace CodexWinBar.Widget;
 
@@ -19,16 +20,24 @@ internal sealed class WidgetRenderer : IDisposable
 
     internal int Measure(WidgetRenderState state, uint dpi)
     {
+        return Measure(state, dpi, null);
+    }
+
+    internal int Measure(WidgetRenderState state, uint dpi, List<Rectangle>? chipBounds)
+    {
         float scale = Scale(dpi);
         using Bitmap bitmap = new(1, 1);
         using Graphics graphics = Graphics.FromImage(bitmap);
         graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
         Font font = GetFont(dpi);
         int width = 0;
+        chipBounds?.Clear();
         for (int i = 0; i < state.Chips.Count; i++)
         {
             WidgetChipState chip = state.Chips[i];
-            width += MeasureChip(graphics, font, chip, scale);
+            int chipWidth = MeasureChip(graphics, font, chip, scale);
+            chipBounds?.Add(new Rectangle(width, 0, chipWidth, 0));
+            width += chipWidth;
             if (i < state.Chips.Count - 1)
             {
                 width += Px(10, scale);
@@ -38,7 +47,7 @@ internal sealed class WidgetRenderer : IDisposable
         return Math.Max(Px(1, scale), width);
     }
 
-    internal bool RenderToWindow(IntPtr hwnd, WidgetRenderState state, int width, int height, uint dpi, int hoveredIndex, Point screenLocation)
+    internal bool RenderToWindow(IntPtr hwnd, WidgetRenderState state, int width, int height, uint dpi, int hoveredIndex, Point? screenLocation)
     {
         if (width <= 0 || height <= 0)
         {
@@ -57,7 +66,6 @@ internal sealed class WidgetRenderer : IDisposable
         IntPtr oldObject = NativeMethods.SelectObject(memoryDc, bitmapHandle);
         try
         {
-            NativeMethods.POINT destination = new() { X = screenLocation.X, Y = screenLocation.Y };
             NativeMethods.SIZE size = new() { CX = width, CY = height };
             NativeMethods.POINT source = new() { X = 0, Y = 0 };
             NativeMethods.BLENDFUNCTION blend = new()
@@ -67,7 +75,13 @@ internal sealed class WidgetRenderer : IDisposable
                 SourceConstantAlpha = 255,
                 AlphaFormat = NativeMethods.AC_SRC_ALPHA,
             };
-            return NativeMethods.UpdateLayeredWindow(hwnd, screenDc, ref destination, ref size, memoryDc, ref source, 0, ref blend, NativeMethods.ULW_ALPHA);
+            if (screenLocation.HasValue)
+            {
+                NativeMethods.POINT destination = new() { X = screenLocation.Value.X, Y = screenLocation.Value.Y };
+                return NativeMethods.UpdateLayeredWindow(hwnd, screenDc, ref destination, ref size, memoryDc, ref source, 0, ref blend, NativeMethods.ULW_ALPHA);
+            }
+
+            return UpdateLayeredWindow(hwnd, screenDc, IntPtr.Zero, ref size, memoryDc, ref source, 0, ref blend, NativeMethods.ULW_ALPHA);
         }
         finally
         {
@@ -85,7 +99,7 @@ internal sealed class WidgetRenderer : IDisposable
     private void Draw(Graphics graphics, WidgetRenderState state, int width, int height, uint dpi, int hoveredIndex)
     {
         float scale = Scale(dpi);
-        graphics.Clear(Color.Transparent);
+        graphics.Clear(Color.FromArgb(1, 0, 0, 0));
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
 
@@ -240,4 +254,17 @@ internal sealed class WidgetRenderer : IDisposable
     private static float Scale(uint dpi) => Math.Max(1, dpi) / 96f;
 
     private static int ApplyOpacity(int alpha, float opacity) => Math.Clamp((int)Math.Round(alpha * opacity), 0, 255);
+
+    [DllImport("user32.dll", EntryPoint = "UpdateLayeredWindow", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool UpdateLayeredWindow(
+        IntPtr hwnd,
+        IntPtr hdcDst,
+        IntPtr pptDst,
+        ref NativeMethods.SIZE psize,
+        IntPtr hdcSrc,
+        ref NativeMethods.POINT pptSrc,
+        uint crKey,
+        ref NativeMethods.BLENDFUNCTION pblend,
+        uint dwFlags);
 }

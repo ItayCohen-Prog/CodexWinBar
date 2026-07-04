@@ -31,12 +31,17 @@ public sealed class FlyoutWindow : Window
     private const int WmDisplayChange = 0x007E;
     private const int WmDpiChanged = 0x02E0;
     private const int MonitorDefaultToNearest = 0x00000002;
+    private const uint SwpNoSize = 0x0001;
+    private const uint SwpNoMove = 0x0002;
+    private const uint SwpNoActivate = 0x0010;
+    private static readonly TimeSpan OpenDismissGrace = TimeSpan.FromMilliseconds(500);
 
     private static readonly IntPtr HwndTop = IntPtr.Zero;
     private readonly IUsageStore store;
     private readonly UiSettingsStore uiStore;
     private readonly Action openSettings;
     private readonly Action quit;
+    private readonly Action<string>? log;
     private readonly Dictionary<ProviderId, ProviderDescriptor> descriptors;
     private readonly StackPanel stack = new() { Orientation = Orientation.Vertical };
     private readonly DispatcherTimer countdownTimer;
@@ -49,14 +54,16 @@ public sealed class FlyoutWindow : Window
     private UiSettings settings = new();
     private bool isDark;
     private bool isRefreshingUi;
+    private bool wasActivated;
 
     /// <summary>Creates a flyout bound to the usage store and app actions.</summary>
-    public FlyoutWindow(IUsageStore store, UiSettingsStore uiStore, Action openSettings, Action quit)
+    public FlyoutWindow(IUsageStore store, UiSettingsStore uiStore, Action openSettings, Action quit, Action<string>? log = null)
     {
         this.store = store;
         this.uiStore = uiStore;
         this.openSettings = openSettings;
         this.quit = quit;
+        this.log = log;
         this.descriptors = ProviderCatalog.CreateAll().ToDictionary(descriptor => descriptor.Id);
         this.mouseProc = this.HandleMouseHook;
 
@@ -70,7 +77,9 @@ public sealed class FlyoutWindow : Window
         this.Width = FlyoutWidthDip;
         this.Background = Brushes.Transparent;
         this.Focusable = true;
-        this.Content = new Border { Padding = new Thickness(12), Background = Brushes.Transparent, Child = this.stack };
+        var root = new Border { Padding = new Thickness(12), Child = this.stack };
+        root.SetResourceReference(Border.BackgroundProperty, "FlyoutRootBackground");
+        this.Content = root;
 
         this.countdownTimer = new DispatcherTimer(DispatcherPriority.Background, this.Dispatcher) { Interval = TimeSpan.FromMinutes(1) };
         this.countdownTimer.Tick += (_, _) => this.RebuildCards();
@@ -78,7 +87,8 @@ public sealed class FlyoutWindow : Window
         this.spinnerTimer.Tick += (_, _) => this.refreshRotate.Angle = (this.refreshRotate.Angle + 18) % 360;
 
         this.SourceInitialized += this.OnSourceInitialized;
-        this.Deactivated += (_, _) => this.HideFlyout();
+        this.Activated += (_, _) => this.wasActivated = true;
+        this.Deactivated += (_, _) => this.HandleDeactivated();
         this.KeyDown += this.OnKeyDown;
         this.store.StateChanged += this.OnStoreStateChanged;
         SystemEvents.DisplaySettingsChanged += this.OnDisplaySettingsChanged;
@@ -90,37 +100,62 @@ public sealed class FlyoutWindow : Window
     /// <summary>Toggles the flyout, anchored to a widget rectangle expressed in physical screen pixels.</summary>
     public void Toggle(DrawingRectangle anchorPhysicalPx)
     {
-        if (this.IsOpen)
+        try
         {
-            this.HideFlyout();
-            return;
+            if (this.IsOpen)
+            {
+                this.HideFlyout("close: toggle");
+                return;
+            }
+
+            this.log?.Invoke($"toggle-open at {anchorPhysicalPx}");
+            this.settings = this.uiStore.Load();
+            this.isDark = !ReadSystemUsesLightTheme();
+            this.log?.Invoke($"flyout theme: dark={this.isDark}");
+            this.ApplyThemeResources(this.isDark);
+            WpfDwm.ApplyFlyoutChrome(this, this.isDark);
+            this.RebuildCards();
+
+            _ = new WindowInteropHelper(this).EnsureHandle();
+            this.UpdateLayout();
+            this.Measure(new Size(FlyoutWidthDip, double.PositiveInfinity));
+            this.UpdateLayout();
+            var placement = this.ComputePlacement(anchorPhysicalPx, Math.Max(this.DesiredSize.Height, 80));
+            this.Left = placement.X;
+            this.Top = placement.Y;
+
+            this.wasActivated = false;
+            this.openedAt = DateTimeOffset.UtcNow;
+            this.Show();
+            this.UpdateLayout();
+            this.PlacePhysical(anchorPhysicalPx);
+            if (!this.Activate())
+            {
+                this.log?.Invoke("toggle-open: Activate returned false");
+            }
+
+            this.Focus();
+            this.store.NotifyFlyoutOpened();
+            this.InstallMouseHook();
+            this.countdownTimer.Start();
         }
-
-        this.settings = this.uiStore.Load();
-        this.isDark = !ReadSystemUsesLightTheme();
-        this.ApplyThemeResources(this.isDark);
-        WpfDwm.ApplyFlyoutChrome(this, this.isDark);
-        this.RebuildCards();
-
-        _ = new WindowInteropHelper(this).EnsureHandle();
-        this.UpdateLayout();
-        this.Measure(new Size(FlyoutWidthDip, double.PositiveInfinity));
-        var placement = this.ComputePlacement(anchorPhysicalPx, Math.Max(this.DesiredSize.Height, 80));
-        this.Left = placement.X;
-        this.Top = placement.Y;
-
-        this.openedAt = DateTimeOffset.UtcNow;
-        this.Show();
-        this.Activate();
-        this.Focus();
-        this.store.NotifyFlyoutOpened();
-        this.InstallMouseHook();
-        this.countdownTimer.Start();
+        catch (Exception ex)
+        {
+            this.log?.Invoke($"toggle exception: {ex}");
+        }
     }
 
     private void OnSourceInitialized(object? sender, EventArgs e)
     {
-        this.source = (HwndSource)PresentationSource.FromVisual(this);
+        // PresentationSource.FromVisual is still null when the handle is created via EnsureHandle();
+        // HwndSource.FromHwnd resolves the source that already owns the fresh HWND.
+        this.source = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
+        if (this.source is null)
+        {
+            this.log?.Invoke("flyout: HwndSource unavailable at SourceInitialized");
+            return;
+        }
+
         this.source.AddHook(this.WndProc);
         WpfDwm.ApplyFlyoutChrome(this, this.isDark);
         if (this.source.CompositionTarget is { } target)
@@ -134,7 +169,7 @@ public sealed class FlyoutWindow : Window
         if (e.Key == Key.Escape)
         {
             e.Handled = true;
-            this.HideFlyout();
+            this.HideFlyout("close: esc");
         }
     }
 
@@ -150,12 +185,28 @@ public sealed class FlyoutWindow : Window
     {
         if (this.IsOpen)
         {
-            this.HideFlyout();
+            this.HideFlyout("close: display-change");
         }
     });
 
-    private void HideFlyout()
+    private void HandleDeactivated()
     {
+        if (this.IsInOpenGrace())
+        {
+            return;
+        }
+
+        if (this.wasActivated || DateTimeOffset.UtcNow - this.openedAt >= OpenDismissGrace)
+        {
+            this.HideFlyout("close: deactivated");
+        }
+    }
+
+    private bool IsInOpenGrace() => DateTimeOffset.UtcNow - this.openedAt < OpenDismissGrace;
+
+    private void HideFlyout(string reason)
+    {
+        this.log?.Invoke(reason);
         this.UninstallMouseHook();
         this.countdownTimer.Stop();
         this.spinnerTimer.Stop();
@@ -370,7 +421,7 @@ public sealed class FlyoutWindow : Window
         refresh.Click += async (_, _) => await this.RefreshAllAsync();
         footer.Children.Add(refresh);
         var settingsButton = this.CreateIconButton(new TextBlock { Text = "\u2699", FontSize = 15 }, "Settings");
-        settingsButton.Click += (_, _) => { this.HideFlyout(); this.openSettings(); };
+        settingsButton.Click += (_, _) => { this.HideFlyout("close: settings"); this.openSettings(); };
         Grid.SetColumn(settingsButton, 2);
         footer.Children.Add(settingsButton);
         var quitButton = this.CreateIconButton(new TextBlock { Text = "X", FontSize = 12, FontWeight = FontWeights.SemiBold }, "Quit");
@@ -499,22 +550,47 @@ public sealed class FlyoutWindow : Window
         var info = MonitorInfo.Create();
         _ = GetMonitorInfo(monitor, ref info);
         var work = info.Work;
-        var transform = this.source?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
+        var presentationSource = this.source ?? (HwndSource?)PresentationSource.FromVisual(this);
+        var transform = presentationSource?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
         var widthPx = FlyoutWidthDip / Math.Max(transform.M11, 0.01);
         var heightPx = heightDip / Math.Max(transform.M22, 0.01);
         var x = anchorPhysicalPx.Right - widthPx;
         var y = anchorPhysicalPx.Top - heightPx - GapPhysicalPx;
         x = Math.Max(work.Left, Math.Min(x, work.Right - widthPx));
         y = Math.Max(work.Top, Math.Min(y, work.Bottom - heightPx));
-        _ = SetWindowPos(hwnd, HwndTop, 0, 0, 0, 0, 0);
+        _ = SetWindowPos(hwnd, HwndTop, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
         return transform.Transform(new Point(x, y));
+    }
+
+    /// <summary>
+    /// Repositions the SHOWN window purely in physical pixels via SetWindowPos, sidestepping WPF's
+    /// pre-show DIP Left/Top placement, which is unreliable under per-monitor DPI.
+    /// </summary>
+    private void PlacePhysical(DrawingRectangle anchorPhysicalPx)
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out var wr))
+        {
+            return;
+        }
+
+        var widthPx = wr.Right - wr.Left;
+        var heightPx = wr.Bottom - wr.Top;
+        var monitor = MonitorFromRect(ref anchorPhysicalPx, MonitorDefaultToNearest);
+        var info = MonitorInfo.Create();
+        _ = GetMonitorInfo(monitor, ref info);
+        var work = info.Work;
+        var x = (int)Math.Max(work.Left, Math.Min(anchorPhysicalPx.Right - widthPx, work.Right - widthPx));
+        var y = (int)Math.Max(work.Top, Math.Min(anchorPhysicalPx.Top - heightPx - GapPhysicalPx, work.Bottom - heightPx));
+        _ = SetWindowPos(hwnd, HwndTop, x, y, 0, 0, SwpNoSize | SwpNoActivate);
+        this.log?.Invoke($"flyout placed at ({x},{y}) size {widthPx}x{heightPx} (physical)");
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         if (msg is WmDisplayChange || (msg is WmDpiChanged && this.IsOpen))
         {
-            this.HideFlyout();
+            this.HideFlyout("close: display-change");
         }
 
         return IntPtr.Zero;
@@ -523,8 +599,15 @@ public sealed class FlyoutWindow : Window
     private void InstallMouseHook()
     {
         this.UninstallMouseHook();
-        this.hookHandle = SetWindowsHookEx(LowLevelMouseHook, this.mouseProc, IntPtr.Zero, 0);
+        this.hookHandle = SetWindowsHookEx(LowLevelMouseHook, this.mouseProc, GetModuleHandle(null), 0);
+        if (this.hookHandle == IntPtr.Zero)
+        {
+            this.log?.Invoke($"flyout: mouse hook install FAILED (error {Marshal.GetLastWin32Error()})");
+        }
     }
+
+    [DllImport("kernel32.dll", EntryPoint = "GetModuleHandleW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr GetModuleHandle(string? lpModuleName);
 
     private void UninstallMouseHook()
     {
@@ -537,13 +620,13 @@ public sealed class FlyoutWindow : Window
 
     private IntPtr HandleMouseHook(int code, IntPtr wParam, IntPtr lParam)
     {
-        if (code >= 0 && this.IsOpen && IsMouseDownMessage(wParam.ToInt32()) && DateTimeOffset.UtcNow - this.openedAt >= TimeSpan.FromMilliseconds(250))
+        if (code >= 0 && this.IsOpen && IsMouseDownMessage(wParam.ToInt32()) && !this.IsInOpenGrace())
         {
             var hook = Marshal.PtrToStructure<MouseHookStruct>(lParam);
             var windowRect = this.WindowPhysicalRect();
             if (!windowRect.Contains(hook.Point.X, hook.Point.Y))
             {
-                _ = this.Dispatcher.BeginInvoke(this.HideFlyout);
+                _ = this.Dispatcher.BeginInvoke(() => this.HideFlyout("close: outside-click"));
             }
         }
 
@@ -565,7 +648,9 @@ public sealed class FlyoutWindow : Window
             ["FlyoutSecondaryForeground"] = new SolidColorBrush(Color.FromArgb(0x99, foreground.R, foreground.G, foreground.B)),
             ["FlyoutTrack"] = new SolidColorBrush(Color.FromArgb(0x26, foreground.R, foreground.G, foreground.B)),
             ["FlyoutHover"] = new SolidColorBrush(Color.FromArgb(0x14, foreground.R, foreground.G, foreground.B)),
-            ["FlyoutCardBackground"] = new SolidColorBrush(dark ? Color.FromArgb(0x33, 0, 0, 0) : Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF)),
+            // Heavy tint layer like native Win11 flyouts — the acrylic blur stays subtly visible beneath.
+            ["FlyoutRootBackground"] = new SolidColorBrush(dark ? Color.FromArgb(0xE8, 0x20, 0x20, 0x20) : Color.FromArgb(0xE8, 0xF6, 0xF6, 0xF6)),
+            ["FlyoutCardBackground"] = new SolidColorBrush(dark ? Color.FromArgb(0x59, 0x3A, 0x3A, 0x3A) : Color.FromArgb(0xB3, 0xFF, 0xFF, 0xFF)),
             ["FlyoutError"] = new SolidColorBrush(Color.FromRgb(0xC4, 0x2B, 0x1C)),
         };
         this.Resources.MergedDictionaries.Clear();

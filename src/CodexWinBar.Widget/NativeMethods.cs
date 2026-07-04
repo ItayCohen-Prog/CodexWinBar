@@ -189,6 +189,10 @@ internal static partial class NativeMethods
     [DllImport("user32.dll", EntryPoint = "RegisterClassExW", SetLastError = true)]
     internal static extern ushort RegisterClassExW([In] ref WNDCLASSEXW lpwcx);
 
+    [LibraryImport("user32.dll", EntryPoint = "UnregisterClassW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool UnregisterClassW(string lpClassName, IntPtr hInstance);
+
     /// <summary>Standard arrow cursor id for <see cref="LoadCursorW"/>.</summary>
     internal const int IDC_ARROW = 32512;
 

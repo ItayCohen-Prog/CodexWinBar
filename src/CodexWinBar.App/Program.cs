@@ -110,7 +110,9 @@ internal sealed class AppShell : IDisposable
         this.uiStore = new UiSettingsStore(this.Log);
         this.descriptors = ProviderCatalog.CreateAll();
         this.descriptorsById = this.descriptors.ToDictionary(descriptor => descriptor.Id);
-        this.usageStore = new UsageStore(this.descriptors, this.configStore, this.uiStore, this.Log);
+        this.usageStore = Dev.FakeUsageStore.IsEnabled(Environment.GetEnvironmentVariable)
+            ? new Dev.FakeUsageStore(this.Log)
+            : new UsageStore(this.descriptors, this.configStore, this.uiStore, this.Log);
         this.widgetHost = new WidgetHost();
         WidgetHost.SetLogger(this.Log);
         ToastService.Initialize(this.Log);
@@ -298,9 +300,13 @@ internal sealed class AppShell : IDisposable
                     await pipe.WaitForConnectionAsync(this.pipeCancellation.Token).ConfigureAwait(false);
                     using var reader = new StreamReader(pipe);
                     var line = await reader.ReadLineAsync(this.pipeCancellation.Token).ConfigureAwait(false);
-                    if (string.Equals(line, "show", StringComparison.OrdinalIgnoreCase))
+                    if (!string.IsNullOrWhiteSpace(line) && line.StartsWith("show", StringComparison.OrdinalIgnoreCase))
                     {
-                        _ = this.app.Dispatcher.BeginInvoke(() => this.ToggleFlyout(this.GetActivationAnchor()));
+                        // "show" opens the all-providers view; "show:<configId>" focuses one provider,
+                        // which also drives a live provider switch when the flyout is already open.
+                        var colon = line.IndexOf(':');
+                        var focus = colon >= 0 ? ProviderIds.TryParse(line[(colon + 1)..].Trim()) : null;
+                        _ = this.app.Dispatcher.BeginInvoke(() => this.ToggleFlyout(this.GetActivationAnchor(), focus));
                     }
                 }
                 catch (OperationCanceledException)

@@ -28,7 +28,7 @@ namespace CodexWinBar.App.Settings;
 /// </summary>
 public sealed class SettingsWindow : Window
 {
-    private const double NavWidth = 280;
+    private const double NavWidth = 200;
     private static SettingsWindow? current;
 
     private readonly ConfigStore configStore;

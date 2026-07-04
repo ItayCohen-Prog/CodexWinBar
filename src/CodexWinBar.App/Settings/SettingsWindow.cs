@@ -596,8 +596,10 @@ public sealed class SettingsWindow : Window
     {
         var panel = new StackPanel
         {
+            // Stretch fills the content column (cards span it edge to edge like Win11 Settings);
+            // MaxWidth only kicks in on very wide windows, where WPF centers the capped panel.
             MaxWidth = 1000,
-            HorizontalAlignment = HorizontalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
         };
         panel.Children.Add(new TextBlock
         {

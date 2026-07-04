@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>CodexWinBar.Core</RootNamespace>
+  </PropertyGroup>
+</Project>

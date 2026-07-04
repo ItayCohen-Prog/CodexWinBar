@@ -43,3 +43,10 @@ docs/.astro/
 # Swift Package Manager metadata (leave sources tracked)
 # Packages/
 # Package.resolved
+
+# .NET / Windows build artifacts
+bin/
+obj/
+*.user
+.vs/
+artifacts/

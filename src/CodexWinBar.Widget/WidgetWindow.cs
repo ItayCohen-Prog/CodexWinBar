@@ -593,7 +593,22 @@ internal sealed class WidgetWindow : IDisposable
                     return IntPtr.Zero;
                 case NativeMethods.WM_LBUTTONUP:
                     WidgetLog.Write("widget clicked");
-                    _host.RaiseClicked(_screenRect);
+                    var clickedIndex = HitTest(ClientPointFromLParam(lParam));
+                    if (clickedIndex >= 0 && clickedIndex < _state.Chips.Count && clickedIndex < _chipBounds.Count)
+                    {
+                        Rectangle bounds = _chipBounds[clickedIndex] with { Height = _height };
+                        var chipRect = new Rectangle(
+                            _screenRect.Left + bounds.Left,
+                            _screenRect.Top + bounds.Top,
+                            bounds.Width,
+                            bounds.Height);
+                        _host.RaiseClicked(chipRect, _state.Chips[clickedIndex].ProviderKey);
+                    }
+                    else
+                    {
+                        _host.RaiseClicked(_screenRect, null);
+                    }
+
                     return IntPtr.Zero;
                 case NativeMethods.WM_RBUTTONUP:
                     _host.RaiseRightClicked();

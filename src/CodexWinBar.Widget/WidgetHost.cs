@@ -13,8 +13,8 @@ public sealed class WidgetHost : IWidgetHost
     private WidgetMode _effectiveMode = WidgetMode.Hidden;
     private bool _disposed;
 
-    /// <summary>Raised when the widget is left-clicked with its current screen rectangle.</summary>
-    public event Action<Rectangle>? Clicked;
+    /// <summary>Raised when the widget is left-clicked with an anchor rectangle and optional provider key.</summary>
+    public event Action<Rectangle, string?>? Clicked;
 
     /// <summary>Raised when the widget is right-clicked.</summary>
     public event Action? RightClicked;
@@ -163,9 +163,9 @@ public sealed class WidgetHost : IWidgetHost
         ModeChanged?.Invoke(mode, reason);
     }
 
-    internal void RaiseClicked(Rectangle rect)
+    internal void RaiseClicked(Rectangle rect, string? providerKey)
     {
-        Clicked?.Invoke(rect);
+        Clicked?.Invoke(rect, providerKey);
     }
 
     internal void RaiseRightClicked()

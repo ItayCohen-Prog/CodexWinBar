@@ -5,6 +5,8 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
 using System.Windows.Shapes;
 using CodexWinBar.App.Assets;
 using System.Windows.Threading;
@@ -35,7 +37,12 @@ public sealed class FlyoutWindow : Window
     private const uint SwpNoSize = 0x0001;
     private const uint SwpNoMove = 0x0002;
     private const uint SwpNoActivate = 0x0010;
+    private const double ShadowMarginDip = 16;
     private static readonly TimeSpan OpenDismissGrace = TimeSpan.FromMilliseconds(500);
+    private static readonly Duration OpenSlideDuration = new(TimeSpan.FromMilliseconds(260));
+    private static readonly Duration OpenFadeDuration = new(TimeSpan.FromMilliseconds(120));
+    private static readonly Duration CloseSlideDuration = new(TimeSpan.FromMilliseconds(200));
+    private static readonly Duration CloseFadeDuration = new(TimeSpan.FromMilliseconds(140));
 
     private static readonly IntPtr HwndTop = IntPtr.Zero;
     private readonly IUsageStore store;
@@ -45,6 +52,8 @@ public sealed class FlyoutWindow : Window
     private readonly Action<string>? log;
     private readonly Dictionary<ProviderId, ProviderDescriptor> descriptors;
     private readonly StackPanel stack = new() { Orientation = Orientation.Vertical };
+    private readonly Border root;
+    private readonly TranslateTransform rootTranslate = new();
     private readonly DispatcherTimer countdownTimer;
     private readonly DispatcherTimer spinnerTimer;
     private readonly RotateTransform refreshRotate = new();
@@ -56,6 +65,9 @@ public sealed class FlyoutWindow : Window
     private bool isDark;
     private bool isRefreshingUi;
     private bool wasActivated;
+    private bool isClosing;
+    private int animationGeneration;
+    private ProviderId? currentFocusProvider;
 
     /// <summary>Creates a flyout bound to the usage store and app actions.</summary>
     public FlyoutWindow(IUsageStore store, UiSettingsStore uiStore, Action openSettings, Action quit, Action<string>? log = null)
@@ -73,14 +85,30 @@ public sealed class FlyoutWindow : Window
         this.ShowInTaskbar = false;
         this.Topmost = true;
         this.ShowActivated = true;
-        this.AllowsTransparency = false;
+        this.AllowsTransparency = true;
         this.SizeToContent = SizeToContent.Height;
-        this.Width = FlyoutWidthDip;
+        this.Width = FlyoutWidthDip + (ShadowMarginDip * 2);
         this.Background = Brushes.Transparent;
         this.Focusable = true;
-        var root = new Border { Padding = new Thickness(12), Child = this.stack };
-        root.SetResourceReference(Border.BackgroundProperty, "FlyoutRootBackground");
-        this.Content = root;
+        this.root = new Border
+        {
+            Padding = new Thickness(12),
+            Margin = new Thickness(ShadowMarginDip),
+            Child = this.stack,
+            RenderTransform = this.rootTranslate,
+            CornerRadius = new CornerRadius(8),
+            BorderThickness = new Thickness(1),
+            Effect = new DropShadowEffect
+            {
+                BlurRadius = 28,
+                ShadowDepth = 0,
+                Opacity = 0.28,
+                Color = Colors.Black,
+            },
+        };
+        this.root.SetResourceReference(Border.BackgroundProperty, "FlyoutPanelBackground");
+        this.root.SetResourceReference(Border.BorderBrushProperty, "FlyoutSubtleBorder");
+        this.Content = this.root;
 
         this.countdownTimer = new DispatcherTimer(DispatcherPriority.Background, this.Dispatcher) { Interval = TimeSpan.FromMinutes(1) };
         this.countdownTimer.Tick += (_, _) => this.RebuildCards();
@@ -96,30 +124,43 @@ public sealed class FlyoutWindow : Window
     }
 
     /// <summary>Gets whether the flyout is currently visible.</summary>
-    public bool IsOpen => this.IsVisible;
+    public bool IsOpen => this.IsVisible && !this.isClosing;
 
     /// <summary>Toggles the flyout, anchored to a widget rectangle expressed in physical screen pixels.</summary>
-    public void Toggle(DrawingRectangle anchorPhysicalPx)
+    public void Toggle(DrawingRectangle anchorPhysicalPx, ProviderId? focusProvider = null)
     {
         try
         {
             if (this.IsOpen)
             {
-                this.HideFlyout("close: toggle");
+                if (this.currentFocusProvider == focusProvider)
+                {
+                    this.HideFlyout("close: toggle");
+                    return;
+                }
+
+                this.log?.Invoke($"toggle-switch at {anchorPhysicalPx}; focus={focusProvider?.ConfigId() ?? "all"}");
+                this.currentFocusProvider = focusProvider;
+                this.RebuildCards();
+                this.UpdateLayout();
+                this.PlacePhysical(anchorPhysicalPx);
+                this.openedAt = DateTimeOffset.UtcNow;
                 return;
             }
 
-            this.log?.Invoke($"toggle-open at {anchorPhysicalPx}");
+            this.log?.Invoke($"toggle-open at {anchorPhysicalPx}; focus={focusProvider?.ConfigId() ?? "all"}");
+            this.isClosing = false;
+            this.currentFocusProvider = focusProvider;
+            this.animationGeneration++;
             this.settings = this.uiStore.Load();
             this.isDark = !ReadSystemUsesLightTheme();
             this.log?.Invoke($"flyout theme: dark={this.isDark}");
             this.ApplyThemeResources(this.isDark);
-            WpfDwm.ApplyFlyoutChrome(this, this.isDark);
             this.RebuildCards();
 
             _ = new WindowInteropHelper(this).EnsureHandle();
             this.UpdateLayout();
-            this.Measure(new Size(FlyoutWidthDip, double.PositiveInfinity));
+            this.Measure(new Size(this.Width, double.PositiveInfinity));
             this.UpdateLayout();
             var placement = this.ComputePlacement(anchorPhysicalPx, Math.Max(this.DesiredSize.Height, 80));
             this.Left = placement.X;
@@ -127,9 +168,19 @@ public sealed class FlyoutWindow : Window
 
             this.wasActivated = false;
             this.openedAt = DateTimeOffset.UtcNow;
-            this.Show();
+            var wasVisible = this.IsVisible;
+            if (!wasVisible)
+            {
+                this.rootTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+                this.root.BeginAnimation(UIElement.OpacityProperty, null);
+                this.rootTranslate.Y = this.AnimationDistanceDip();
+                this.root.Opacity = 0;
+                this.Show();
+            }
+
             this.UpdateLayout();
             this.PlacePhysical(anchorPhysicalPx);
+            this.BeginOpenAnimation();
             if (!this.Activate())
             {
                 this.log?.Invoke("toggle-open: Activate returned false");
@@ -158,11 +209,6 @@ public sealed class FlyoutWindow : Window
         }
 
         this.source.AddHook(this.WndProc);
-        WpfDwm.ApplyFlyoutChrome(this, this.isDark);
-        if (this.source.CompositionTarget is { } target)
-        {
-            target.BackgroundColor = Colors.Transparent;
-        }
     }
 
     private void OnKeyDown(object sender, KeyEventArgs e)
@@ -207,17 +253,95 @@ public sealed class FlyoutWindow : Window
 
     private void HideFlyout(string reason)
     {
+        if (!this.IsVisible || this.isClosing)
+        {
+            return;
+        }
+
         this.log?.Invoke(reason);
-        this.UninstallMouseHook();
+        this.isClosing = true;
         this.countdownTimer.Stop();
         this.spinnerTimer.Stop();
-        this.Hide();
+        var generation = ++this.animationGeneration;
+        this.BeginCloseAnimation(generation);
     }
+
+    private void BeginOpenAnimation()
+    {
+        var generation = this.animationGeneration;
+        var distance = this.AnimationDistanceDip();
+        if (this.rootTranslate.Y <= 0 || this.rootTranslate.Y > distance)
+        {
+            this.rootTranslate.Y = distance;
+        }
+
+        this.rootTranslate.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation
+        {
+            From = this.rootTranslate.Y,
+            To = 0,
+            Duration = OpenSlideDuration,
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+            FillBehavior = FillBehavior.HoldEnd,
+        });
+        this.root.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation
+        {
+            From = this.root.Opacity,
+            To = 1,
+            Duration = OpenFadeDuration,
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+            FillBehavior = FillBehavior.HoldEnd,
+        });
+        this.log?.Invoke($"flyout open animation generation {generation}");
+    }
+
+    private void BeginCloseAnimation(int generation)
+    {
+        var distance = this.AnimationDistanceDip();
+        var slide = new DoubleAnimation
+        {
+            From = this.rootTranslate.Y,
+            To = distance,
+            Duration = CloseSlideDuration,
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn },
+            FillBehavior = FillBehavior.HoldEnd,
+        };
+        slide.Completed += (_, _) => this.CompleteHide(generation);
+        this.rootTranslate.BeginAnimation(TranslateTransform.YProperty, slide);
+        this.root.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation
+        {
+            From = this.root.Opacity,
+            To = 0,
+            Duration = CloseFadeDuration,
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn },
+            FillBehavior = FillBehavior.HoldEnd,
+        });
+    }
+
+    private void CompleteHide(int generation)
+    {
+        if (generation != this.animationGeneration || !this.isClosing)
+        {
+            return;
+        }
+
+        this.UninstallMouseHook();
+        this.Hide();
+        this.rootTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+        this.root.BeginAnimation(UIElement.OpacityProperty, null);
+        this.rootTranslate.Y = this.AnimationDistanceDip();
+        this.root.Opacity = 0;
+        this.isClosing = false;
+        this.currentFocusProvider = null;
+    }
+
+    private double AnimationDistanceDip() => Math.Max(1, this.root.ActualHeight);
 
     private void RebuildCards()
     {
         this.stack.Children.Clear();
-        var states = this.store.States;
+        IReadOnlyList<ProviderState> states = this.currentFocusProvider is { } focusProvider
+            ? this.store.States.Where(state => state.Provider == focusProvider).ToArray()
+            : this.store.States;
         if (states.Count == 0)
         {
             this.stack.Children.Add(this.CreateEmptyCard());
@@ -564,10 +688,18 @@ public sealed class FlyoutWindow : Window
         var work = info.Work;
         var presentationSource = this.source ?? (HwndSource?)PresentationSource.FromVisual(this);
         var transform = presentationSource?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
-        var widthPx = FlyoutWidthDip / Math.Max(transform.M11, 0.01);
+        var widthPx = this.Width / Math.Max(transform.M11, 0.01);
         var heightPx = heightDip / Math.Max(transform.M22, 0.01);
-        var x = anchorPhysicalPx.Right - widthPx;
-        var y = anchorPhysicalPx.Top - heightPx - GapPhysicalPx;
+        var shadowMarginXPx = ShadowMarginDip / Math.Max(transform.M11, 0.01);
+        var shadowMarginYPx = ShadowMarginDip / Math.Max(transform.M22, 0.01);
+        var panelWidthPx = widthPx - (shadowMarginXPx * 2);
+        var panelHeightPx = heightPx - (shadowMarginYPx * 2);
+        var panelX = anchorPhysicalPx.Right - panelWidthPx;
+        var panelY = anchorPhysicalPx.Top - panelHeightPx - GapPhysicalPx;
+        panelX = Math.Max(work.Left, Math.Min(panelX, work.Right - panelWidthPx));
+        panelY = Math.Max(work.Top, Math.Min(panelY, work.Bottom - panelHeightPx));
+        var x = panelX - shadowMarginXPx;
+        var y = panelY - shadowMarginYPx;
         x = Math.Max(work.Left, Math.Min(x, work.Right - widthPx));
         y = Math.Max(work.Top, Math.Min(y, work.Bottom - heightPx));
         _ = SetWindowPos(hwnd, HwndTop, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
@@ -592,10 +724,17 @@ public sealed class FlyoutWindow : Window
         var info = MonitorInfo.Create();
         _ = GetMonitorInfo(monitor, ref info);
         var work = info.Work;
-        var x = (int)Math.Max(work.Left, Math.Min(anchorPhysicalPx.Right - widthPx, work.Right - widthPx));
-        var y = (int)Math.Max(work.Top, Math.Min(anchorPhysicalPx.Top - heightPx - GapPhysicalPx, work.Bottom - heightPx));
+        var transform = (this.source ?? (HwndSource?)PresentationSource.FromVisual(this))?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
+        var shadowMarginXPx = (int)Math.Round(ShadowMarginDip / Math.Max(transform.M11, 0.01));
+        var shadowMarginYPx = (int)Math.Round(ShadowMarginDip / Math.Max(transform.M22, 0.01));
+        var panelWidthPx = Math.Max(1, widthPx - (shadowMarginXPx * 2));
+        var panelHeightPx = Math.Max(1, heightPx - (shadowMarginYPx * 2));
+        var panelX = (int)Math.Max(work.Left, Math.Min(anchorPhysicalPx.Right - panelWidthPx, work.Right - panelWidthPx));
+        var panelY = (int)Math.Max(work.Top, Math.Min(anchorPhysicalPx.Top - panelHeightPx - GapPhysicalPx, work.Bottom - panelHeightPx));
+        var x = (int)Math.Max(work.Left, Math.Min(panelX - shadowMarginXPx, work.Right - widthPx));
+        var y = (int)Math.Max(work.Top, Math.Min(panelY - shadowMarginYPx, work.Bottom - heightPx));
         _ = SetWindowPos(hwnd, HwndTop, x, y, 0, 0, SwpNoSize | SwpNoActivate);
-        this.log?.Invoke($"flyout placed at ({x},{y}) size {widthPx}x{heightPx} (physical)");
+        this.log?.Invoke($"flyout placed at ({x},{y}) size {widthPx}x{heightPx}; panel at ({x + shadowMarginXPx},{y + shadowMarginYPx}) size {panelWidthPx}x{panelHeightPx} (physical)");
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -660,8 +799,8 @@ public sealed class FlyoutWindow : Window
             ["FlyoutSecondaryForeground"] = new SolidColorBrush(Color.FromArgb(0x99, foreground.R, foreground.G, foreground.B)),
             ["FlyoutTrack"] = new SolidColorBrush(Color.FromArgb(0x26, foreground.R, foreground.G, foreground.B)),
             ["FlyoutHover"] = new SolidColorBrush(Color.FromArgb(0x14, foreground.R, foreground.G, foreground.B)),
-            // Heavy tint layer like native Win11 flyouts — the acrylic blur stays subtly visible beneath.
-            ["FlyoutRootBackground"] = new SolidColorBrush(dark ? Color.FromArgb(0xE8, 0x20, 0x20, 0x20) : Color.FromArgb(0xE8, 0xF6, 0xF6, 0xF6)),
+            ["FlyoutPanelBackground"] = new SolidColorBrush(dark ? Color.FromArgb(0xFA, 0x2A, 0x2A, 0x2A) : Color.FromArgb(0xFA, 0xF3, 0xF3, 0xF3)),
+            ["FlyoutSubtleBorder"] = new SolidColorBrush(Color.FromArgb(dark ? (byte)0x30 : (byte)0x24, foreground.R, foreground.G, foreground.B)),
             ["FlyoutCardBackground"] = new SolidColorBrush(dark ? Color.FromArgb(0x59, 0x3A, 0x3A, 0x3A) : Color.FromArgb(0xB3, 0xFF, 0xFF, 0xFF)),
             ["FlyoutError"] = new SolidColorBrush(Color.FromRgb(0xC4, 0x2B, 0x1C)),
         };

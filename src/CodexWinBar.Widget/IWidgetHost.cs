@@ -58,8 +58,8 @@ public interface IWidgetHost : IDisposable
     /// <summary>Current widget rect in physical screen pixels, or null when not placed (starting/hidden).</summary>
     System.Drawing.Rectangle? CurrentScreenRect { get; }
 
-    /// <summary>Left-click on the widget. Arg = chip screen rect (physical pixels) to anchor the flyout.</summary>
-    event Action<System.Drawing.Rectangle>? Clicked;
+    /// <summary>Left-click on the widget. Args = anchor rect (physical pixels) and provider key, or null for all providers.</summary>
+    event Action<System.Drawing.Rectangle, string?>? Clicked;
 
     /// <summary>Right-click on the widget (open context menu at cursor).</summary>
     event Action? RightClicked;

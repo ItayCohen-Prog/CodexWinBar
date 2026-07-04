@@ -162,10 +162,10 @@ internal sealed class AppShell : IDisposable
 
     private void WireEvents()
     {
-        this.widgetHost.Clicked += rect => this.app.Dispatcher.BeginInvoke(() =>
+        this.widgetHost.Clicked += (rect, providerKey) => this.app.Dispatcher.BeginInvoke(() =>
         {
             this.Log("widget Clicked event received");
-            this.ToggleFlyout(rect);
+            this.ToggleFlyout(rect, ProviderIdFromKey(providerKey));
         });
         this.widgetHost.RightClicked += () => this.app.Dispatcher.BeginInvoke(() => this.trayIcon.ShowContextMenu());
         this.widgetHost.ModeChanged += (mode, reason) =>
@@ -194,17 +194,20 @@ internal sealed class AppShell : IDisposable
     private System.Drawing.Rectangle GetActivationAnchor() =>
         this.widgetHost.CurrentScreenRect ?? FallbackAnchor;
 
-    private void ToggleFlyout(System.Drawing.Rectangle anchorPhysicalPx)
+    private void ToggleFlyout(System.Drawing.Rectangle anchorPhysicalPx, ProviderId? focusProvider = null)
     {
         if (this.flyout.IsOpen)
         {
-            this.flyout.Toggle(anchorPhysicalPx);
+            this.flyout.Toggle(anchorPhysicalPx, focusProvider);
             return;
         }
 
         this.usageStore.NotifyFlyoutOpened();
-        this.flyout.Toggle(anchorPhysicalPx);
+        this.flyout.Toggle(anchorPhysicalPx, focusProvider);
     }
+
+    private static ProviderId? ProviderIdFromKey(string? providerKey) =>
+        string.IsNullOrWhiteSpace(providerKey) ? null : ProviderIds.TryParse(providerKey);
 
     private void OpenSettings()
     {

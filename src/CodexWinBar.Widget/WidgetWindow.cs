@@ -229,6 +229,13 @@ internal sealed class WidgetWindow : IDisposable
         }
 
         // All four taskbar edges embed now (bottom/top render horizontally, left/right vertically).
+        //
+        // NOT YET LIVE-TESTED: the top/left/right (non-bottom) embedding + vertical rendering are
+        // code-complete and were verified only via offline renders and the bottom-edge path. They could
+        // not be tested on a real moved taskbar because Windows 11 removed taskbar relocation (the bar
+        // is bottom-only; native top/side support is slated to return in a later Windows update). Verify
+        // on a genuinely movable taskbar — Windows 10, or Win11 with ExplorerPatcher/StartAllBack/
+        // Windhawk — before relying on non-bottom edges. See MeasureForTaskbar / PositionEmbedded below.
         if (_requestedMode == WidgetMode.Overlay || _overlayFallbackForSession)
         {
             CreateOverlayOrHidden(_overlayFallbackForSession ? "embedded probe failed for session" : "overlay requested");

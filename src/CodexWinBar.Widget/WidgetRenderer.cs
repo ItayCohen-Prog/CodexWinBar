@@ -277,6 +277,8 @@ internal sealed class WidgetRenderer : IDisposable
     /// <summary>
     /// Vertical (left/right taskbar) layout: providers stacked down a narrow strip, each shown as the
     /// logo, then the session %, a short vertical-bar divider, then the weekly %.
+    /// NOT YET LIVE-TESTED on a real side taskbar — verified only via offline renders (Windows 11 can't
+    /// move the taskbar off the bottom). Check on Win10 or a Win11 taskbar tool before relying on it.
     /// </summary>
     private void DrawVertical(Graphics graphics, WidgetRenderState state, int width, int height, uint dpi, int hoveredIndex)
     {

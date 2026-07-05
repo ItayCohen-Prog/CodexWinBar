@@ -1,113 +1,82 @@
 # Code signing CodexWinBar
 
-Right now CodexWinBar ships **unsigned**, so on first run Windows SmartScreen shows an "Unknown
-publisher" warning and users must click **More info → Run anyway**. Signing the installer removes the
-"unknown publisher" wording and lets SmartScreen build reputation for your identity so the warning fades.
+CodexWinBar currently ships **unsigned**, so on first run Windows SmartScreen shows an "Unknown
+publisher" warning and users must click **More info → Run anyway**. Signing the installer removes that
+wording and lets SmartScreen build reputation for your identity so the warning fades.
 
-This guide covers how to get a certificate and wire it into our build. The build is already sign-ready:
-`build/pack-windows.ps1` takes `-AzureTrustedSignFile` or `-SignParams` and passes them to `vpk`.
+The build is already sign-ready: `build/pack-windows.ps1` accepts `-AzureTrustedSignFile`, `-SignParams`,
+or `-SignTemplate` and passes them to `vpk`.
 
 ---
 
-## Why it's not as simple as "buy a .pfx"
+## Why it's not "just buy a .pfx"
 
-Since June 2023, Microsoft requires code-signing private keys to live on certified hardware (an HSM or
-USB token) or in a cloud signing service. You can no longer just download a `.pfx` file and sign with it.
-That leaves three realistic paths:
+Since June 2023, code-signing private keys must live on certified hardware (USB token / HSM) or in a
+cloud signing service — no more downloadable `.pfx`. And **your location matters**: Microsoft's cheap
+Azure Artifact Signing is **not available in Israel** (individuals: USA/Canada only; organizations:
+USA/Canada/EU/UK). So for an Israeli developer the realistic options are:
 
-| Option | Cost | Hardware? | SmartScreen | Notes |
+| Option | Cost (approx) | Hardware? | CI-friendly | Notes |
 |---|---|---|---|---|
-| **Azure Artifact Signing** (formerly Trusted Signing) | **~$10/mo** | No (cloud) | Builds reputation over time | **Recommended.** Cloud-based, CI-friendly, cheapest. |
-| Traditional OV certificate (Sectigo/DigiCert/SSL.com) | ~$200–500/yr | Yes (token or cloud HSM) | Builds reputation over time | More setup; the token complicates CI. |
-| EV certificate | ~$300–700/yr | Yes (hardware token) | **Instant** reputation | Priciest; hardware token can't easily run in CI. |
+| **Certum Open Source Code Signing** (SimplySign cloud) | **~$100/yr** | No (cloud) | Manual-ish | **Recommended for us** — purpose-built for OSS (CodexWinBar is MIT), cheapest, Microsoft-trusted. |
+| **SSL.com OV + eSigner** (cloud HSM) | ~$65/yr cert + ~$20/mo eSigner | No (cloud) | **Yes** | Best if you want clean GitHub Actions signing. |
+| Azure Artifact Signing | ~$10/mo | No (cloud) | Yes | ❌ Not available in Israel. |
+| EV certificate (token) | ~$300–700/yr | Yes | Hard | Only one that clears SmartScreen **instantly**; hardware token. |
 
-**⚠️ Eligibility:** Azure Artifact Signing "Public Trust" certificates are available to **individual
-developers only in the USA and Canada** (organizations also in the EU/UK). If you're elsewhere as an
-individual, you'd need a registered business or a traditional cert. Check the current list before you
-start: <https://learn.microsoft.com/azure/artifact-signing/>
+Note: OV/open-source certs build SmartScreen reputation gradually (over downloads); only **EV** is instant.
+A CA/Browser Forum rule (from March 2026) caps public code-signing certs at 458 days, so expect ~yearly renewal.
 
 ---
 
-## Recommended: Azure Artifact Signing
+## Recommended: Certum Open Source Code Signing (cloud)
+
+Cheapest, fits our MIT license, no hardware, Microsoft-trusted. Available internationally (Certum is an
+EU CA that issues worldwide, Israel included).
 
 ### One-time setup
-1. Create a free **Azure account** (<https://azure.microsoft.com>) and a subscription.
-2. In the Azure Portal, create an **Artifact Signing** (Trusted Signing) account.
-3. Create an **Identity Validation** request and complete it — for an individual this verifies your
-   legal name/identity (can take a few days). This name becomes your publisher name in the signature.
-4. Create a **Certificate Profile** (type: *Public Trust*) once identity is validated.
-5. Note three values from the portal: the **account endpoint** (e.g. `https://eus.codesigning.azure.net/`),
-   the **account name**, and the **certificate profile name**.
+1. Buy an **Open Source Code Signing** certificate on **SimplySign (cloud)** from
+   [certum.store](https://certum.store/open-source-code-signing-on-simplysign.html) (or a reseller).
+2. **Identity verification** — Certum needs proof of identity (a full/notarized copy of your ID),
+   a utility bill, and **the URL of your active open-source project**
+   (`https://github.com/ItayCohen-Prog/CodexWinBar`). Send to `ccp@certum.pl` per their instructions.
+3. Once issued, **activate the certificate on SimplySign** and install **SimplySign Desktop** — it logs
+   into the cloud and loads your certificate into the Windows certificate store.
+4. Find the certificate **SHA-1 thumbprint**: `Get-ChildItem Cert:\CurrentUser\My | Format-List Subject, Thumbprint`
 
-Follow Microsoft's current step-by-step (the portal UI shifts):
-<https://learn.microsoft.com/azure/artifact-signing/quickstart>
-
-### Create the metadata file
-Save this as e.g. `build/azure-signing.json` (do **not** commit it — add to `.gitignore`):
-
-```json
-{
-  "Endpoint": "https://eus.codesigning.azure.net/",
-  "CodeSigningAccountName": "your-account-name",
-  "CertificateProfileName": "your-profile-name"
-}
-```
-
-### Sign locally
-Authenticate once with the Azure CLI (`az login`), then:
+### Sign
+With SimplySign Desktop connected, sign via signtool params:
 
 ```powershell
-./build/pack-windows.ps1 -AzureTrustedSignFile .\build\azure-signing.json
+./build/pack-windows.ps1 -SignParams '/fd sha256 /tr http://time.certum.pl /td sha256 /sha1 <YOUR_THUMBPRINT>'
 ```
 
-Velopack signs every executable and the `Setup.exe` with your cloud certificate.
-
-### Sign in CI (GitHub Actions)
-1. Create an Azure **service principal** with the *Trusted Signing Certificate Profile Signer* role on
-   the signing account, and add these as repository **secrets**:
-   `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`.
-2. In `.github/workflows/release-windows.yml`, before the pack step, write the metadata file and export
-   the credentials, then pass the file to the pack script:
-
-   ```yaml
-   - name: Write signing metadata
-     shell: pwsh
-     run: |
-       @'
-       { "Endpoint": "https://eus.codesigning.azure.net/",
-         "CodeSigningAccountName": "your-account",
-         "CertificateProfileName": "your-profile" }
-       '@ | Set-Content build/azure-signing.json
-   - name: Build & pack installer
-     shell: pwsh
-     env:
-       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-       AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-     run: ./build/pack-windows.ps1 -Version ${{ steps.ver.outputs.version }} -AzureTrustedSignFile build/azure-signing.json
-   ```
-
-   (Velopack uses `DefaultAzureCredential`, which picks up those env vars automatically.)
+(For CI, Certum's cloud signing runs through their SimplySign tooling — doable but more manual than
+SSL.com; many OSS projects just sign the release locally.)
 
 ---
 
-## Alternative: a traditional certificate (signtool)
+## Alternative: SSL.com OV + eSigner (best for CI)
 
-If you buy an OV/EV cert on a token or cloud HSM, pass signtool parameters instead:
+If you'd rather have hands-off GitHub Actions signing:
 
-```powershell
-./build/pack-windows.ps1 -SignParams '/fd sha256 /td sha256 /tr http://timestamp.digicert.com /sha1 <THUMBPRINT>'
-```
-
-`vpk` runs `signtool.exe sign <params> <file>` on each file. The exact params depend on your CA/token
-(cloud HSMs like SSL.com eSigner ship their own signing tool or KSP; follow their docs).
+1. Buy an **OV Code Signing** certificate (~$64.50/yr) from [ssl.com](https://www.ssl.com/products/software-integrity/code-signing/ov/)
+   and add the **eSigner** cloud subscription (~$20/mo). Complete their identity validation.
+2. Two ways to sign, both wired into our script:
+   - **eSigner CKA** (installs a Windows KSP so `signtool` sees the cloud cert):
+     `./build/pack-windows.ps1 -SignParams '/fd sha256 /tr http://ts.ssl.com /td sha256 /sha1 <THUMBPRINT>'`
+   - **CodeSignTool** (a CLI, ideal for CI) via the template mode:
+     ```powershell
+     ./build/pack-windows.ps1 -SignTemplate 'CodeSignTool.bat sign -input_file_path={{file}} -credential_id=$CRED -username=$USER -password=$PASS -totp_secret=$TOTP -override'
+     ```
+3. In CI, store the eSigner credentials as GitHub secrets and add a signing step before the pack step in
+   `.github/workflows/release-windows.yml`, passing `-SignTemplate` (see SSL.com's GitHub Actions guide).
 
 ---
 
 ## After you're signed
 
-- Re-cut the release (the signed `Setup.exe` has a new hash) and **update the winget manifest's
-  `InstallerSha256`** (see `packaging/winget/README.md`).
+- Re-cut the release (a signed `Setup.exe` has a new hash) and **update the winget manifest's
+  `InstallerSha256`** — see `packaging/winget/README.md`.
 - Update the README: drop the "Unknown publisher / Run anyway" note.
-- SmartScreen reputation still accrues with downloads even when signed; if prompts persist, submit the
-  signed file at <https://www.microsoft.com/wdsi/filesubmission>.
+- SmartScreen reputation still accrues with downloads; if prompts persist, submit the signed file at
+  <https://www.microsoft.com/wdsi/filesubmission>.

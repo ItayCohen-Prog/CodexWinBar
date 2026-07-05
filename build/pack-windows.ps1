@@ -14,11 +14,14 @@ param(
     [string]$Configuration = "Release",
     [string]$Runtime = "win-x64",
     # Signing (optional). Provide ONE of these to produce a signed build:
-    #   -AzureTrustedSignFile  path to an Azure Artifact Signing metadata.json (recommended, cloud)
-    #   -SignParams            signtool.exe parameters for a local/traditional certificate
+    #   -AzureTrustedSignFile  path to an Azure Artifact Signing metadata.json (US/Canada only)
+    #   -SignParams            signtool.exe parameters (Certum SimplySign / SSL.com eSigner CKA KSP)
+    #   -SignTemplate          a custom per-file signing command with a {{file}} placeholder
+    #                          (e.g. SSL.com CodeSignTool). Highest flexibility for cloud CLI signers.
     # See docs/windows-port/CODE-SIGNING.md.
     [string]$AzureTrustedSignFile,
-    [string]$SignParams
+    [string]$SignParams,
+    [string]$SignTemplate
 )
 
 $ErrorActionPreference = "Stop"
@@ -59,6 +62,10 @@ if ($AzureTrustedSignFile) {
 elseif ($SignParams) {
     Write-Host "    signing via signtool" -ForegroundColor Cyan
     $packArgs += @("--signParams", $SignParams)
+}
+elseif ($SignTemplate) {
+    Write-Host "    signing via custom template" -ForegroundColor Cyan
+    $packArgs += @("--signTemplate", $SignTemplate)
 }
 else {
     Write-Host "    UNSIGNED build (users get a one-time SmartScreen prompt)" -ForegroundColor Yellow

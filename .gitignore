@@ -50,3 +50,7 @@ obj/
 *.user
 .vs/
 artifacts/
+
+# Code-signing secrets (never commit)
+build/azure-signing.json
+*-signing.json

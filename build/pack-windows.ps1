@@ -12,7 +12,13 @@
 param(
     [string]$Version,
     [string]$Configuration = "Release",
-    [string]$Runtime = "win-x64"
+    [string]$Runtime = "win-x64",
+    # Signing (optional). Provide ONE of these to produce a signed build:
+    #   -AzureTrustedSignFile  path to an Azure Artifact Signing metadata.json (recommended, cloud)
+    #   -SignParams            signtool.exe parameters for a local/traditional certificate
+    # See docs/windows-port/CODE-SIGNING.md.
+    [string]$AzureTrustedSignFile,
+    [string]$SignParams
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,17 +41,29 @@ dotnet publish $app -c $Configuration -r $Runtime --self-contained true `
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed ($LASTEXITCODE)" }
 
 Write-Host "==> Packing with Velopack" -ForegroundColor Cyan
-# NOTE: no --signParams yet. Builds are unsigned for now; users pass the SmartScreen
-# "More info -> Run anyway" prompt once. Add signing here once a certificate is available.
-vpk pack `
-    --packId CodexWinBar `
-    --packVersion $Version `
-    --packDir $publishDir `
-    --mainExe CodexWinBar.exe `
-    --packTitle "CodexWinBar" `
-    --packAuthors "Itay Cohen" `
-    --icon $icon `
-    --outputDir $releaseDir
+$packArgs = @(
+    "pack",
+    "--packId", "CodexWinBar",
+    "--packVersion", $Version,
+    "--packDir", $publishDir,
+    "--mainExe", "CodexWinBar.exe",
+    "--packTitle", "CodexWinBar",
+    "--packAuthors", "Itay Cohen",
+    "--icon", $icon,
+    "--outputDir", $releaseDir
+)
+if ($AzureTrustedSignFile) {
+    Write-Host "    signing via Azure Artifact Signing" -ForegroundColor Cyan
+    $packArgs += @("--azureTrustedSignFile", $AzureTrustedSignFile)
+}
+elseif ($SignParams) {
+    Write-Host "    signing via signtool" -ForegroundColor Cyan
+    $packArgs += @("--signParams", $SignParams)
+}
+else {
+    Write-Host "    UNSIGNED build (users get a one-time SmartScreen prompt)" -ForegroundColor Yellow
+}
+vpk @packArgs
 if ($LASTEXITCODE -ne 0) { throw "vpk pack failed ($LASTEXITCODE)" }
 
 Write-Host ""

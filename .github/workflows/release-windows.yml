@@ -1,0 +1,70 @@
+name: Release (Windows)
+
+# Cuts a Windows release: builds the Velopack installer + update feed and publishes them to a GitHub
+# Release. Trigger by pushing a version tag (e.g. `git tag v1.0.0 && git push origin v1.0.0`) or run
+# manually from the Actions tab with a version input.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 1.0.0, no leading v)'
+        required: true
+
+permissions:
+  contents: write # create the release and upload assets
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            $v = '${{ github.event.inputs.version }}'
+          } else {
+            $v = '${{ github.ref_name }}' -replace '^v', ''
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Releasing CodexWinBar $v"
+
+      - name: Test
+        run: dotnet test CodexWinBar.sln -c Release --nologo
+
+      - name: Install Velopack CLI
+        run: dotnet tool install -g vpk --version 1.2.0
+
+      # Pull prior releases so Velopack can compute delta updates (no-op / harmless on the first release).
+      - name: Download previous releases
+        continue-on-error: true
+        shell: pwsh
+        run: >
+          vpk download github
+          -o artifacts/releases
+          --repoUrl ${{ github.server_url }}/${{ github.repository }}
+          --token ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & pack installer
+        shell: pwsh
+        run: ./build/pack-windows.ps1 -Version ${{ steps.ver.outputs.version }}
+
+      # NOTE: builds are unsigned until a code-signing certificate is wired into build/pack-windows.ps1.
+      - name: Publish GitHub Release
+        shell: pwsh
+        run: >
+          vpk upload github
+          -o artifacts/releases
+          --repoUrl ${{ github.server_url }}/${{ github.repository }}
+          --token ${{ secrets.GITHUB_TOKEN }}
+          --tag v${{ steps.ver.outputs.version }}
+          --releaseName "CodexWinBar ${{ steps.ver.outputs.version }}"
+          --publish

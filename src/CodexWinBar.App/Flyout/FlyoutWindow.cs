@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Windows;
@@ -307,7 +308,9 @@ public sealed class FlyoutWindow : Window
 
     private void HandleDeactivated()
     {
-        if (this.IsInOpenGrace())
+        var grace = this.IsInOpenGrace();
+        var overWidget = IsCursorOverWidget();
+        if (grace)
         {
             return;
         }
@@ -315,7 +318,7 @@ public sealed class FlyoutWindow : Window
         // Clicking the widget deactivates the flyout; that click is a switch/toggle, not a dismiss.
         // Let the widget's Clicked -> Toggle handle it (in-place cross-fade) instead of racing it
         // with a close (which turned switches into a close+reopen slide).
-        if (IsCursorOverWidget())
+        if (overWidget)
         {
             return;
         }
@@ -638,6 +641,20 @@ public sealed class FlyoutWindow : Window
 
     private bool IsCurrentAnimation(int generation) => generation == this.animationGeneration && this.IsVisible && !this.isClosing;
 
+    private void OpenDashboard(Uri url)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(url.ToString()) { UseShellExecute = true });
+            // Launching the browser deactivates the flyout, which light-dismisses it — the expected feel.
+            this.HideFlyout("open dashboard");
+        }
+        catch (Exception ex)
+        {
+            this.log?.Invoke($"Failed to open dashboard {url}: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     private UIElement CreateProviderCard(ProviderState state)
     {
         var descriptor = this.DescriptorFor(state.Provider);
@@ -675,6 +692,16 @@ public sealed class FlyoutWindow : Window
         };
         Grid.SetColumn(subtitle, 2);
         header.Children.Add(subtitle);
+
+        // Clicking the header (logo + name) opens the provider's own web dashboard.
+        if (descriptor.Metadata.DashboardUrl is { } dashboard)
+        {
+            header.Background = Brushes.Transparent; // make the whole row hit-testable, not just the glyph/text
+            header.Cursor = Cursors.Hand;
+            header.ToolTip = $"Open {descriptor.Metadata.DisplayName} dashboard";
+            header.MouseLeftButtonUp += (_, _) => OpenDashboard(dashboard);
+        }
+
         content.Children.Add(header);
 
         if (state.Snapshot is { } snapshot)
@@ -785,10 +812,71 @@ public sealed class FlyoutWindow : Window
         var value = new StackPanel { Orientation = Orientation.Vertical, HorizontalAlignment = HorizontalAlignment.Right };
         value.Children.Add(new TextBlock { Text = string.Create(CultureInfo.InvariantCulture, $"{percent:0}%"), FontSize = 12, Foreground = this.ResourceBrush("FlyoutForeground"), TextAlignment = TextAlignment.Right });
         value.Children.Add(new TextBlock { Text = this.ResetText(window), FontSize = 11, Foreground = this.ResourceBrush("FlyoutSecondaryForeground"), TextAlignment = TextAlignment.Right });
+        if (this.CreatePaceBadge(window) is { } paceBadge)
+        {
+            value.Children.Add(paceBadge);
+        }
+
         Grid.SetColumn(value, 2);
         grid.Children.Add(value);
         return grid;
     }
+
+    // Small colored pace indicator: a triangle (up = at risk, down = under-using) or a level bar
+    // (on track), followed by the projected end-of-window usage. Null when disabled or not computable.
+    private FrameworkElement? CreatePaceBadge(RateWindow window)
+    {
+        if (!this.settings.ShowPaceIndicator || PaceCalculator.Compute(window, DateTimeOffset.UtcNow) is not { } pace)
+        {
+            return null;
+        }
+
+        var (color, shape, verb) = PaceVisual(pace.State);
+        var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 1, 0, 0) };
+        shape.VerticalAlignment = VerticalAlignment.Center;
+        shape.Margin = new Thickness(0, 0, 4, 0);
+        row.Children.Add(shape);
+        row.Children.Add(new TextBlock
+        {
+            Text = string.Create(CultureInfo.InvariantCulture, $"{pace.ProjectedPercent:0}%"),
+            FontSize = 11,
+            Foreground = new SolidColorBrush(color),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        row.ToolTip = string.Create(CultureInfo.InvariantCulture, $"On pace to reach {pace.ProjectedPercent:0}% by reset — {verb}");
+        return row;
+    }
+
+    // Brand colors + shape per pace band; kept in sync (by RGB) with the widget renderer's PaceColor.
+    private static (Color Color, Shape Shape, string Verb) PaceVisual(PaceState state) => state switch
+    {
+        PaceState.AtRisk => (PaceRed, PaceTriangle(up: true, PaceRed), "on track to run out early"),
+        PaceState.Underusing => (PaceBlue, PaceTriangle(up: false, PaceBlue), "barely using your quota"),
+        _ => (PaceGreen, PaceLevelBar(PaceGreen), "on track"),
+    };
+
+    private static readonly Color PaceRed = Color.FromRgb(0xE5, 0x48, 0x4D);
+    private static readonly Color PaceGreen = Color.FromRgb(0x30, 0xA4, 0x6C);
+    private static readonly Color PaceBlue = Color.FromRgb(0x4C, 0x8D, 0xF0);
+
+    private static Polygon PaceTriangle(bool up, Color color) => new()
+    {
+        Width = 9,
+        Height = 7,
+        Fill = new SolidColorBrush(color),
+        Points = up
+            ? [new Point(0, 7), new Point(4.5, 0), new Point(9, 7)]
+            : [new Point(0, 0), new Point(9, 0), new Point(4.5, 7)],
+    };
+
+    private static Rectangle PaceLevelBar(Color color) => new()
+    {
+        Width = 9,
+        Height = 3,
+        RadiusX = 1,
+        RadiusY = 1,
+        Fill = new SolidColorBrush(color),
+    };
 
     private UIElement CreateCreditsRow(CreditsSnapshot credits)
     {
@@ -820,10 +908,55 @@ public sealed class FlyoutWindow : Window
         return row;
     }
 
+    // First-run / empty state: shown when no providers are enabled. Welcomes the user and points them
+    // straight into Settings to connect their first provider, rather than leaving a blank popup.
     private UIElement CreateEmptyCard()
     {
         var card = this.CreateCardShell();
-        card.Child = new TextBlock { Text = "No providers enabled - open Settings", FontSize = 13, Foreground = this.ResourceBrush("FlyoutSecondaryForeground") };
+        var content = new StackPanel { Orientation = Orientation.Vertical };
+
+        content.Children.Add(new TextBlock
+        {
+            Text = "Welcome to CodexWinBar",
+            FontSize = 14,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = this.ResourceBrush("FlyoutForeground"),
+            Margin = new Thickness(0, 0, 0, 6),
+        });
+
+        content.Children.Add(new TextBlock
+        {
+            Text = "Connect a provider to see your usage limits at a glance. Codex and Claude sign in with your "
+                + "existing session — others just need an API key.",
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = this.ResourceBrush("FlyoutSecondaryForeground"),
+            Margin = new Thickness(0, 0, 0, 12),
+        });
+
+        var button = new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(0x3B, 0x82, 0xF6)),
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(14, 7, 14, 7),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Cursor = Cursors.Hand,
+            Child = new TextBlock
+            {
+                Text = "Open Settings",
+                FontSize = 12,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = Brushes.White,
+            },
+        };
+        button.MouseLeftButtonUp += (_, _) =>
+        {
+            this.HideFlyout("empty: open settings");
+            this.openSettings();
+        };
+        content.Children.Add(button);
+
+        card.Child = content;
         return card;
     }
 
@@ -882,10 +1015,11 @@ public sealed class FlyoutWindow : Window
         settingsButton.Click += (_, _) => { this.HideFlyout("close: settings"); this.openSettings(); };
         Grid.SetColumn(settingsButton, 2);
         footer.Children.Add(settingsButton);
-        var quitButton = this.CreateIconButton(LogoImages.IconGlyph(LogoImages.CloseGlyph, 10), "Quit");
-        quitButton.Click += (_, _) => this.quit();
-        Grid.SetColumn(quitButton, 3);
-        footer.Children.Add(quitButton);
+        // The X only closes the flyout, never the app — quitting is reserved for the tray menu.
+        var closeButton = this.CreateIconButton(LogoImages.IconGlyph(LogoImages.CloseGlyph, 10), "Close");
+        closeButton.Click += (_, _) => this.HideFlyout("close: x-button");
+        Grid.SetColumn(closeButton, 3);
+        footer.Children.Add(closeButton);
         return footer;
     }
 
@@ -1150,19 +1284,29 @@ public sealed class FlyoutWindow : Window
 
     private IntPtr HandleMouseHook(int code, IntPtr wParam, IntPtr lParam)
     {
-        if (code >= 0 && this.IsOpen && IsMouseDownMessage(wParam.ToInt32()) && !this.IsInOpenGrace())
+        if (code >= 0 && IsMouseDownMessage(wParam.ToInt32()))
         {
             var hook = Marshal.PtrToStructure<MouseHookStruct>(lParam);
-            // The HWND is fixed to the tallest provider, so a shorter provider leaves transparent
-            // space above the panel that is still inside the window rect. Dismiss against the VISIBLE
-            // panel region (bottom-anchored) so clicking that empty gap closes the flyout as expected.
-            var flyoutRect = this.VisiblePanelPhysicalRect();
-            // A click on the CodexWinBar widget is a switch/toggle, not an outside-dismiss — let the
-            // widget's own click routing handle it. Dismissing here would race the switch and turn it
-            // into a close+reopen slide instead of the in-place cross-fade.
-            if (!flyoutRect.Contains(hook.Point.X, hook.Point.Y) && !IsWidgetClick(hook.Point))
+            // No open-grace here: a real mouse-down outside the panel is always an intentional dismiss.
+            // (The opening click can't reach this hook — it's installed only after the flyout opens — so
+            // there's nothing to protect against.) The grace stays on the deactivation path only, where a
+            // spurious focus-loss right after opening must be ignored. Applying it here ate the first
+            // click when the user opened and clicked away quickly (and switching re-armed the timer).
+            if (this.IsOpen)
             {
-                _ = this.Dispatcher.BeginInvoke(() => this.HideFlyout("close: outside-click"));
+                // The HWND is fixed to the tallest provider, so a shorter provider leaves transparent
+                // space above the panel that is still inside the window rect. Dismiss against the VISIBLE
+                // panel region (bottom-anchored) so clicking that empty gap closes the flyout as expected.
+                var flyoutRect = this.VisiblePanelPhysicalRect();
+                var contains = flyoutRect.Contains(hook.Point.X, hook.Point.Y);
+                var widget = IsWidgetClick(hook.Point);
+                // A click on the CodexWinBar widget is a switch/toggle, not an outside-dismiss — let the
+                // widget's own click routing handle it. Dismissing here would race the switch and turn it
+                // into a close+reopen slide instead of the in-place cross-fade.
+                if (!contains && !widget)
+                {
+                    _ = this.Dispatcher.BeginInvoke(() => this.HideFlyout("close: outside-click"));
+                }
             }
         }
 

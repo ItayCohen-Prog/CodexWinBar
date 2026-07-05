@@ -93,6 +93,9 @@ internal sealed class AppShell : IDisposable
     private readonly QuotaNotifier quotaNotifier;
     private readonly CancellationTokenSource pipeCancellation = new();
     private readonly Action usageStateChangedHandler;
+    // Providers the user has already opened while at-risk; suppresses the bob until they drop out of the
+    // at-risk band and re-enter it (so it nudges once per episode rather than nagging every refresh).
+    private readonly HashSet<string> acknowledgedRisk = new(StringComparer.OrdinalIgnoreCase);
     private WidgetHostMode? lastWidgetModeRequest;
     private WidgetSide? lastWidgetSide;
     private WidgetRenderState lastWidgetState = new() { Chips = [] };
@@ -198,6 +201,12 @@ internal sealed class AppShell : IDisposable
 
     private void ToggleFlyout(System.Drawing.Rectangle anchorPhysicalPx, ProviderId? focusProvider = null)
     {
+        // Opening a provider acknowledges its at-risk nudge, so its chip stops bobbing.
+        if (focusProvider is { } focus && this.acknowledgedRisk.Add(focus.ConfigId()))
+        {
+            this.UpdateWidget();
+        }
+
         if (this.flyout.IsOpen)
         {
             this.flyout.Toggle(anchorPhysicalPx, focusProvider);
@@ -251,13 +260,81 @@ internal sealed class AppShell : IDisposable
 
     private void UpdateWidget(UiSettings settings)
     {
-        var chips = this.usageStore.States.Select(state => this.ToChipState(state, settings)).ToArray();
+        var states = this.usageStore.States;
+        var chips = states.Select(state => this.ToChipState(state, settings)).ToArray();
+        this.ApplyAttention(chips, states);
         this.lastWidgetState = new WidgetRenderState
         {
             Chips = chips,
             IsLoading = this.usageStore.States.Any(state => state.IsRefreshing),
         };
         this.widgetHost.Update(this.lastWidgetState);
+    }
+
+    // Flags the single most at-risk provider so its chip bobs — the one on pace to run out SOONEST
+    // (combining burn rate and how little is left), unless the user has already opened it this episode.
+    // Acknowledgements for providers no longer at-risk are dropped so a fresh spike bobs again.
+    private void ApplyAttention(WidgetChipState[] chips, IReadOnlyList<ProviderState> states)
+    {
+        var atRisk = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var chip in chips)
+        {
+            if (chip.PaceBand == 2)
+            {
+                atRisk.Add(chip.ProviderKey);
+            }
+        }
+
+        this.acknowledgedRisk.IntersectWith(atRisk);
+
+        int target = -1;
+        double soonest = double.PositiveInfinity;
+        for (int i = 0; i < chips.Length; i++)
+        {
+            var chip = chips[i];
+            if (chip.PaceBand != 2 || this.acknowledgedRisk.Contains(chip.ProviderKey))
+            {
+                continue;
+            }
+
+            var window = states[i].Snapshot?.Primary ?? states[i].Snapshot?.Secondary;
+            double minutes = MinutesToExhaustion(window) ?? double.MaxValue;
+            if (minutes < soonest)
+            {
+                soonest = minutes;
+                target = i;
+            }
+        }
+
+        if (target >= 0)
+        {
+            chips[target] = chips[target] with { Attention = true };
+        }
+    }
+
+    // Projected minutes until a window hits 100% at the current burn rate; null when unknowable.
+    // Lower = more urgent. Folds together burn rate (used ÷ elapsed) and how much quota is left.
+    private static double? MinutesToExhaustion(RateWindow? window)
+    {
+        if (window is null || window.WindowMinutes is not { } minutes || minutes <= 0 ||
+            window.ResetsAt is not { } resetsAt || window.UsedPercent <= 0)
+        {
+            return null;
+        }
+
+        var elapsedFraction = 1.0 - ((resetsAt - DateTimeOffset.UtcNow).TotalMinutes / minutes);
+        if (elapsedFraction <= 0.001)
+        {
+            return null;
+        }
+
+        var burnPerMinute = window.UsedPercent / (minutes * elapsedFraction);
+        if (burnPerMinute <= 0)
+        {
+            return null;
+        }
+
+        return Math.Max(0, (100 - window.UsedPercent) / burnPerMinute);
     }
 
     private WidgetChipState ToChipState(ProviderState state, UiSettings settings)
@@ -267,6 +344,7 @@ internal sealed class AppShell : IDisposable
         var secondary = state.Snapshot?.Secondary;
         var sessionPercent = WindowPercent(primary, settings.UsageBarsShowUsed);
         var weeklyPercent = WindowPercent(secondary, settings.UsageBarsShowUsed);
+        var (paceBand, paceProjected) = ChipPace(primary, secondary, settings);
         return new WidgetChipState
         {
             ProviderKey = state.Provider.ConfigId(),
@@ -279,8 +357,28 @@ internal sealed class AppShell : IDisposable
             Text = WidgetText(primary, secondary, settings),
             IsStale = state.IsStale,
             IncidentLevel = IncidentLevel(state.ServiceStatus),
+            PaceBand = paceBand,
+            PaceProjectedPercent = paceProjected,
             Tooltip = Tooltip(descriptor, state, settings),
         };
+    }
+
+    // Pace for the chip is taken from the session window (falling back to weekly). Returns band
+    // (-1 none, 0 under-using, 1 on-track, 2 at-risk) and the projected end-of-window usage.
+    private static (int Band, double Projected) ChipPace(RateWindow? primary, RateWindow? secondary, UiSettings settings)
+    {
+        if (!settings.ShowPaceIndicator)
+        {
+            return (-1, 0);
+        }
+
+        var window = primary ?? secondary;
+        if (window is null || PaceCalculator.Compute(window, DateTimeOffset.UtcNow) is not { } pace)
+        {
+            return (-1, 0);
+        }
+
+        return ((int)pace.State, pace.ProjectedPercent);
     }
 
     private void StartActivationPipe()

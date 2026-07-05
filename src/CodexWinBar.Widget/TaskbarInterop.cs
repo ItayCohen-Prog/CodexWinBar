@@ -93,6 +93,25 @@ internal static class TaskbarInterop
         return ToRectangle(mapped).IntersectsWith(screenRect);
     }
 
+    /// <summary>
+    /// Screen rect of the centered app band (Start/pinned/running task buttons), used to keep the widget
+    /// from overlapping it. Returns null on builds where the classic MSTask*/rebar windows aren't present
+    /// (the caller then falls back to the taskbar centre).
+    /// </summary>
+    internal static Rectangle? TryGetAppClusterRect(IntPtr taskbar)
+    {
+        foreach (var className in new[] { "MSTaskListWClass", "MSTaskSwWClass", "ReBarWindow32" })
+        {
+            IntPtr hwnd = FindDescendant(taskbar, className);
+            if (hwnd != IntPtr.Zero && NativeMethods.GetWindowRect(hwnd, out NativeMethods.RECT rect) && rect.Right > rect.Left)
+            {
+                return ToRectangle(rect);
+            }
+        }
+
+        return null;
+    }
+
     internal static Rectangle ToRectangle(NativeMethods.RECT rect) => Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom);
 
     private static IntPtr FindDescendant(IntPtr parent, string className)

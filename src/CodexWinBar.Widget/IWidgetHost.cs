@@ -27,6 +27,12 @@ public sealed record WidgetChipState
     public bool IsStale { get; init; }
     /// <summary>Incident dot color category: 0 none, 1 minor/maintenance, 2 major/critical/unknown.</summary>
     public int IncidentLevel { get; init; }
+    /// <summary>Pace band for the session window: -1 none/disabled, 0 under-using, 1 on-track, 2 at-risk.</summary>
+    public int PaceBand { get; init; } = -1;
+    /// <summary>Projected end-of-window usage backing <see cref="PaceBand"/>; 0 when no pace.</summary>
+    public double PaceProjectedPercent { get; init; }
+    /// <summary>When true the chip gently bobs to draw attention (the most at-risk provider, until opened).</summary>
+    public bool Attention { get; init; }
     public string? Tooltip { get; init; }
 }
 

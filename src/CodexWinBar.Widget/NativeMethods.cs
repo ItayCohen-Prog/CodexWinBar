@@ -325,6 +325,14 @@ internal static partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool KillTimer(IntPtr hWnd, nuint uIDEvent);
 
+    // Raise the system timer resolution while animating so WM_TIMER fires close to the requested cadence
+    // (default resolution is ~15.6ms and jittery). Must be balanced by timeEndPeriod.
+    [LibraryImport("winmm.dll", EntryPoint = "timeBeginPeriod")]
+    internal static partial uint TimeBeginPeriod(uint uPeriod);
+
+    [LibraryImport("winmm.dll", EntryPoint = "timeEndPeriod")]
+    internal static partial uint TimeEndPeriod(uint uPeriod);
+
     [LibraryImport("kernel32.dll", EntryPoint = "GetModuleHandleW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
     internal static partial IntPtr GetModuleHandleW(string? lpModuleName);
 

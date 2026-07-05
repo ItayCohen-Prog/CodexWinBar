@@ -11,29 +11,47 @@ internal sealed class WidgetRenderer : IDisposable
 {
     private const int LogoCacheLimit = 32;
 
-    // Above this many providers the rich chip (logo + dual gauge + text) is too wide for a taskbar,
-    // so the widget switches to compact chips: just the logo with a usage underline and incident dot.
-    // The details stay one click away in the flyout. Chosen so the common 1-3 provider setups stay rich.
-    private const int CompactChipThreshold = 3;
     private readonly ThemeReader _theme;
     private readonly Dictionary<(string GlyphKey, int TargetPixelSize, bool Dark), Bitmap> _logoCache = [];
     private Font? _font;
     private int _fontDpi;
     private float _fontSize;
 
+    // The tier chosen at the last horizontal Measure, reused by Draw so a hover re-render (which does
+    // not re-measure) stays consistent. Vertical layout ignores this.
+    private WidgetTier _tier = WidgetTier.Full;
+
+    // How the horizontal strip collapses to fit the space between the centered taskbar apps and the tray.
+    // Full: logo + two gauges + "82% · W 55%". Medium: logo + one gauge + "82%" + pace mark. Compact:
+    // logo + usage underline + dots. Never scrolls — Compact is the floor even if it still overflows.
+    private enum WidgetTier
+    {
+        Full,
+        Medium,
+        Compact,
+    }
+
     internal WidgetRenderer(ThemeReader theme)
     {
         _theme = theme;
     }
 
-    internal int Measure(WidgetRenderState state, uint dpi) => Measure(state, dpi, false, null);
+    internal int Measure(WidgetRenderState state, uint dpi) => Measure(state, dpi, false, int.MaxValue, null);
+
+    internal int Measure(WidgetRenderState state, uint dpi, bool vertical, List<Rectangle>? chipBounds) =>
+        Measure(state, dpi, vertical, int.MaxValue, chipBounds);
 
     /// <summary>
     /// Measures the widget along the taskbar. For a horizontal (bottom/top) taskbar this is the total
     /// WIDTH; for a vertical (left/right) taskbar it is the total HEIGHT. Fills <paramref name="chipBounds"/>
     /// with per-chip rects along that axis (the cross-axis dimension is filled in at hit-test time).
     /// </summary>
-    internal int Measure(WidgetRenderState state, uint dpi, bool vertical, List<Rectangle>? chipBounds)
+    /// <summary>
+    /// Measures the widget along the taskbar and fills <paramref name="chipBounds"/>. For a horizontal
+    /// taskbar it picks the widest chip tier whose total length fits <paramref name="availableAlong"/>
+    /// (the free span between the centered taskbar apps and the tray) — Full, then Medium, then Compact.
+    /// </summary>
+    internal int Measure(WidgetRenderState state, uint dpi, bool vertical, int availableAlong, List<Rectangle>? chipBounds)
     {
         float scale = Scale(dpi);
         using Bitmap bitmap = new(1, 1);
@@ -45,18 +63,17 @@ internal sealed class WidgetRenderer : IDisposable
         chipBounds?.Clear();
         return vertical
             ? MeasureVertical(graphics, font, state, scale, chipBounds)
-            : MeasureHorizontal(graphics, font, state, scale, chipBounds);
+            : MeasureHorizontal(graphics, font, state, scale, availableAlong, chipBounds);
     }
 
-    private int MeasureHorizontal(Graphics graphics, Font font, WidgetRenderState state, float scale, List<Rectangle>? chipBounds)
+    private int MeasureHorizontal(Graphics graphics, Font font, WidgetRenderState state, float scale, int availableAlong, List<Rectangle>? chipBounds)
     {
-        bool compact = IsCompact(state);
-        int gap = Px(compact ? 6 : 10, scale);
+        _tier = ChooseTier(graphics, font, state, scale, availableAlong);
+        int gap = TierGap(_tier, scale);
         int width = 0;
         for (int i = 0; i < state.Chips.Count; i++)
         {
-            WidgetChipState chip = state.Chips[i];
-            int chipWidth = compact ? MeasureChipCompact(scale) : MeasureChip(graphics, font, chip, scale);
+            int chipWidth = ChipWidth(graphics, font, state.Chips[i], scale, _tier);
             chipBounds?.Add(new Rectangle(width, 0, chipWidth, 0));
             width += chipWidth;
             if (i < state.Chips.Count - 1)
@@ -67,6 +84,45 @@ internal sealed class WidgetRenderer : IDisposable
 
         return Math.Max(Px(1, scale), width);
     }
+
+    // Picks the widest tier whose whole strip fits the available span; Compact is the floor.
+    private WidgetTier ChooseTier(Graphics graphics, Font font, WidgetRenderState state, float scale, int availableAlong)
+    {
+        foreach (var tier in new[] { WidgetTier.Full, WidgetTier.Medium })
+        {
+            if (StripWidth(graphics, font, state, scale, tier) <= availableAlong)
+            {
+                return tier;
+            }
+        }
+
+        return WidgetTier.Compact;
+    }
+
+    private int StripWidth(Graphics graphics, Font font, WidgetRenderState state, float scale, WidgetTier tier)
+    {
+        int gap = TierGap(tier, scale);
+        int width = 0;
+        for (int i = 0; i < state.Chips.Count; i++)
+        {
+            width += ChipWidth(graphics, font, state.Chips[i], scale, tier);
+            if (i < state.Chips.Count - 1)
+            {
+                width += gap;
+            }
+        }
+
+        return width;
+    }
+
+    private int ChipWidth(Graphics graphics, Font font, WidgetChipState chip, float scale, WidgetTier tier) => tier switch
+    {
+        WidgetTier.Full => MeasureChip(graphics, font, chip, scale),
+        WidgetTier.Medium => MeasureChipMedium(graphics, font, chip, scale),
+        _ => MeasureChipCompact(scale),
+    };
+
+    private static int TierGap(WidgetTier tier, float scale) => Px(tier == WidgetTier.Compact ? 6 : 10, scale);
 
     private int MeasureVertical(Graphics graphics, Font font, WidgetRenderState state, float scale, List<Rectangle>? chipBounds)
     {
@@ -86,16 +142,15 @@ internal sealed class WidgetRenderer : IDisposable
         return Math.Max(Px(1, scale), height);
     }
 
-    private static bool IsCompact(WidgetRenderState state) => state.Chips.Count > CompactChipThreshold;
 
-    internal bool RenderToWindow(IntPtr hwnd, WidgetRenderState state, int width, int height, uint dpi, bool vertical, int hoveredIndex, Point? screenLocation)
+    internal bool RenderToWindow(IntPtr hwnd, WidgetRenderState state, int width, int height, uint dpi, bool vertical, int hoveredIndex, int bobMs, Point? screenLocation)
     {
         if (width <= 0 || height <= 0)
         {
             return false;
         }
 
-        using Bitmap bitmap = BuildBitmap(state, width, height, dpi, vertical, hoveredIndex);
+        using Bitmap bitmap = BuildBitmap(state, width, height, dpi, vertical, hoveredIndex, bobMs);
 
         IntPtr screenDc = IntPtr.Zero;
         IntPtr memoryDc = NativeMethods.CreateCompatibleDC(screenDc);
@@ -129,18 +184,18 @@ internal sealed class WidgetRenderer : IDisposable
     }
 
     /// <summary>Draws the widget to a 32bpp premultiplied-alpha bitmap (the surface RenderToWindow blits).</summary>
-    internal Bitmap BuildBitmap(WidgetRenderState state, int width, int height, uint dpi, bool vertical, int hoveredIndex)
+    internal Bitmap BuildBitmap(WidgetRenderState state, int width, int height, uint dpi, bool vertical, int hoveredIndex, int bobMs = 0)
     {
         var bitmap = new Bitmap(Math.Max(1, width), Math.Max(1, height), PixelFormat.Format32bppPArgb);
         using (Graphics graphics = Graphics.FromImage(bitmap))
         {
             if (vertical)
             {
-                DrawVertical(graphics, state, width, height, dpi, hoveredIndex);
+                DrawVertical(graphics, state, width, height, dpi, hoveredIndex, bobMs);
             }
             else
             {
-                Draw(graphics, state, width, height, dpi, hoveredIndex);
+                Draw(graphics, state, width, height, dpi, hoveredIndex, bobMs);
             }
         }
 
@@ -156,7 +211,7 @@ internal sealed class WidgetRenderer : IDisposable
         }
     }
 
-    private void Draw(Graphics graphics, WidgetRenderState state, int width, int height, uint dpi, int hoveredIndex)
+    private void Draw(Graphics graphics, WidgetRenderState state, int width, int height, uint dpi, int hoveredIndex, int bobMs = 0)
     {
         float scale = Scale(dpi);
         graphics.Clear(Color.FromArgb(1, 0, 0, 0));
@@ -168,15 +223,15 @@ internal sealed class WidgetRenderer : IDisposable
         Font font = GetFont(dpi);
         Color foreground = _theme.SystemUsesLightTheme ? Color.FromArgb(230, 27, 27, 27) : Color.FromArgb(230, 255, 255, 255);
         Color track = Color.FromArgb(64, foreground.R, foreground.G, foreground.B);
-        bool compact = IsCompact(state);
-        int gap = Px(compact ? 6 : 10, scale);
+        WidgetTier tier = _tier;
+        int gap = TierGap(tier, scale);
         int count = state.Chips.Count;
         var starts = new int[count];
         var lengths = new int[count];
         int x = 0;
         for (int i = 0; i < count; i++)
         {
-            lengths[i] = compact ? MeasureChipCompact(scale) : MeasureChip(graphics, font, state.Chips[i], scale);
+            lengths[i] = ChipWidth(graphics, font, state.Chips[i], scale, tier);
             starts[i] = x;
             x += lengths[i] + (i < count - 1 ? gap : 0);
         }
@@ -193,16 +248,60 @@ internal sealed class WidgetRenderer : IDisposable
         for (int i = 0; i < count; i++)
         {
             WidgetChipState chip = state.Chips[i];
-            Rectangle bounds = new(starts[i], 0, lengths[i], height);
-            if (compact)
+            int bobY = chip.Attention ? BobOffset(bobMs, scale) : 0;
+            Rectangle bounds = new(starts[i], bobY, lengths[i], height);
+            switch (tier)
             {
-                DrawChipCompact(graphics, font, chip, bounds, scale, foreground, track);
-            }
-            else
-            {
-                DrawChip(graphics, font, chip, bounds, scale, foreground, track);
+                case WidgetTier.Compact:
+                    DrawChipCompact(graphics, font, chip, bounds, scale, foreground, track);
+                    break;
+                case WidgetTier.Medium:
+                    DrawChipMedium(graphics, font, chip, bounds, scale, foreground, track);
+                    break;
+                default:
+                    DrawChip(graphics, font, chip, bounds, scale, foreground, track);
+                    break;
             }
         }
+    }
+
+    /// <summary>
+    /// Vertical offset (always upward, ≤ 0) for an attention chip's gentle bob: a few decaying bounces
+    /// then a rest, on a repeating cycle, so it nudges without being a constant distraction.
+    /// </summary>
+    // Dock-style bounce: the chip is launched up and does a few decaying parabolic hops, each landing
+    // with a snappy impact (a velocity flip at the bottom — what makes it read as "bouncy" not floaty),
+    // then rests before the next nudge. Always upward. Driven by ELAPSED MILLISECONDS (not a frame
+    // counter) so timer jitter never turns into stutter — every frame lands at the right position.
+    private static int BobOffset(int elapsedMs, float scale)
+    {
+        // Hop durations in ms; taller hops take longer (time-of-flight ∝ √height).
+        Span<int> durations = [190, 140, 95];
+        double peak0 = Px(9, scale);
+        Span<double> peaks = [peak0, peak0 * 0.5, peak0 * 0.25];
+
+        int activeMs = durations[0] + durations[1] + durations[2];
+        int cycleMs = activeMs + 1100;                 // ~1.1s rest between bounces
+        int t = ((elapsedMs % cycleMs) + cycleMs) % cycleMs;
+        if (t >= activeMs)
+        {
+            return 0;
+        }
+
+        int acc = 0;
+        for (int i = 0; i < durations.Length; i++)
+        {
+            if (t < acc + durations[i])
+            {
+                double x = (t - acc) / (double)durations[i];  // 0..1 within this hop
+                double height = 4 * peaks[i] * x * (1 - x);    // parabolic arc: 0 → peak → 0
+                return -(int)Math.Round(height);
+            }
+
+            acc += durations[i];
+        }
+
+        return 0;
     }
 
     /// <summary>
@@ -280,7 +379,7 @@ internal sealed class WidgetRenderer : IDisposable
     /// NOT YET LIVE-TESTED on a real side taskbar — verified only via offline renders (Windows 11 can't
     /// move the taskbar off the bottom). Check on Win10 or a Win11 taskbar tool before relying on it.
     /// </summary>
-    private void DrawVertical(Graphics graphics, WidgetRenderState state, int width, int height, uint dpi, int hoveredIndex)
+    private void DrawVertical(Graphics graphics, WidgetRenderState state, int width, int height, uint dpi, int hoveredIndex, int bobMs = 0)
     {
         float scale = Scale(dpi);
         graphics.Clear(Color.FromArgb(1, 0, 0, 0));
@@ -310,7 +409,8 @@ internal sealed class WidgetRenderer : IDisposable
 
         for (int i = 0; i < count; i++)
         {
-            DrawChipVertical(graphics, font, state.Chips[i], new Rectangle(0, starts[i], width, lengths[i]), scale, foreground);
+            int bobY = state.Chips[i].Attention ? BobOffset(bobMs, scale) : 0;
+            DrawChipVertical(graphics, font, state.Chips[i], new Rectangle(0, starts[i] + bobY, width, lengths[i]), scale, foreground);
         }
     }
 
@@ -486,6 +586,134 @@ internal sealed class WidgetRenderer : IDisposable
         {
             using SolidBrush textBrush = new(fg);
             graphics.DrawString(chip.Text, font, textBrush, new PointF(x, y + (contentHeight - font.GetHeight(graphics)) / 2));
+            SizeF text = graphics.MeasureString(chip.Text, font, int.MaxValue, StringFormat.GenericTypographic);
+            x += (int)Math.Ceiling(text.Width);
+        }
+
+        if (chip.PaceBand >= 0)
+        {
+            DrawPaceMark(graphics, x + gap, y + contentHeight / 2, scale, chip.PaceBand, opacity);
+        }
+    }
+
+    // Medium tier: logo + one session gauge + the session %, plus the pace mark — half the width of the
+    // full chip but still shows a live number. Weekly detail drops to the flyout.
+    private void DrawChipMedium(Graphics graphics, Font font, WidgetChipState chip, Rectangle bounds, float scale, Color foreground, Color track)
+    {
+        float opacity = chip.IsStale ? 0.55f : 1.0f;
+        int padding = Px(8, scale);
+        int glyphSize = Px(14, scale);
+        int gaugeWidth = Px(16, scale);
+        int gaugeHeight = Px(4, scale);
+        int gap = Px(5, scale);
+
+        int contentHeight = Math.Max(glyphSize, (int)Math.Ceiling(font.GetHeight(graphics)));
+        int y = bounds.Top + (bounds.Height - contentHeight) / 2;
+        int x = bounds.Left + padding;
+        Color brand = Color.FromArgb(ApplyOpacity(255, opacity), chip.BrandR, chip.BrandG, chip.BrandB);
+        Color fg = Color.FromArgb(ApplyOpacity(foreground.A, opacity), foreground.R, foreground.G, foreground.B);
+
+        int glyphY = y + (contentHeight - glyphSize) / 2;
+        DrawLogoOrInitial(graphics, chip, x, glyphY, glyphSize, brand, font, opacity);
+        if (chip.IncidentLevel > 0)
+        {
+            Color dot = chip.IncidentLevel == 1 ? Color.FromArgb(0xF8, 0xA8, 0x00) : Color.FromArgb(0xC4, 0x2B, 0x1C);
+            using SolidBrush dotBrush = new(Color.FromArgb(ApplyOpacity(255, opacity), dot.R, dot.G, dot.B));
+            int dotSize = Px(4, scale);
+            graphics.FillEllipse(dotBrush, x + glyphSize - dotSize / 2, glyphY - dotSize / 2, dotSize, dotSize);
+        }
+
+        x += glyphSize + gap;
+        double? usage = chip.SessionPercent ?? chip.WeeklyPercent;
+        if (usage.HasValue)
+        {
+            int gaugeY = y + (contentHeight - gaugeHeight) / 2;
+            DrawGauge(graphics, x, gaugeY, gaugeWidth, gaugeHeight, usage, track, brand, opacity, scale);
+            x += gaugeWidth + gap;
+            using SolidBrush textBrush = new(fg);
+            string percent = FormatPercent(usage.Value);
+            graphics.DrawString(percent, font, textBrush, new PointF(x, y + (contentHeight - font.GetHeight(graphics)) / 2));
+            SizeF text = graphics.MeasureString(percent, font, int.MaxValue, StringFormat.GenericTypographic);
+            x += (int)Math.Ceiling(text.Width);
+        }
+
+        if (chip.PaceBand >= 0)
+        {
+            DrawPaceMark(graphics, x + gap, y + contentHeight / 2, scale, chip.PaceBand, opacity);
+        }
+    }
+
+    private int MeasureChipMedium(Graphics graphics, Font font, WidgetChipState chip, float scale)
+    {
+        int gap = Px(5, scale);
+        int width = Px(8, scale) * 2 + Px(14, scale);
+        double? usage = chip.SessionPercent ?? chip.WeeklyPercent;
+        if (usage.HasValue)
+        {
+            width += gap + Px(16, scale);
+            SizeF text = graphics.MeasureString(FormatPercent(usage.Value), font, int.MaxValue, StringFormat.GenericTypographic);
+            width += gap + (int)Math.Ceiling(text.Width);
+        }
+
+        if (chip.PaceBand >= 0)
+        {
+            width += gap + PaceMarkWidth(scale);
+        }
+
+        return width;
+    }
+
+    private void DrawLogoOrInitial(Graphics graphics, WidgetChipState chip, int x, int y, int glyphSize, Color brand, Font font, float opacity)
+    {
+        if (this.GetLogo(chip.GlyphKey, glyphSize, dark: !_theme.SystemUsesLightTheme) is { } logo)
+        {
+            var previousInterpolation = graphics.InterpolationMode;
+            var previousPixelOffset = graphics.PixelOffsetMode;
+            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            graphics.DrawImage(logo, new Rectangle(x, y, glyphSize, glyphSize));
+            graphics.InterpolationMode = previousInterpolation;
+            graphics.PixelOffsetMode = previousPixelOffset;
+            return;
+        }
+
+        using SolidBrush brandBrush = new(brand);
+        graphics.FillEllipse(brandBrush, x, y, glyphSize, glyphSize);
+        string letter = string.IsNullOrWhiteSpace(chip.GlyphKey) ? "?" : chip.GlyphKey[..1].ToUpperInvariant();
+        using StringFormat centered = new() { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+        using Font glyphFont = new(font.FontFamily, Math.Max(6, glyphSize * 0.62f), FontStyle.Bold, GraphicsUnit.Pixel);
+        using SolidBrush glyphText = new(Color.FromArgb(ApplyOpacity(230, opacity), 255, 255, 255));
+        graphics.DrawString(letter, glyphFont, glyphText, new RectangleF(x, y, glyphSize, glyphSize), centered);
+    }
+
+    private static int PaceMarkWidth(float scale) => Px(7, scale);
+
+    // Up triangle = at-risk (red), down triangle = under-using (blue), level bar = on-track (green).
+    // RGBs match the flyout's pace badge (FlyoutWindow.PaceRed/Green/Blue).
+    private static void DrawPaceMark(Graphics graphics, int x, int centerY, float scale, int band, float opacity)
+    {
+        int w = Px(7, scale);
+        int h = Px(6, scale);
+        int top = centerY - h / 2;
+        Color color = band switch
+        {
+            2 => Color.FromArgb(ApplyOpacity(255, opacity), 0xE5, 0x48, 0x4D),
+            0 => Color.FromArgb(ApplyOpacity(255, opacity), 0x4C, 0x8D, 0xF0),
+            _ => Color.FromArgb(ApplyOpacity(255, opacity), 0x30, 0xA4, 0x6C),
+        };
+        using SolidBrush brush = new(color);
+        switch (band)
+        {
+            case 2:
+                graphics.FillPolygon(brush, [new PointF(x, top + h), new PointF(x + (w / 2f), top), new PointF(x + w, top + h)]);
+                break;
+            case 0:
+                graphics.FillPolygon(brush, [new PointF(x, top), new PointF(x + w, top), new PointF(x + (w / 2f), top + h)]);
+                break;
+            default:
+                int barH = Math.Max(1, Px(2, scale));
+                graphics.FillRectangle(brush, x, centerY - (barH / 2), w, barH);
+                break;
         }
     }
 
@@ -522,6 +750,11 @@ internal sealed class WidgetRenderer : IDisposable
         {
             SizeF text = graphics.MeasureString(chip.Text, font, int.MaxValue, StringFormat.GenericTypographic);
             width += gap + (int)Math.Ceiling(text.Width);
+        }
+
+        if (chip.PaceBand >= 0)
+        {
+            width += gap + PaceMarkWidth(scale);
         }
 
         return width;

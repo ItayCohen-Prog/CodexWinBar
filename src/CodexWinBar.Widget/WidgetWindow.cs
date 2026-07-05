@@ -29,6 +29,8 @@ internal sealed class WidgetWindow : IDisposable
     private const nuint RepositionTimer = 10;
     private const nuint OverlayPollTimer = 11;
     private const nuint EmbedProbeRetryTimer = 12;
+    private const nuint BobTimer = 13;
+    private const uint BobIntervalMs = 10;
 
     private readonly WidgetHost _host;
     private readonly ThemeReader _theme = new();
@@ -55,6 +57,9 @@ internal sealed class WidgetWindow : IDisposable
     private int _height = 1;
     private bool _vertical;
     private int _hoveredIndex = -1;
+    private readonly System.Diagnostics.Stopwatch _bobWatch = new();
+    private bool _bobActive;
+    private bool _bobPeriodRaised;
     private bool _trackingMouse;
     private bool _overlayHidden;
     private int _probeFailures;
@@ -112,6 +117,7 @@ internal sealed class WidgetWindow : IDisposable
 
     public void Dispose()
     {
+        RestoreTimerResolution();
         if (_hook != IntPtr.Zero)
         {
             _ = NativeMethods.UnhookWinEvent(_hook);
@@ -256,13 +262,41 @@ internal sealed class WidgetWindow : IDisposable
         if (_vertical)
         {
             _width = Math.Max(1, info.ClientRect.Width);
-            _height = _renderer.Measure(_state, _dpi, vertical: true, _chipBounds);
+            _height = _renderer.Measure(_state, _dpi, vertical: true, int.MaxValue, _chipBounds);
         }
         else
         {
             _height = Math.Max(1, info.ClientRect.Height);
-            _width = _renderer.Measure(_state, _dpi, vertical: false, _chipBounds);
+            _width = _renderer.Measure(_state, _dpi, vertical: false, HorizontalBudget(info), _chipBounds);
         }
+    }
+
+    /// <summary>
+    /// Free span (physical px) the horizontal strip may occupy without colliding with the centered
+    /// taskbar apps: from the tray leftward (right-anchored) or from the left edge rightward
+    /// (left-anchored) up to the app cluster. Falls back to the taskbar centre when the app band can't be
+    /// located, and never returns less than a single compact chip so the widget always shows something.
+    /// </summary>
+    private int HorizontalBudget(TaskbarInfo info)
+    {
+        int gap = Scale(6);
+        int center = info.TaskbarRect.Left + (info.TaskbarRect.Width / 2);
+        Rectangle? cluster = TaskbarInterop.TryGetAppClusterRect(info.TaskbarHwnd);
+        int budget;
+        if (_anchorLeft)
+        {
+            int start = info.TaskbarRect.Left + Scale(8);
+            int clusterLeft = cluster?.Left ?? center;
+            budget = clusterLeft - start - gap;
+        }
+        else
+        {
+            int trayLeft = info.TrayRect.IsEmpty ? info.TaskbarRect.Right : info.TrayRect.Left;
+            int clusterRight = cluster?.Right ?? center;
+            budget = trayLeft - clusterRight - (2 * gap);
+        }
+
+        return Math.Max(Scale(30), budget);
     }
 
     private void CreateEmbedded(TaskbarInfo info)
@@ -284,6 +318,7 @@ internal sealed class WidgetWindow : IDisposable
         PositionEmbedded(info);
         _ = NativeMethods.SetWindowPos(_widget, NativeMethods.HWND_TOP, _placementRect.X, _placementRect.Y, _width, _height, NativeMethods.SWP_FRAMECHANGED | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
         bool rendered = Render();
+        UpdateBobTimer();
         bool valid = ProbeEmbedded(oldParent, rendered);
         if (valid)
         {
@@ -313,6 +348,7 @@ internal sealed class WidgetWindow : IDisposable
         PositionOverlay(info);
         _ = NativeMethods.SetWindowPos(_widget, NativeMethods.HWND_TOPMOST, _screenRect.X, _screenRect.Y, _width, _height, NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
         _ = Render();
+        UpdateBobTimer();
         SetEffectiveMode(WidgetMode.Overlay, reason);
         _ = NativeMethods.SetTimer(_controller, OverlayPollTimer, 2000, IntPtr.Zero);
     }
@@ -322,8 +358,12 @@ internal sealed class WidgetWindow : IDisposable
         if (_controller != IntPtr.Zero)
         {
             _ = NativeMethods.KillTimer(_controller, EmbedProbeRetryTimer);
+            _ = NativeMethods.KillTimer(_controller, BobTimer);
         }
 
+        _bobActive = false;
+        _bobWatch.Reset();
+        RestoreTimerResolution();
         _attemptedMode = null;
         if (_widget != IntPtr.Zero)
         {
@@ -405,7 +445,61 @@ internal sealed class WidgetWindow : IDisposable
         long style = NativeMethods.GetWindowLongPtrW(_widget, NativeMethods.GWL_STYLE).ToInt64();
         bool embeddedChild = (style & NativeMethods.WS_CHILD) != 0;
         Point? location = embeddedChild ? null : _screenRect.Location;
-        return _renderer.RenderToWindow(_widget, _state, _width, _height, _dpi, _vertical, _hoveredIndex, location);
+        int bobMs = _bobActive ? (int)_bobWatch.ElapsedMilliseconds : 0;
+        return _renderer.RenderToWindow(_widget, _state, _width, _height, _dpi, _vertical, _hoveredIndex, bobMs, location);
+    }
+
+    /// <summary>Starts or stops the bob animation timer based on whether any chip requests attention.</summary>
+    private void UpdateBobTimer()
+    {
+        bool wanted = _widget != IntPtr.Zero && _controller != IntPtr.Zero;
+        bool anyAttention = false;
+        for (int i = 0; i < _state.Chips.Count; i++)
+        {
+            if (_state.Chips[i].Attention)
+            {
+                anyAttention = true;
+                break;
+            }
+        }
+
+        wanted = wanted && anyAttention;
+        if (wanted == _bobActive)
+        {
+            return;
+        }
+
+        _bobActive = wanted;
+        if (wanted)
+        {
+            _bobWatch.Restart();
+            RaiseTimerResolution();
+            _ = NativeMethods.SetTimer(_controller, BobTimer, BobIntervalMs, IntPtr.Zero);
+        }
+        else
+        {
+            _ = NativeMethods.KillTimer(_controller, BobTimer);
+            _bobWatch.Reset();
+            RestoreTimerResolution();
+        }
+    }
+
+    private void RaiseTimerResolution()
+    {
+        if (!_bobPeriodRaised)
+        {
+            _ = NativeMethods.TimeBeginPeriod(1);
+            _bobPeriodRaised = true;
+        }
+    }
+
+    private void RestoreTimerResolution()
+    {
+        if (_bobPeriodRaised)
+        {
+            _ = NativeMethods.TimeEndPeriod(1);
+            _bobPeriodRaised = false;
+        }
     }
 
     private bool ProbeEmbedded(IntPtr oldParent, bool rendered)
@@ -532,6 +626,8 @@ internal sealed class WidgetWindow : IDisposable
             _ = NativeMethods.SetWindowPos(_widget, NativeMethods.HWND_TOPMOST, _placementRect.X, _placementRect.Y, _width, _height, NativeMethods.SWP_NOACTIVATE | (_overlayHidden ? NativeMethods.SWP_HIDEWINDOW : NativeMethods.SWP_SHOWWINDOW));
             _ = Render();
         }
+
+        UpdateBobTimer();
     }
 
     private void UpdateOverlayVisibility()
@@ -615,6 +711,10 @@ internal sealed class WidgetWindow : IDisposable
                     {
                         _ = NativeMethods.KillTimer(hwnd, EmbedProbeRetryTimer);
                         Reposition();
+                    }
+                    else if ((nuint)wParam == BobTimer)
+                    {
+                        _ = Render();
                     }
 
                     return IntPtr.Zero;

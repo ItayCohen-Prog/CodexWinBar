@@ -8,10 +8,10 @@ embedded next to the system tray so it looks like it was always part of Windows 
 and weekly windows, reset countdowns, credits, and live provider-status incidents.
 
 <p align="center">
-  <img src="docs/screenshots/widget-embedded.png" alt="CodexWinBar embedded in the Windows 11 taskbar" width="760" />
+  <img src="docs/screenshots/widget-embedded.png" alt="CodexWinBar embedded in the Windows 11 taskbar" width="440" />
 </p>
 <p align="center">
-  <img src="docs/screenshots/flyout-light.png" alt="CodexWinBar flyout with provider cards" width="380" />
+  <img src="docs/screenshots/flyout-light.png" alt="CodexWinBar provider flyout" width="360" />
 </p>
 
 ## What it does

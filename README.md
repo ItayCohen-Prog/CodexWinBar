@@ -52,20 +52,29 @@ browser-cookie and WebView2 seams (Windsurf, Ollama quota, …) are deferred to 
 
 ## Install
 
-**Download `CodexWinBar-win-Setup.exe`** from the
-[Releases page](https://github.com/ItayCohen-Prog/CodexWinBar/releases) and run it. It installs per-user
-(no admin needed), adds Start-Menu and desktop shortcuts, launches automatically, and keeps itself
-up to date. Codex and Claude work immediately if their CLIs are signed in; enable the rest in
+Install with [winget](https://learn.microsoft.com/windows/package-manager/):
+
+```powershell
+winget install ItayCohen.CodexWinBar
+```
+
+It installs per-user (no admin), adds Start-Menu and desktop shortcuts, launches automatically, and keeps
+itself up to date. Codex and Claude work immediately if their CLIs are signed in; enable the rest in
 **Settings → Providers**.
 
-> **First-run warning:** the build isn't code-signed yet, so Windows SmartScreen shows an
-> "Unknown publisher" prompt. Click **More info → Run anyway** — this is a one-time step. (Code signing
-> is on the roadmap.)
+> ⏳ **Coming to winget shortly** — the package is in review
+> ([winget-pkgs #398215](https://github.com/microsoft/winget-pkgs/pull/398215)), usually live within a day.
+> Until it merges, use the direct download below.
 
 <details>
-<summary>Build from source instead</summary>
+<summary>Direct download (works now) / build from source</summary>
 
-Requires Windows 11 and the [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0).
+**Direct download:** grab `CodexWinBar-win-Setup.exe` from the
+[Releases page](https://github.com/ItayCohen-Prog/CodexWinBar/releases) and run it. Because it isn't
+code-signed yet, Windows SmartScreen shows an "Unknown publisher" prompt — click **More info → Run anyway**
+(one-time). Installing via winget avoids this.
+
+**Build from source:** requires Windows 11 and the [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0).
 
 ```powershell
 git clone https://github.com/ItayCohen-Prog/CodexWinBar.git

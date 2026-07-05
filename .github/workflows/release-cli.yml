@@ -1,8 +1,11 @@
 name: Release CLI
 
+# NOTE: This is the UPSTREAM macOS/Linux Swift CLI release (builds CodexBarCLI, dispatches to
+# steipete/homebrew-tap) — it does not apply to the Windows port and would pollute Windows releases
+# with the wrong assets. The `release: published` trigger is intentionally removed so publishing a
+# Windows release (release-windows.yml) never fires it. Left as manual-only; delete if the Swift CLI
+# is dropped from this fork.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:

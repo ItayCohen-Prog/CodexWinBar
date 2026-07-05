@@ -13,6 +13,7 @@ using CodexWinBar.Core.Providers;
 using CodexWinBar.Core.Scheduling;
 using CodexWinBar.Providers;
 using CodexWinBar.Widget;
+using Velopack;
 using CoreWidgetMode = CodexWinBar.Core.Config.WidgetMode;
 using WidgetHostMode = CodexWinBar.Widget.WidgetMode;
 
@@ -29,6 +30,11 @@ public static class Program
     [STAThread]
     public static int Main(string[] args)
     {
+        // MUST run before anything else (including the single-instance mutex and WPF): during install,
+        // update and uninstall Velopack relaunches this exe with hook arguments, and VelopackApp handles
+        // them (shortcuts, etc.) and exits. Building an installer without this leaves the app un-updatable.
+        VelopackApp.Build().Run();
+
         if (args.Contains("--test-notification", StringComparer.OrdinalIgnoreCase))
         {
             ToastService.Initialize(message => Debug.WriteLine(message));

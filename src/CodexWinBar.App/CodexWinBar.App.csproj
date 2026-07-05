@@ -17,4 +17,7 @@
     <ProjectReference Include="..\CodexWinBar.Providers\CodexWinBar.Providers.csproj" />
     <ProjectReference Include="..\CodexWinBar.Widget\CodexWinBar.Widget.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Velopack" Version="1.2.0" />
+  </ItemGroup>
 </Project>

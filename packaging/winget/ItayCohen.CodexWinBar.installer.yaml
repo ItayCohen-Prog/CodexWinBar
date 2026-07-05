@@ -18,8 +18,7 @@ AppsAndFeaturesEntries:
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/ItayCohen-Prog/CodexWinBar/releases/download/v1.0.0/CodexWinBar-win-Setup.exe
-    # IMPORTANT: this MUST be the SHA256 of the PUBLISHED release asset, not a local build.
-    # After the release exists, recompute and paste it (see packaging/winget/README.md).
-    InstallerSha256: 49071858B7F1AE18BB5D35F7DACC174ECB52CA3AED245E818E3286FBCC8A6109
+    # SHA256 of the published v1.0.0 release asset.
+    InstallerSha256: 5BB9509613124DEA0EA0A5B4C9260CFDB252D900DD97550BA4F26382EB7F2FF0
 ManifestType: installer
 ManifestVersion: 1.6.0

@@ -18,11 +18,14 @@ and weekly windows, reset countdowns, credits, and live provider-status incident
 
 - **Taskbar-embedded widget** — a compact chip rendered *inside* `Shell_TrayWnd` (true `SetParent`
   embedding with per-pixel alpha, validated by a runtime capability probe) showing tiny session/weekly
-  gauges and percent text per provider. If embedding isn't possible on your build, it automatically falls
-  back to a tracked overlay; Explorer restarts re-embed automatically.
+  gauges and percent text per provider. It sizes itself to the free space beside your taskbar apps,
+  collapsing from full gauges → single gauge → compact icons as you add providers (never a scrollbar), and
+  gently bounces the provider you're on pace to run out of first. If embedding isn't possible on your build,
+  it automatically falls back to a tracked overlay; Explorer restarts re-embed automatically.
 - **Fluent flyout** — click the widget for provider cards: usage bars, "resets in 2h 13m" countdowns,
   model-specific windows, reset credits, credit balances, plan/account identity, and live status incidents
-  (Statuspage/Google Workspace feeds). Acrylic backdrop, rounded corners, light/dark aware.
+  (Statuspage/Google Workspace feeds). Optional **pace** indicator projects whether you're on track to run
+  out early, and clicking a provider opens its web dashboard. Acrylic backdrop, rounded corners, light/dark aware.
 - **Native engine** — zero-dependency .NET 9: OAuth token refresh, per-provider fetch pipelines with
   fallback strategies, single-flight coalescing, reset-boundary refresh (re-poll ~30s after a window
   resets), quota threshold notifications.
@@ -41,14 +44,28 @@ and weekly windows, reset countdowns, credits, and live provider-status incident
 | **OpenRouter** | credits + key limits | API key |
 | **OpenAI Admin** | org cost dashboards | Admin API key |
 | **z.ai** | coding-plan quota | API key |
+| **Cursor** | plan + Auto/Composer + on-demand usage | Browser session cookie |
 
 Codex and Claude are enabled by default and work with zero setup if their CLIs are signed in. The rest are
-enabled in **Settings → Providers**. Upstream's 50+ provider catalog is on the roadmap — the browser-cookie
-and WebView2 seams (Cursor, Windsurf, Ollama quota, …) are deliberately deferred to v1.5.
+enabled in **Settings → Providers**. Upstream's 50+ provider catalog is on the roadmap — the remaining
+browser-cookie and WebView2 seams (Windsurf, Ollama quota, …) are deferred to a later release.
 
-## Install / build
+## Install
 
-Requires Windows 11 and the [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0) (to build).
+**Download `CodexWinBar-win-Setup.exe`** from the
+[Releases page](https://github.com/ItayCohen-Prog/CodexWinBar/releases) and run it. It installs per-user
+(no admin needed), adds Start-Menu and desktop shortcuts, launches automatically, and keeps itself
+up to date. Codex and Claude work immediately if their CLIs are signed in; enable the rest in
+**Settings → Providers**.
+
+> **First-run warning:** the build isn't code-signed yet, so Windows SmartScreen shows an
+> "Unknown publisher" prompt. Click **More info → Run anyway** — this is a one-time step. (Code signing
+> is on the roadmap.)
+
+<details>
+<summary>Build from source instead</summary>
+
+Requires Windows 11 and the [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0).
 
 ```powershell
 git clone https://github.com/ItayCohen-Prog/CodexWinBar.git
@@ -57,12 +74,23 @@ dotnet publish src/CodexWinBar.App/CodexWinBar.App.csproj -c Release -r win-x64 
 artifacts\publish\CodexWinBar.exe
 ```
 
+To produce a full installer locally: `./build/pack-windows.ps1` (needs `dotnet tool install -g vpk --version 1.2.0`).
+</details>
+
 Right-click the widget (or the tray icon) for Refresh / Settings / Quit. "Launch at login" lives in
 Settings → General. Logs: `%LOCALAPPDATA%\CodexWinBar\logs\app.log`.
 
+## Privacy
+
+CodexWinBar keeps your credentials on your machine. It reads provider sessions from their standard local
+locations (e.g. the Codex/Claude/Gemini CLI credential files) and talks **only to each provider's own API**
+to fetch your usage — there is no CodexWinBar server, account, or telemetry, and nothing about your usage
+leaves your computer. Stored credentials are written with restrictive per-user file permissions.
+
 ## Architecture
 
-C# / .NET 9, **zero external NuGet dependencies** (test projects excepted):
+C# / .NET 9, **one runtime dependency** — [Velopack](https://velopack.io) for the installer and
+auto-update; the app itself otherwise has zero external NuGet dependencies (test projects excepted):
 
 - `CodexWinBar.Core` — provider abstraction (descriptor + ordered fetch strategies), CodexBar-compatible
   config store, refresh scheduler, status poller.

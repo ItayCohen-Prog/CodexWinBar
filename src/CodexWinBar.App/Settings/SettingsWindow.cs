@@ -290,6 +290,17 @@ public sealed class SettingsWindow : Window
         group.Children.Add(this.SettingCard("\uE916", "Absolute reset times", null,
             new ToggleSwitch(settings.ResetTimesShowAbsolute, isChecked => this.SaveUi(ui => ui.ResetTimesShowAbsolute = isChecked))));
 
+        group.Children.Add(this.SettingCard(
+            "\uEC4A",
+            "Pace indicator",
+            "Estimates how much of each limit you'll have used by the time it resets, if you keep going at "
+            + "your current speed.\n\n"
+            + "projected %  =  used %  \u00F7  ( time passed \u00F7 window length )\n\n"
+            + "\u25B2  over 100%  \u2013 on pace to run out before it resets (red)\n"
+            + "\u2014  60\u2013100%  \u2013 on track, using most of your quota (green)\n"
+            + "\u25BC  under 60%  \u2013 barely using it; quota going to waste (blue)",
+            new ToggleSwitch(settings.ShowPaceIndicator, isChecked => this.SaveUi(ui => ui.ShowPaceIndicator = isChecked))));
+
         panel.Children.Add(group);
         this.SetContent(panel);
     }

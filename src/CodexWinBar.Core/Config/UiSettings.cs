@@ -119,6 +119,12 @@ public sealed class UiSettings
     public bool ResetTimesShowAbsolute { get; set; }
 
     /// <summary>
+    /// Whether to show the pace indicator (projected end-of-window usage) in the flyout and expanded widget.
+    /// </summary>
+    [JsonPropertyName("showPaceIndicator")]
+    public bool ShowPaceIndicator { get; set; }
+
+    /// <summary>
     /// Whether CodexWinBar launches at login.
     /// </summary>
     [JsonPropertyName("launchAtLogin")]

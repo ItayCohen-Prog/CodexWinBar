@@ -18,7 +18,13 @@ internal sealed class FakeUsageStore : IUsageStore
     public FakeUsageStore(Action<string>? log = null)
     {
         var now = DateTimeOffset.UtcNow;
-        this.states = Build(now);
+        var built = Build(now);
+        // CODEXWINBAR_FAKE_COUNT caps how many providers are served, to exercise the widget's
+        // space-aware tiers (Full/Medium/Compact) at different provider counts.
+        var limit = Environment.GetEnvironmentVariable("CODEXWINBAR_FAKE_COUNT");
+        this.states = int.TryParse(limit, out var n) && n >= 0 && n < built.Count
+            ? [.. built.Take(n)]
+            : built;
         log?.Invoke($"FakeUsageStore active: serving {this.states.Count} synthetic providers.");
     }
 
@@ -70,6 +76,7 @@ internal sealed class FakeUsageStore : IUsageStore
             Copilot(now),
             Gemini(now),
             Zai(now),
+            Cursor(now),
         ];
     }
 
@@ -210,6 +217,29 @@ internal sealed class FakeUsageStore : IUsageStore
             Primary = Window(88, now.AddHours(3), 18000),
             Secondary = Window(44, now.AddHours(3), 300),
             Identity = new ProviderIdentity { Plan = "GLM Coding Max", LoginMethod = "API key" },
+            UpdatedAt = now,
+            Confidence = DataConfidence.Exact,
+        },
+    };
+
+    // Cursor — monthly billing model: an included-plan percent window (primary), an Auto + Composer
+    // pool (secondary), a named API-models percent window, and a SCALAR on-demand "Extra usage" dollar
+    // amount (a spend, not a balance — so a value row, not a bar or a credit). All three windows reset
+    // at the billing-cycle end (~monthly countdown). No incident: exercises the healthy-status path.
+    private static ProviderState Cursor(DateTimeOffset now) => new()
+    {
+        Provider = ProviderId.Cursor,
+        Snapshot = new UsageSnapshot
+        {
+            Provider = ProviderId.Cursor,
+            Primary = Window(64, now.AddDays(23), 43200),
+            Secondary = Window(38, now.AddDays(23), 43200),
+            ExtraWindows =
+            [
+                new NamedRateWindow { Id = "cursor-api", Title = "API (models)", Window = Window(12, now.AddDays(23), 43200) },
+                Scalar("cursor-extra-usage", "Extra usage", "$8.40 this cycle"),
+            ],
+            Identity = new ProviderIdentity { Plan = "Pro", AccountEmail = "reliabits@gmail.com", LoginMethod = "Session cookie" },
             UpdatedAt = now,
             Confidence = DataConfidence.Exact,
         },

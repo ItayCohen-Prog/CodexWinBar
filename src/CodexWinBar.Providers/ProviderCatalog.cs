@@ -14,5 +14,6 @@ public static class ProviderCatalog
         Copilot.CopilotProvider.Create(),
         Gemini.GeminiProvider.Create(),
         Zai.ZaiProvider.Create(),
+        Cursor.CursorProvider.Create(),
     ];
 }

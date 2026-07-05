@@ -11,6 +11,7 @@ public enum ProviderId
     Copilot,
     Gemini,
     Zai,
+    Cursor,
 }
 
 /// <summary>Mapping between enum values and the upstream config-file string ids.</summary>
@@ -25,6 +26,7 @@ public static class ProviderIds
         [ProviderId.Copilot] = "copilot",
         [ProviderId.Gemini] = "gemini",
         [ProviderId.Zai] = "zai",
+        [ProviderId.Cursor] = "cursor",
     };
 
     private static readonly Dictionary<string, ProviderId> FromConfig =

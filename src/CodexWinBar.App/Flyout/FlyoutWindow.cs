@@ -1009,6 +1009,9 @@ public sealed class FlyoutWindow : Window
     /// <summary>
     /// Panel top-left (physical px) placed just off the anchor toward the screen centre, per taskbar
     /// edge (bottom→above, top→below, left→right of, right→left of), clamped to the work area.
+    /// NOTE: only the bottom edge is live-tested; the top/left/right branches (and the matching
+    /// slide-direction logic) are verified by reasoning only, because Windows 11 can't move the taskbar
+    /// off the bottom. Re-verify on a real top/side taskbar (Win10 or a Win11 taskbar tool).
     /// </summary>
     private static (double X, double Y) PanelTopLeftPx(DrawingRectangle anchor, double panelW, double panelH, NativeRect work, int edge)
     {

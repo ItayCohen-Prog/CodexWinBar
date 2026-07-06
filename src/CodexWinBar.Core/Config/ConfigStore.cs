@@ -105,6 +105,10 @@ public sealed class ConfigStore(Func<string, string?> env, string userProfileDir
             {
                 File.Move(tempPath, path);
             }
+
+            // ReplaceFile keeps the DESTINATION file's security descriptor, discarding the temp
+            // file's hardened ACL, so the final path must be restricted again after the swap.
+            RestrictToCurrentUser(path);
         }
         finally
         {
@@ -151,22 +155,21 @@ public sealed class ConfigStore(Func<string, string?> env, string userProfileDir
     }
 
     /// <summary>
-    /// Normalizes quota warning thresholds according to amendment A5.
+    /// Normalizes quota warning thresholds according to amendment A5. An ABSENT thresholds list
+    /// falls back to the defaults, while an EXPLICITLY-EMPTY list is preserved and means
+    /// "no threshold notifications", consistent with the global settings behavior.
     /// </summary>
     /// <param name="window">The input warning window.</param>
     /// <returns>A warning window with clamped, distinct, descending thresholds.</returns>
     public static QuotaWarningWindow Normalize(QuotaWarningWindow? window)
     {
-        var thresholds = (window?.Thresholds ?? [])
-            .Select(threshold => Math.Clamp(threshold, 0, 99))
-            .Distinct()
-            .OrderDescending()
-            .ToArray();
-
-        if (thresholds.Length == 0)
-        {
-            thresholds = [.. QuotaWarningWindow.DefaultThresholds];
-        }
+        int[] thresholds = window?.Thresholds is { } configured
+            ? configured
+                .Select(threshold => Math.Clamp(threshold, 0, 99))
+                .Distinct()
+                .OrderDescending()
+                .ToArray()
+            : [.. QuotaWarningWindow.DefaultThresholds];
 
         return (window ?? new QuotaWarningWindow()) with { Thresholds = thresholds };
     }

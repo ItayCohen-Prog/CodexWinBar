@@ -28,7 +28,8 @@ public sealed class UiSettingsStore(Action<string> log, string? baseDirectory = 
         try
         {
             using var stream = File.OpenRead(path);
-            return JsonSerializer.Deserialize(stream, CoreJsonContext.Default.UiSettings) ?? new UiSettings();
+            var settings = JsonSerializer.Deserialize(stream, CoreJsonContext.Default.UiSettings) ?? new UiSettings();
+            return settings.Normalize();
         }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {

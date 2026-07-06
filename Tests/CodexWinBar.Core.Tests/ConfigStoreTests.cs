@@ -1,3 +1,5 @@
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text.Json;
 using CodexWinBar.Core.Config;
 using CodexWinBar.Core.Providers;
@@ -85,7 +87,7 @@ public sealed class ConfigStoreTests
     }
 
     [Fact]
-    public void Normalize_clamps_deduplicates_sorts_descending_and_defaults_empty()
+    public void Normalize_clamps_deduplicates_sorts_descending_and_defaults_absent()
     {
         var normalized = ConfigStore.Normalize(new QuotaWarningWindow
         {
@@ -95,8 +97,38 @@ public sealed class ConfigStoreTests
 
         Assert.Equal([99, 20, 0], normalized.Thresholds);
         Assert.False(normalized.Enabled);
-        Assert.Equal([50, 20], ConfigStore.Normalize(new QuotaWarningWindow { Thresholds = [] }).Thresholds);
+        Assert.Equal([50, 20], ConfigStore.Normalize(new QuotaWarningWindow()).Thresholds);
         Assert.Equal([50, 20], ConfigStore.Normalize(null).Thresholds);
+    }
+
+    [Fact]
+    public void Normalize_keeps_explicitly_empty_thresholds_meaning_no_notifications()
+    {
+        var normalized = ConfigStore.Normalize(new QuotaWarningWindow { Thresholds = [] });
+
+        Assert.NotNull(normalized.Thresholds);
+        Assert.Empty(normalized.Thresholds);
+    }
+
+    [Fact]
+    public void Save_restricts_acl_to_current_user_when_config_already_exists()
+    {
+        using var temp = TempDir.Create();
+        var path = Path.Combine(temp.Path, "config.json");
+        var store = Store(temp.Path, name => name == "CODEXBAR_CONFIG" ? path : null);
+        File.WriteAllText(path, """{"providers":[{"id":"codex","enabled":true}]}""");
+
+        store.Save(store.Load());
+
+        var security = new FileInfo(path).GetAccessControl();
+        Assert.True(security.AreAccessRulesProtected);
+        var rules = security
+            .GetAccessRules(includeExplicit: true, includeInherited: true, typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>()
+            .ToArray();
+        var rule = Assert.Single(rules);
+        Assert.Equal(WindowsIdentity.GetCurrent().User, rule.IdentityReference);
+        Assert.Equal(AccessControlType.Allow, rule.AccessControlType);
     }
 
     private static ConfigStore Store(string userProfile, Func<string, string?>? env = null) =>

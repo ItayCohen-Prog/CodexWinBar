@@ -78,6 +78,48 @@ public sealed class FetchPipelineTests
         Assert.Equal(1, api.FetchCount);
     }
 
+    [Fact]
+    public async Task RunAsync_surfaces_error_for_explicit_source_with_no_matching_strategy()
+    {
+        var oauth = new StubStrategy("oauth", FetchKind.Oauth, available: true, snapshot: Snapshot());
+        var ctx = Context(new ProviderConfigEntry { Id = "codex", Source = "web" });
+
+        var outcome = await FetchPipeline.RunAsync(Descriptor(oauth), ctx, CancellationToken.None);
+
+        Assert.False(outcome.Succeeded);
+        var error = Assert.IsType<NoAvailableStrategyException>(outcome.Error);
+        Assert.Contains("web", error.Message);
+        Assert.Empty(outcome.Attempts);
+        Assert.Equal(0, oauth.FetchCount);
+    }
+
+    [Fact]
+    public async Task RunAsync_treats_strategy_timeout_cancellation_as_error_and_falls_back()
+    {
+        var timedOut = new StubStrategy(
+            "oauth", FetchKind.Oauth, available: true, error: new TaskCanceledException("request timed out"), shouldFallback: true);
+        var api = new StubStrategy("api", FetchKind.ApiToken, available: true, snapshot: Snapshot());
+
+        var outcome = await FetchPipeline.RunAsync(Descriptor(timedOut, api), Context(), CancellationToken.None);
+
+        Assert.True(outcome.Succeeded);
+        Assert.Equal(["oauth", "api"], outcome.Attempts.Select(a => a.StrategyId).ToArray());
+        Assert.Contains("request timed out", outcome.Attempts[0].Error);
+    }
+
+    [Fact]
+    public async Task RunAsync_rethrows_cancellation_when_caller_token_is_cancelled()
+    {
+        using var cts = new CancellationTokenSource();
+        var cancelling = new StubStrategy(
+            "oauth", FetchKind.Oauth, available: true, error: new OperationCanceledException(), onFetch: cts.Cancel);
+        var api = new StubStrategy("api", FetchKind.ApiToken, available: true, snapshot: Snapshot());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => FetchPipeline.RunAsync(Descriptor(cancelling, api), Context(), cts.Token));
+        Assert.Equal(0, api.FetchCount);
+    }
+
     private static ProviderDescriptor Descriptor(params IFetchStrategy[] strategies) => new()
     {
         Id = ProviderId.Codex,
@@ -109,7 +151,8 @@ public sealed class FetchPipelineTests
         bool available,
         UsageSnapshot? snapshot = null,
         Exception? error = null,
-        bool shouldFallback = false) : IFetchStrategy
+        bool shouldFallback = false,
+        Action? onFetch = null) : IFetchStrategy
     {
         private readonly UsageSnapshot? snapshotValue = snapshot;
 
@@ -122,6 +165,7 @@ public sealed class FetchPipelineTests
         public Task<UsageSnapshot> FetchAsync(FetchContext ctx, CancellationToken ct)
         {
             this.FetchCount++;
+            onFetch?.Invoke();
             if (error is not null)
             {
                 throw error;

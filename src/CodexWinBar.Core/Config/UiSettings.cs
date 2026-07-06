@@ -96,6 +96,7 @@ public sealed class UiSettings
 
     /// <summary>
     /// Whether to merge provider icons in the taskbar widget.
+    /// TODO: not yet wired to any UI or widget behavior; kept so the setting round-trips.
     /// </summary>
     [JsonPropertyName("mergeIcons")]
     public bool MergeIcons { get; set; } = true;
@@ -177,4 +178,52 @@ public sealed class UiSettings
     /// </summary>
     [JsonPropertyName("widgetSide")]
     public WidgetSide WidgetSide { get; set; } = WidgetSide.Right;
+
+    /// <summary>
+    /// Repairs values that persisted JSON cannot be trusted to keep valid: the refresh cadence
+    /// must be positive (or null for manual refresh), quota threshold lists must be non-null with
+    /// entries clamped to 0-99, and enum values must be defined.
+    /// </summary>
+    /// <returns>This instance, for call chaining.</returns>
+    public UiSettings Normalize()
+    {
+        if (this.RefreshCadenceMinutes is <= 0)
+        {
+            this.RefreshCadenceMinutes = 5;
+        }
+
+        this.QuotaSessionThresholds = NormalizeThresholds(this.QuotaSessionThresholds);
+        this.QuotaWeeklyThresholds = NormalizeThresholds(this.QuotaWeeklyThresholds);
+
+        if (!Enum.IsDefined(this.DisplayTextMode))
+        {
+            this.DisplayTextMode = DisplayTextMode.Percent;
+        }
+
+        if (!Enum.IsDefined(this.WidgetMode))
+        {
+            this.WidgetMode = WidgetMode.Auto;
+        }
+
+        if (!Enum.IsDefined(this.WidgetSide))
+        {
+            this.WidgetSide = WidgetSide.Right;
+        }
+
+        return this;
+    }
+
+    private static IReadOnlyList<int> NormalizeThresholds(IReadOnlyList<int>? thresholds)
+    {
+        if (thresholds is null)
+        {
+            return [20];
+        }
+
+        return thresholds
+            .Select(threshold => Math.Clamp(threshold, 0, 99))
+            .Distinct()
+            .OrderDescending()
+            .ToArray();
+    }
 }

@@ -184,21 +184,23 @@ public sealed class UsageStore : IUsageStore
 
     private async Task<ProviderBatchResult> RefreshProviderCoreAsync(ProviderDescriptor descriptor, CancellationToken ct)
     {
-        ProviderRefreshSlot slot;
-        int generation;
+        Task<ProviderBatchResult> inFlight;
         lock (this.sync)
         {
-            slot = this.GetSlotNoLock(descriptor.Id);
-            generation = ++slot.Generation;
+            var slot = this.GetSlotNoLock(descriptor.Id);
+            var generation = ++slot.Generation;
             slot.Cancellation?.Cancel();
             slot.Cancellation?.Dispose();
             slot.Cancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            slot.InFlight = this.FetchAndPublishAsync(descriptor, generation, slot.Cancellation.Token);
+
+            // Capture the task locally while still under the lock: a concurrent refresh can
+            // replace slot.InFlight before this caller awaits, which would await the wrong task.
+            inFlight = slot.InFlight = this.FetchAndPublishAsync(descriptor, generation, slot.Cancellation.Token);
             this.SetStateNoLock(descriptor.Id, this.GetStateNoLock(descriptor.Id) with { IsRefreshing = true });
         }
 
         this.RaiseStateChanged();
-        return await slot.InFlight.ConfigureAwait(false);
+        return await inFlight.ConfigureAwait(false);
     }
 
     private async Task<ProviderBatchResult> FetchAndPublishAsync(

@@ -90,6 +90,16 @@ public sealed class FlyoutWindow : Window
     // render composition, which is the jitter. Switches animate only the inner panel (WPF sandbox).
     private double sessionWindowHeightDip;
 
+    // The widget anchor (physical pixels) the flyout was last placed against. Used to tell whether a
+    // provider switch was clicked on the SAME monitor (in-place cross-fade) or a DIFFERENT one (the
+    // flyout must move to the clicked monitor, not stay on the previous one).
+    private DrawingRectangle currentAnchorPhysicalPx;
+
+    // Set while the flyout is being deliberately relocated to another monitor. Relocating across a
+    // DPI boundary fires WM_DPICHANGED, which normally closes the flyout (a user dragging it to a new
+    // DPI can't be re-laid-out cleanly); this flag tells that handler to ignore the self-induced change.
+    private bool suppressDpiClose;
+
     /// <summary>Creates a flyout bound to the usage store and app actions.</summary>
     public FlyoutWindow(IUsageStore store, UiSettingsStore uiStore, Action openSettings, Action quit, Action<string>? log = null)
     {
@@ -212,6 +222,16 @@ public sealed class FlyoutWindow : Window
             {
                 if (this.currentFocusProvider == focusProvider)
                 {
+                    // Same provider on a DIFFERENT monitor: bring the flyout to the clicked monitor
+                    // rather than closing — the toggle-closed gesture only applies on the monitor the
+                    // flyout is actually showing on.
+                    if (focusProvider is { } sameProvider && !this.AnchorOnCurrentMonitor(anchorPhysicalPx))
+                    {
+                        this.log?.Invoke($"toggle same-provider cross-monitor at {anchorPhysicalPx}; focus={sameProvider.ConfigId()}");
+                        this.ReanchorToProvider(sameProvider, anchorPhysicalPx);
+                        return;
+                    }
+
                     this.log?.Invoke($"toggle-close at {anchorPhysicalPx}; focus={focusProvider?.ConfigId() ?? "all"}");
                     this.HideFlyout("close: toggle");
                     return;
@@ -219,9 +239,20 @@ public sealed class FlyoutWindow : Window
 
                 if (focusProvider is { } provider && this.currentFocusProvider is { } currentProvider && provider != currentProvider)
                 {
-                    this.log?.Invoke($"toggle-switch at {anchorPhysicalPx}; focus={provider.ConfigId()}");
-                    _ = this.SwitchProviderAsync(provider);
-                    this.openedAt = DateTimeOffset.UtcNow;
+                    // Same monitor: the in-place cross-fade (window fixed, only the panel animates).
+                    // Different monitor: the flyout must follow the click to that monitor, so re-anchor
+                    // and slide in there rather than cross-fading in place on the old monitor.
+                    if (this.AnchorOnCurrentMonitor(anchorPhysicalPx))
+                    {
+                        this.log?.Invoke($"toggle-switch at {anchorPhysicalPx}; focus={provider.ConfigId()}");
+                        this.currentAnchorPhysicalPx = anchorPhysicalPx;
+                        _ = this.SwitchProviderAsync(provider);
+                        this.openedAt = DateTimeOffset.UtcNow;
+                        return;
+                    }
+
+                    this.log?.Invoke($"toggle-switch cross-monitor at {anchorPhysicalPx}; focus={provider.ConfigId()}");
+                    this.ReanchorToProvider(provider, anchorPhysicalPx);
                     return;
                 }
 
@@ -236,6 +267,7 @@ public sealed class FlyoutWindow : Window
                 this.ResizeHwndHeight(this.sessionWindowHeightDip);
                 this.UpdateLayout();
                 this.PlacePhysical(anchorPhysicalPx);
+                this.currentAnchorPhysicalPx = anchorPhysicalPx;
                 this.openedAt = DateTimeOffset.UtcNow;
                 return;
             }
@@ -274,7 +306,24 @@ public sealed class FlyoutWindow : Window
 
             this.UpdateLayout();
             this.PlacePhysical(anchorPhysicalPx);
-            this.BeginOpenAnimation();
+            this.currentAnchorPhysicalPx = anchorPhysicalPx;
+
+            // Fresh show: start the slide in lockstep with the compositor's next frame instead of now.
+            // A wall-clock DoubleAnimation started synchronously charges the (slowest-on-first-open)
+            // first-frame realization cost against its own clock, so the first visible frame lands
+            // partway through the slide — the "skipped frame" pop. Deferring to the first
+            // CompositionTarget.Rendering tick ties t=0 to the actual first composited frame (the root
+            // is held at opacity 0 until then, so nothing shows early). A re-open mid-close is already
+            // realized, so it animates immediately from wherever it is.
+            if (wasVisible)
+            {
+                this.BeginOpenAnimation();
+            }
+            else
+            {
+                this.BeginOpenAnimationOnNextFrame();
+            }
+
             if (!this.Activate())
             {
                 this.log?.Invoke("toggle-open: Activate returned false");
@@ -387,6 +436,69 @@ public sealed class FlyoutWindow : Window
         var generation = ++this.animationGeneration;
         this.stack.BeginAnimation(UIElement.OpacityProperty, null);
         this.BeginCloseAnimation(generation);
+    }
+
+    /// <summary>True when <paramref name="anchorPhysicalPx"/> sits on the same monitor the flyout is
+    /// currently anchored to, so a provider switch can cross-fade in place instead of relocating.</summary>
+    private bool AnchorOnCurrentMonitor(DrawingRectangle anchorPhysicalPx)
+    {
+        var clicked = anchorPhysicalPx;
+        var current = this.currentAnchorPhysicalPx;
+        return MonitorFromRect(ref clicked, MonitorDefaultToNearest)
+            == MonitorFromRect(ref current, MonitorDefaultToNearest);
+    }
+
+    /// <summary>
+    /// Moves the already-open flyout to the monitor of <paramref name="anchorPhysicalPx"/> and slides
+    /// it in for <paramref name="provider"/>. Used when a chip on a DIFFERENT monitor is clicked while
+    /// the flyout is open elsewhere — the in-place cross-fade would strand it on the old monitor. The
+    /// root is hidden before the window is repositioned so the cross-monitor move never shows as a jump.
+    /// </summary>
+    private void ReanchorToProvider(ProviderId provider, DrawingRectangle anchorPhysicalPx)
+    {
+        var generation = ++this.animationGeneration;   // cancel any in-flight open/switch animation
+        this.isClosing = false;
+        this.openedAt = DateTimeOffset.UtcNow;          // grace: the relocation itself must not self-dismiss
+
+        // Hide the content so relocating across monitors (and the DPI rescale it triggers) isn't visible.
+        this.root.BeginAnimation(UIElement.OpacityProperty, null);
+        this.root.Opacity = 0;
+        this.stack.BeginAnimation(UIElement.OpacityProperty, null);
+        this.stack.Opacity = 1;
+
+        this.currentEdge = QueryTaskbarEdge();
+        this.currentFocusProvider = provider;
+        this.RebuildCards();
+
+        // Move to the clicked monitor. If it is a different DPI this fires WM_DPICHANGED (which would
+        // otherwise close the flyout); suppress that while we own the move. WPF rescales as a result.
+        this.suppressDpiClose = true;
+        this.PrepareSessionWindow(anchorPhysicalPx);
+        this.ResizeHwndHeight(this.sessionWindowHeightDip);
+        this.UpdateLayout();
+        this.PlacePhysical(anchorPhysicalPx);
+
+        // Once WPF has applied the new monitor's DPI, re-measure/re-place so size and position are
+        // correct for it, then slide in. Deferred a tick so the DPI transform is settled first.
+        _ = this.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+        {
+            this.suppressDpiClose = false;
+            if (this.animationGeneration != generation || this.isClosing || !this.IsVisible)
+            {
+                return;
+            }
+
+            this.PrepareSessionWindow(anchorPhysicalPx);
+            this.ResizeHwndHeight(this.sessionWindowHeightDip);
+            this.UpdateLayout();
+            this.PlacePhysical(anchorPhysicalPx);
+            this.currentAnchorPhysicalPx = anchorPhysicalPx;
+
+            this.ApplySlideOffset(this.SlideStartOffset());
+            this.root.Opacity = 0;
+            this.BeginOpenAnimation();
+            this.openedAt = DateTimeOffset.UtcNow;
+        }));
     }
 
     private async Task SwitchProviderAsync(ProviderId focusProvider)
@@ -535,6 +647,30 @@ public sealed class FlyoutWindow : Window
 
     private static bool IsPartway(double value, double start) =>
         start >= 0 ? value > 0 && value <= start : value < 0 && value >= start;
+
+    /// <summary>
+    /// Starts the open slide on the compositor's next frame rather than synchronously, so the
+    /// animation clock and the first composited frame stay in lockstep (no first-frame skip). The
+    /// root is already at opacity 0 and the start offset here, so it is invisible until the slide
+    /// begins. Guarded by the animation generation so a close (or re-open) before the tick fires
+    /// cannot animate a stale open.
+    /// </summary>
+    private void BeginOpenAnimationOnNextFrame()
+    {
+        var generation = this.animationGeneration;
+        EventHandler? handler = null;
+        handler = (_, _) =>
+        {
+            CompositionTarget.Rendering -= handler;
+            if (this.animationGeneration != generation || this.isClosing || !this.IsVisible)
+            {
+                return;
+            }
+
+            this.BeginOpenAnimation();
+        };
+        CompositionTarget.Rendering += handler;
+    }
 
     private void BeginOpenAnimation()
     {
@@ -1331,7 +1467,7 @@ public sealed class FlyoutWindow : Window
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg is WmDisplayChange || (msg is WmDpiChanged && this.IsOpen))
+        if (msg is WmDisplayChange || (msg is WmDpiChanged && this.IsOpen && !this.suppressDpiClose))
         {
             this.HideFlyout("close: display-change");
         }
@@ -1402,7 +1538,12 @@ public sealed class FlyoutWindow : Window
 
         var buffer = new char[64];
         var length = GetClassName(hwnd, buffer, buffer.Length);
-        return length > 0 && new string(buffer, 0, length) == "CodexWinBarWidget";
+        // The widget registers a per-instance class ("CodexWinBarWidget_<n>") so a second widget on
+        // another taskbar can't bind the first's WndProc, so match the prefix rather than the exact
+        // name — an exact "CodexWinBarWidget" match silently stopped recognizing widget clicks once
+        // multi-monitor made the class names unique, turning a same-provider toggle into a
+        // dismiss-then-reopen bob. The trailing underscore excludes the controller window.
+        return length > 0 && new string(buffer, 0, length).StartsWith("CodexWinBarWidget_", StringComparison.Ordinal);
     }
 
     /// <summary>

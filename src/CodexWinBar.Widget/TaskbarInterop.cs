@@ -22,20 +22,15 @@ internal static class TaskbarInterop
     }
 
     /// <summary>
-    /// Snapshots every taskbar currently present: the primary Shell_TrayWnd plus one
-    /// Shell_SecondaryTrayWnd per additional display when "show taskbar on all displays" is enabled.
-    /// Secondary taskbars are enumerated with a FindWindowExW(NULL, …) top-level walk by class name
-    /// (equivalent to EnumWindows + GetClassName, without the callback).
+    /// Snapshots every SECONDARY taskbar currently present: one Shell_SecondaryTrayWnd per additional
+    /// display when "show taskbar on all displays" is enabled. The primary Shell_TrayWnd is handled
+    /// separately (there is always exactly one) via <see cref="TryGetPrimaryTaskbar"/>, so it is never
+    /// keyed by its volatile monitor handle. Secondary taskbars are enumerated with a
+    /// FindWindowExW(NULL, …) top-level walk by class name (equivalent to EnumWindows + GetClassName).
     /// </summary>
-    internal static List<TaskbarInfo> EnumerateTaskbars()
+    internal static List<TaskbarInfo> EnumerateSecondaryTaskbars()
     {
         List<TaskbarInfo> taskbars = [];
-        IntPtr primary = NativeMethods.FindWindowW(PrimaryTaskbarClass, null);
-        if (primary != IntPtr.Zero)
-        {
-            taskbars.Add(BuildInfo(primary, isPrimary: true));
-        }
-
         IntPtr secondary = IntPtr.Zero;
         while ((secondary = NativeMethods.FindWindowExW(IntPtr.Zero, secondary, SecondaryTaskbarClass, null)) != IntPtr.Zero)
         {
@@ -45,16 +40,12 @@ internal static class TaskbarInterop
         return taskbars;
     }
 
-    /// <summary>Finds the taskbar currently hosted on <paramref name="monitor"/> (primary or secondary),
-    /// or null when that monitor has no taskbar (display removed, or taskbar mid-recreation).</summary>
-    internal static TaskbarInfo? TryGetTaskbarForMonitor(IntPtr monitor)
+    /// <summary>Finds the SECONDARY taskbar currently hosted on <paramref name="monitor"/>, or null
+    /// when that monitor has no secondary taskbar (display removed, or taskbar mid-recreation). Never
+    /// returns the primary Shell_TrayWnd: a secondary widget must never resolve onto the primary bar
+    /// even if their monitor handles momentarily coincide during a display transition.</summary>
+    internal static TaskbarInfo? TryGetSecondaryTaskbarForMonitor(IntPtr monitor)
     {
-        IntPtr primary = NativeMethods.FindWindowW(PrimaryTaskbarClass, null);
-        if (primary != IntPtr.Zero && NativeMethods.MonitorFromWindow(primary, NativeMethods.MONITOR_DEFAULTTONEAREST) == monitor)
-        {
-            return BuildInfo(primary, isPrimary: true);
-        }
-
         IntPtr secondary = IntPtr.Zero;
         while ((secondary = NativeMethods.FindWindowExW(IntPtr.Zero, secondary, SecondaryTaskbarClass, null)) != IntPtr.Zero)
         {

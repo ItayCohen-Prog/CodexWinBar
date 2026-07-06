@@ -102,8 +102,13 @@ internal sealed class WidgetWindow : IDisposable
         _module = NativeMethods.GetModuleHandleW(null);
     }
 
-    /// <summary>Re-resolves this instance's taskbar by monitor (survives taskbar hwnd recreation).</summary>
-    private TaskbarInfo? ResolveTaskbar() => TaskbarInterop.TryGetTaskbarForMonitor(_monitor);
+    /// <summary>Re-resolves this instance's taskbar (survives taskbar hwnd recreation). The primary
+    /// instance always targets the one Shell_TrayWnd directly, so a drifting monitor handle can never
+    /// strand it or spawn a duplicate; a secondary instance resolves only among Shell_SecondaryTrayWnd
+    /// bars on its own monitor, so it can never latch onto the primary bar.</summary>
+    private TaskbarInfo? ResolveTaskbar() => _isPrimary
+        ? TaskbarInterop.TryGetPrimaryTaskbar()
+        : TaskbarInterop.TryGetSecondaryTaskbarForMonitor(_monitor);
 
     internal IntPtr Controller => _controller;
 

@@ -21,6 +21,15 @@ public sealed class WidgetHost : IWidgetHost
     /// </summary>
     private const int ReconcileIntervalMs = 2000;
 
+    /// <summary>
+    /// Stable dictionary key for the primary taskbar's instance. There is always exactly one primary
+    /// (Shell_TrayWnd), so it is tracked under this sentinel rather than under its monitor handle —
+    /// which can transiently drift during display/DPI transitions and would otherwise make Reconcile
+    /// stop the primary and start a second one (two widgets stacked on the same bar). No real HMONITOR
+    /// is -1.
+    /// </summary>
+    private static readonly IntPtr PrimaryKey = new(-1);
+
     private readonly Lock _gate = new();
 
     // Serializes instance lifecycle (Start/Stop/reconcile). Lock order: _lifecycle before _gate.
@@ -173,7 +182,7 @@ public sealed class WidgetHost : IWidgetHost
                 {
                     lock (_gate)
                     {
-                        _instances.Remove(instance.Monitor);
+                        _instances.Remove(instance.Key);
                     }
                 }
 
@@ -259,46 +268,52 @@ public sealed class WidgetHost : IWidgetHost
     }
 
     /// <summary>
-    /// Aligns the instance set with the taskbars currently present: starts an instance for every
-    /// taskbar whose monitor has none, and stops instances whose taskbar vanished (display removed) or
-    /// whose primary/secondary role changed (the replacement starts on a later tick, once the old
-    /// thread is gone). Caller must hold _lifecycle.
+    /// Aligns the instance set with the taskbars currently present: the primary Shell_TrayWnd (tracked
+    /// under the stable <see cref="PrimaryKey"/> sentinel, so its drifting monitor handle never causes
+    /// a stop/start churn) plus one instance per secondary taskbar, keyed by that taskbar's monitor.
+    /// Starts an instance for any desired taskbar with none; stops instances whose taskbar vanished
+    /// (display removed). Caller must hold _lifecycle.
     /// </summary>
     private void Reconcile()
     {
-        List<TaskbarInfo> taskbars = TaskbarInterop.EnumerateTaskbars();
+        TaskbarInfo? primary = TaskbarInterop.TryGetPrimaryTaskbar();
+        List<TaskbarInfo> secondaries = TaskbarInterop.EnumerateSecondaryTaskbars();
 
         WidgetMode mode;
         bool anchorLeft;
         List<WidgetInstance>? toStop = null;
-        List<TaskbarInfo>? toStart = null;
+        List<(IntPtr Key, TaskbarInfo Info)>? toStart = null;
         lock (_gate)
         {
             mode = _requestedMode;
             anchorLeft = _anchorLeft;
-            foreach (WidgetInstance instance in _instances.Values)
-            {
-                bool stillPresent = false;
-                for (int i = 0; i < taskbars.Count; i++)
-                {
-                    if (taskbars[i].Monitor == instance.Monitor && taskbars[i].IsPrimary == instance.IsPrimary)
-                    {
-                        stillPresent = true;
-                        break;
-                    }
-                }
 
-                if (!stillPresent)
+            // Desired instances keyed by stable identity: PrimaryKey for the (singleton) primary bar,
+            // each secondary bar by its monitor. A Dictionary dedupes should two enumerations collide.
+            Dictionary<IntPtr, TaskbarInfo> desired = [];
+            if (primary is not null)
+            {
+                desired[PrimaryKey] = primary;
+            }
+
+            foreach (TaskbarInfo info in secondaries)
+            {
+                desired[info.Monitor] = info;
+            }
+
+            foreach (KeyValuePair<IntPtr, WidgetInstance> entry in _instances)
+            {
+                if (!desired.ContainsKey(entry.Key))
                 {
-                    (toStop ??= []).Add(instance);
+                    (toStop ??= []).Add(entry.Value);
                 }
             }
 
-            for (int i = 0; i < taskbars.Count; i++)
+            foreach (KeyValuePair<IntPtr, TaskbarInfo> entry in desired)
             {
-                if (!_instances.ContainsKey(taskbars[i].Monitor))
+                if (!_instances.ContainsKey(entry.Key))
                 {
-                    (toStart ??= []).Add(taskbars[i]);
+                    (toStart ??= []).Add((entry.Key, entry.Value));
                 }
             }
         }
@@ -307,12 +322,12 @@ public sealed class WidgetHost : IWidgetHost
         {
             foreach (WidgetInstance instance in toStop)
             {
-                WidgetLog.Write("Taskbar gone on monitor 0x" + instance.Monitor.ToString("X") + "; stopping its widget.");
+                WidgetLog.Write("Taskbar gone" + (instance.IsPrimary ? " (primary)" : " on monitor 0x" + instance.Monitor.ToString("X")) + "; stopping its widget.");
                 if (instance.Stop())
                 {
                     lock (_gate)
                     {
-                        _instances.Remove(instance.Monitor);
+                        _instances.Remove(instance.Key);
                         if (instance.IsPrimary)
                         {
                             _effectiveMode = WidgetMode.Hidden;
@@ -320,20 +335,19 @@ public sealed class WidgetHost : IWidgetHost
                     }
                 }
 
-                // else: the zombie stays keyed to its monitor so no duplicate can start there; the
-                // stop is retried on the next reconcile tick.
+                // else: the zombie stays keyed so no duplicate can start there; retried next tick.
             }
         }
 
         if (toStart is not null)
         {
-            foreach (TaskbarInfo info in toStart)
+            foreach ((IntPtr key, TaskbarInfo info) in toStart)
             {
                 WidgetLog.Write("Taskbar found on monitor 0x" + info.Monitor.ToString("X") + (info.IsPrimary ? " (primary)" : " (secondary)") + "; starting a widget.");
-                WidgetInstance instance = new(this, info.Monitor, info.IsPrimary);
+                WidgetInstance instance = new(this, key, info.Monitor, info.IsPrimary);
                 lock (_gate)
                 {
-                    _instances[info.Monitor] = instance;
+                    _instances[key] = instance;
                 }
 
                 instance.Start(mode, anchorLeft);
@@ -362,14 +376,21 @@ public sealed class WidgetHost : IWidgetHost
         // hear it.
         private ManualResetEventSlim? _ready;
 
-        internal WidgetInstance(WidgetHost host, IntPtr monitor, bool isPrimary)
+        internal WidgetInstance(WidgetHost host, IntPtr key, IntPtr monitor, bool isPrimary)
         {
             _host = host;
+            Key = key;
             Monitor = monitor;
             IsPrimary = isPrimary;
         }
 
-        /// <summary>The monitor handle whose taskbar this instance targets (its identity key).</summary>
+        /// <summary>This instance's stable key in the host dictionary (<see cref="PrimaryKey"/> for the
+        /// primary bar, otherwise the monitor handle). Distinct from <see cref="Monitor"/> so the
+        /// primary is never re-keyed when its monitor handle drifts.</summary>
+        internal IntPtr Key { get; }
+
+        /// <summary>The monitor handle whose taskbar this instance targets (used for positioning and
+        /// per-monitor fullscreen detection, not as the dictionary key).</summary>
         internal IntPtr Monitor { get; }
 
         /// <summary>Whether this instance targets the primary taskbar (drives the aggregate mode/rect).</summary>

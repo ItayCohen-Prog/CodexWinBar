@@ -26,6 +26,11 @@ internal sealed class WidgetWindow : IDisposable
     private const uint RenderMessage = NativeMethods.WM_APP + 1;
     private const uint RepositionMessage = NativeMethods.WM_APP + 2;
     private const uint RecreateMessage = NativeMethods.WM_APP + 3;
+
+    /// <summary>Posted by <see cref="WidgetHost.Stop"/> to ask the widget thread to exit its message
+    /// loop. A dedicated app message (not a raw WM_DESTROY) so quitting is an explicit request the
+    /// controller answers with PostQuitMessage, independent of actual window destruction.</summary>
+    internal const uint QuitMessage = NativeMethods.WM_APP + 4;
     private const nuint RepositionTimer = 10;
     private const nuint OverlayPollTimer = 11;
     private const nuint EmbedProbeRetryTimer = 12;
@@ -60,6 +65,7 @@ internal sealed class WidgetWindow : IDisposable
     private readonly System.Diagnostics.Stopwatch _bobWatch = new();
     private bool _bobActive;
     private bool _bobPeriodRaised;
+    private int _lastBobOffset;
     private bool _trackingMouse;
     private bool _overlayHidden;
     private int _probeFailures;
@@ -83,6 +89,10 @@ internal sealed class WidgetWindow : IDisposable
 
     internal IntPtr Controller => _controller;
 
+    /// <summary>Invoked on the widget thread once the controller window exists (so a posted
+    /// <see cref="QuitMessage"/> can reach it). Set by <see cref="WidgetHost.Start"/> before Run.</summary>
+    internal Action? ControllerReady { get; set; }
+
     internal WidgetMode EffectiveMode => _effectiveMode;
 
     /// <summary>Last placed widget rect in physical screen pixels; Empty before first placement.
@@ -96,6 +106,9 @@ internal sealed class WidgetWindow : IDisposable
             RegisterClasses();
             _taskbarCreatedMessage = NativeMethods.RegisterWindowMessageW("TaskbarCreated");
             _controller = NativeMethods.CreateWindowExW(0, ControllerClassName, null, NativeMethods.WS_OVERLAPPED, 0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, _module, IntPtr.Zero);
+            // Startup-ready handshake: the controller now exists, so a QuitMessage posted by Stop
+            // will be delivered (posted messages queue even before the pump starts).
+            ControllerReady?.Invoke();
             InstallHooks();
             Recreate();
             Pump();
@@ -305,7 +318,9 @@ internal sealed class WidgetWindow : IDisposable
         _attemptedMode = WidgetMode.Embedded;
         MeasureForTaskbar(info);
         _widget = NativeMethods.CreateWindowExW(NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_LAYERED, WidgetClassName, null, NativeMethods.WS_POPUP, 0, 0, _width, _height, IntPtr.Zero, IntPtr.Zero, _module, IntPtr.Zero);
-        IntPtr oldParent = NativeMethods.SetParent(_widget, info.TaskbarHwnd);
+        // The SetParent return value (previous parent) is ignored: NULL is a legitimate success for a
+        // top-level WS_POPUP window, so ProbeEmbedded validates the reparent by inspection instead.
+        _ = NativeMethods.SetParent(_widget, info.TaskbarHwnd);
 
         long style = NativeMethods.GetWindowLongPtrW(_widget, NativeMethods.GWL_STYLE).ToInt64();
         style &= ~(NativeMethods.WS_POPUP | NativeMethods.WS_CAPTION | NativeMethods.WS_THICKFRAME | NativeMethods.WS_SYSMENU);
@@ -319,7 +334,7 @@ internal sealed class WidgetWindow : IDisposable
         _ = NativeMethods.SetWindowPos(_widget, NativeMethods.HWND_TOP, _placementRect.X, _placementRect.Y, _width, _height, NativeMethods.SWP_FRAMECHANGED | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
         bool rendered = Render();
         UpdateBobTimer();
-        bool valid = ProbeEmbedded(oldParent, rendered);
+        bool valid = ProbeEmbedded(rendered);
         if (valid)
         {
             _probeFailures = 0;
@@ -472,6 +487,7 @@ internal sealed class WidgetWindow : IDisposable
         _bobActive = wanted;
         if (wanted)
         {
+            _lastBobOffset = 0;
             _bobWatch.Restart();
             RaiseTimerResolution();
             _ = NativeMethods.SetTimer(_controller, BobTimer, BobIntervalMs, IntPtr.Zero);
@@ -502,14 +518,18 @@ internal sealed class WidgetWindow : IDisposable
         }
     }
 
-    private bool ProbeEmbedded(IntPtr oldParent, bool rendered)
+    // Note: the SetParent return value (previous parent) is deliberately NOT part of this probe —
+    // per the SetParent docs a successful reparent of a top-level WS_POPUP window can legitimately
+    // return NULL, so it can't distinguish success from failure. The ancestry/style/rect/anchor
+    // checks below are the real validation.
+    private bool ProbeEmbedded(bool rendered)
     {
         if (Suspended())
         {
             return true;
         }
 
-        if (oldParent == IntPtr.Zero || _widget == IntPtr.Zero || _taskbar == IntPtr.Zero || !rendered)
+        if (_widget == IntPtr.Zero || _taskbar == IntPtr.Zero || !rendered)
         {
             return false;
         }
@@ -608,7 +628,7 @@ internal sealed class WidgetWindow : IDisposable
             PositionEmbedded(info);
             _ = NativeMethods.SetWindowPos(_widget, NativeMethods.HWND_TOP, _placementRect.X, _placementRect.Y, _width, _height, NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
             bool rendered = Render();
-            if (ProbeEmbedded(IntPtr.Zero + 1, rendered))
+            if (ProbeEmbedded(rendered))
             {
                 _probeFailures = 0;
                 _attemptedMode = null;
@@ -714,10 +734,20 @@ internal sealed class WidgetWindow : IDisposable
                     }
                     else if ((nuint)wParam == BobTimer)
                     {
-                        _ = Render();
+                        // Only redraw when the bob offset actually moved — during the ~1.1s rest phase
+                        // between bounces the offset is a constant 0, and re-rendering ~100x/sec there
+                        // is pure waste. The timer keeps running so the next hop resumes on schedule.
+                        int bobMs = _bobActive ? (int)_bobWatch.ElapsedMilliseconds : 0;
+                        int bobOffset = WidgetRenderer.BobOffset(bobMs, _dpi);
+                        if (bobOffset != _lastBobOffset)
+                        {
+                            _lastBobOffset = bobOffset;
+                            _ = Render();
+                        }
                     }
 
                     return IntPtr.Zero;
+                case QuitMessage:
                 case NativeMethods.WM_DESTROY:
                     NativeMethods.PostQuitMessage(0);
                     return IntPtr.Zero;

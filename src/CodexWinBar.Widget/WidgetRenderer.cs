@@ -153,11 +153,16 @@ internal sealed class WidgetRenderer : IDisposable
         using Bitmap bitmap = BuildBitmap(state, width, height, dpi, vertical, hoveredIndex, bobMs);
 
         IntPtr screenDc = IntPtr.Zero;
-        IntPtr memoryDc = NativeMethods.CreateCompatibleDC(screenDc);
-        IntPtr bitmapHandle = bitmap.GetHbitmap(Color.FromArgb(0));
-        IntPtr oldObject = NativeMethods.SelectObject(memoryDc, bitmapHandle);
+        IntPtr memoryDc = IntPtr.Zero;
+        IntPtr bitmapHandle = IntPtr.Zero;
+        IntPtr oldObject = IntPtr.Zero;
         try
         {
+            // Allocate inside the try so a mid-allocation failure (e.g. GDI handle exhaustion in
+            // GetHbitmap) still releases whatever was already created via the finally below.
+            memoryDc = NativeMethods.CreateCompatibleDC(screenDc);
+            bitmapHandle = bitmap.GetHbitmap(Color.FromArgb(0));
+            oldObject = NativeMethods.SelectObject(memoryDc, bitmapHandle);
             NativeMethods.SIZE size = new() { CX = width, CY = height };
             NativeMethods.POINT source = new() { X = 0, Y = 0 };
             NativeMethods.BLENDFUNCTION blend = new()
@@ -177,9 +182,21 @@ internal sealed class WidgetRenderer : IDisposable
         }
         finally
         {
-            _ = NativeMethods.SelectObject(memoryDc, oldObject);
-            _ = NativeMethods.DeleteObject(bitmapHandle);
-            _ = NativeMethods.DeleteDC(memoryDc);
+            // Only free what was actually created — an exception may have left later handles unset.
+            if (memoryDc != IntPtr.Zero && oldObject != IntPtr.Zero)
+            {
+                _ = NativeMethods.SelectObject(memoryDc, oldObject);
+            }
+
+            if (bitmapHandle != IntPtr.Zero)
+            {
+                _ = NativeMethods.DeleteObject(bitmapHandle);
+            }
+
+            if (memoryDc != IntPtr.Zero)
+            {
+                _ = NativeMethods.DeleteDC(memoryDc);
+            }
         }
     }
 
@@ -273,6 +290,10 @@ internal sealed class WidgetRenderer : IDisposable
     // with a snappy impact (a velocity flip at the bottom — what makes it read as "bouncy" not floaty),
     // then rests before the next nudge. Always upward. Driven by ELAPSED MILLISECONDS (not a frame
     // counter) so timer jitter never turns into stutter — every frame lands at the right position.
+    /// <summary>Bob offset at the given DPI. Lets the window's bob timer compute the offset a render
+    /// would apply and skip the redraw entirely when it hasn't changed (the long rest phase).</summary>
+    internal static int BobOffset(int elapsedMs, uint dpi) => BobOffset(elapsedMs, Scale(dpi));
+
     private static int BobOffset(int elapsedMs, float scale)
     {
         // Hop durations in ms; taller hops take longer (time-of-flight ∝ √height).

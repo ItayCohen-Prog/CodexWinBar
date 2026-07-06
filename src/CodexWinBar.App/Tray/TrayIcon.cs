@@ -17,7 +17,6 @@ public sealed class TrayIcon : IDisposable
     private const int CallbackMessage = 0x8000 + 42;
     private const int WmLButtonUp = 0x0202;
     private const int WmRButtonUp = 0x0205;
-    private const int WmTaskbarCreated = 0x0000C;
     private const uint NimAdd = 0x00000000;
     private const uint NimModify = 0x00000001;
     private const uint NimDelete = 0x00000002;
@@ -134,7 +133,7 @@ public sealed class TrayIcon : IDisposable
                 handled = true;
             }
         }
-        else if (msg == this.taskbarCreatedMessage || msg == WmTaskbarCreated)
+        else if (msg == this.taskbarCreatedMessage)
         {
             this.AddIcon();
             handled = true;

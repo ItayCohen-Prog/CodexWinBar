@@ -169,13 +169,7 @@ public sealed class FlyoutWindow : Window
             {
                 if (this.currentFocusProvider == focusProvider)
                 {
-                    if (focusProvider is { } sameProvider)
-                    {
-                        this.log?.Invoke($"toggle-same-provider at {anchorPhysicalPx}; focus={sameProvider.ConfigId()}");
-                        this.openedAt = DateTimeOffset.UtcNow;
-                        return;
-                    }
-
+                    this.log?.Invoke($"toggle-close at {anchorPhysicalPx}; focus={focusProvider?.ConfigId() ?? "all"}");
                     this.HideFlyout("close: toggle");
                     return;
                 }

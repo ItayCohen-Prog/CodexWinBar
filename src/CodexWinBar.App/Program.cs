@@ -14,6 +14,7 @@ using CodexWinBar.Core.Scheduling;
 using CodexWinBar.Providers;
 using CodexWinBar.Widget;
 using Velopack;
+using Velopack.Sources;
 using CoreWidgetMode = CodexWinBar.Core.Config.WidgetMode;
 using WidgetHostMode = CodexWinBar.Widget.WidgetMode;
 
@@ -151,6 +152,40 @@ internal sealed class AppShell : IDisposable
         this.StartWidgetFromSettings();
         this.UpdateWidget();
         this.Log($"CodexWinBar {Assembly.GetExecutingAssembly().GetName().Version} started.");
+        this.CheckForUpdatesInBackground();
+    }
+
+    // Fire-and-forget update check. Velopack only manages updates for an installed copy (IsInstalled
+    // guards dev/portable builds). Updates are downloaded and STAGED — applied on the next exit — so the
+    // running session is never interrupted; the user gets the new version the next time they launch.
+    private void CheckForUpdatesInBackground()
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var manager = new UpdateManager(
+                    new GithubSource("https://github.com/ItayCohen-Prog/CodexWinBar", accessToken: null, prerelease: false));
+                if (!manager.IsInstalled)
+                {
+                    return;
+                }
+
+                var update = await manager.CheckForUpdatesAsync().ConfigureAwait(false);
+                if (update is null)
+                {
+                    return;
+                }
+
+                await manager.DownloadUpdatesAsync(update).ConfigureAwait(false);
+                manager.WaitExitThenApplyUpdates(update);
+                this.Log("Update downloaded; it will be applied the next time CodexWinBar restarts.");
+            }
+            catch (Exception ex)
+            {
+                this.Log($"Update check failed: {ex.GetType().Name}: {ex.Message}");
+            }
+        });
     }
 
     public void Dispose()
@@ -475,10 +510,20 @@ internal sealed class AppShell : IDisposable
         return settings.DisplayTextMode switch
         {
             DisplayTextMode.ResetTime => ResetText(primary?.ResetsAt ?? secondary?.ResetsAt, settings.ResetTimesShowAbsolute),
-            DisplayTextMode.Pace => PercentText(primary, settings.UsageBarsShowUsed),
+            DisplayTextMode.Pace => PaceText(primary, settings.UsageBarsShowUsed),
             DisplayTextMode.Both => Combine(PercentText(primary, settings.UsageBarsShowUsed), WeeklyText(secondary, settings.UsageBarsShowUsed)),
-            _ => Combine(PercentText(primary, settings.UsageBarsShowUsed), WeeklyText(secondary, settings.UsageBarsShowUsed)),
+            _ => PercentText(primary, settings.UsageBarsShowUsed),
         };
+    }
+
+    private static string? PaceText(RateWindow? window, bool showUsed)
+    {
+        if (window is not null && PaceCalculator.Compute(window, DateTimeOffset.UtcNow) is { } pace)
+        {
+            return $"→{pace.ProjectedPercent:0}%";
+        }
+
+        return PercentText(window, showUsed);
     }
 
     private static string? PercentText(RateWindow? window, bool showUsed)

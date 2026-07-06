@@ -13,18 +13,6 @@ public static class WpfDwm
     private const int DwmwaSystemBackdropType = 38;
     private const int DwmwcpRound = 2;
     private const int DwmsbtMainWindow = 2;
-    private const int DwmsbtTransientWindow = 3;
-
-    /// <summary>Applies acrylic transient-window chrome to the flyout.</summary>
-    public static void ApplyFlyoutChrome(Window window, bool dark)
-    {
-        ApplyChrome(window, dark, DwmsbtTransientWindow);
-        window.Background = Brushes.Transparent;
-        if (PresentationSource.FromVisual(window) is HwndSource source)
-        {
-            source.CompositionTarget.BackgroundColor = Colors.Transparent;
-        }
-    }
 
     /// <summary>
     /// Applies Mica main-window chrome to a normal WPF window. Requires the full recipe:

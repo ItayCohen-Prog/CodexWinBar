@@ -108,7 +108,7 @@ internal static class ConfigCommand
             "enable" => SetEnabled(runtime, parsed, enabled: true),
             "disable" => SetEnabled(runtime, parsed, enabled: false),
             "set-api-key" => await SetApiKeyAsync(runtime, parsed).ConfigureAwait(false),
-            "print" => Print(runtime),
+            "print" => Print(runtime, parsed),
             "path" => Path(runtime),
             "validate" => Validate(runtime),
             _ => Fail($"unknown config subcommand '{sub}'"),
@@ -194,10 +194,32 @@ internal static class ConfigCommand
         return 0;
     }
 
-    private static int Print(CliRuntime runtime)
+    private static int Print(CliRuntime runtime, ParsedArgs args)
     {
-        JsonWriter.Write(Console.Out, runtime.Config, CliJsonContext.Default.CodexBarConfig, pretty: true);
+        var showSecrets = args.Has("show-secrets") || args.Has("raw");
+        var config = showSecrets ? runtime.Config : RedactSecrets(runtime.Config);
+        JsonWriter.Write(Console.Out, config, CliJsonContext.Default.CodexBarConfig, pretty: true);
         return 0;
+    }
+
+    /// <summary>
+    /// Returns a copy of the config with secret-bearing fields masked for display.
+    /// The config file itself is never modified — this only affects printed output.
+    /// </summary>
+    private static CodexBarConfig RedactSecrets(CodexBarConfig config)
+    {
+        using var mask = JsonDocument.Parse("\"***\"");
+        var maskElement = mask.RootElement.Clone();
+        return config with
+        {
+            Providers = config.Providers.Select(entry => entry with
+            {
+                ApiKey = string.IsNullOrEmpty(entry.ApiKey) ? entry.ApiKey : "***",
+                CookieHeader = string.IsNullOrEmpty(entry.CookieHeader) ? entry.CookieHeader : "***",
+                SecretKey = string.IsNullOrEmpty(entry.SecretKey) ? entry.SecretKey : "***",
+                TokenAccounts = entry.TokenAccounts is null ? null : maskElement,
+            }).ToArray(),
+        };
     }
 
     private static int Path(CliRuntime runtime)
@@ -315,6 +337,15 @@ internal static class ServeCommand
             return Fail("non-loopback host requires explicit --host");
         }
 
+        var token = parsed.Value("token");
+        if (!IsLoopback(host) && string.IsNullOrWhiteSpace(token))
+        {
+            return Fail("binding to a non-loopback host exposes usage and account data; supply --token <value> to require bearer-token auth");
+        }
+
+        // Loopback binds stay token-free unless a token was explicitly supplied.
+        var requiredToken = string.IsNullOrWhiteSpace(token) ? null : token;
+
         var runtime = CliRuntime.Create(verbose: false);
         using var cts = ConsoleLifetime.CreateCancellationSource();
         using var listener = new HttpListener();
@@ -335,7 +366,7 @@ internal static class ServeCommand
                     break;
                 }
 
-                await HandleAsync(runtime, cache, contextTask.Result, cts.Token).ConfigureAwait(false);
+                await HandleAsync(runtime, cache, contextTask.Result, requiredToken, cts.Token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
@@ -349,12 +380,19 @@ internal static class ServeCommand
         return 0;
     }
 
-    private static async Task HandleAsync(CliRuntime runtime, UsageCache cache, HttpListenerContext context, CancellationToken ct)
+    private static async Task HandleAsync(CliRuntime runtime, UsageCache cache, HttpListenerContext context, string? requiredToken, CancellationToken ct)
     {
         Console.Error.WriteLine($"{DateTimeOffset.UtcNow:O} {context.Request.HttpMethod} {context.Request.RawUrl}");
         if (context.Request.HttpMethod != "GET")
         {
             await WriteTextAsync(context, 405, "method not allowed").ConfigureAwait(false);
+            return;
+        }
+
+        if (requiredToken is not null && !IsAuthorized(context.Request, requiredToken))
+        {
+            // WWW-Authenticate is a restricted header on HttpListenerResponse, so the 401 body carries the hint.
+            await WriteTextAsync(context, 401, "unauthorized: pass Authorization: Bearer <token> or ?token=<token>").ConfigureAwait(false);
             return;
         }
 
@@ -417,6 +455,25 @@ internal static class ServeCommand
         await context.Response.OutputStream.WriteAsync(bytes).ConfigureAwait(false);
         context.Response.Close();
     }
+
+    private static bool IsAuthorized(HttpListenerRequest request, string requiredToken)
+    {
+        var header = request.Headers["Authorization"];
+        if (header is not null &&
+            header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) &&
+            TokensEqual(header["Bearer ".Length..].Trim(), requiredToken))
+        {
+            return true;
+        }
+
+        var query = request.QueryString["token"];
+        return query is not null && TokensEqual(query, requiredToken);
+    }
+
+    private static bool TokensEqual(string presented, string expected) =>
+        System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(presented),
+            Encoding.UTF8.GetBytes(expected));
 
     private static bool IsLoopback(string host) =>
         string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase) ||
@@ -779,7 +836,7 @@ internal static class HelpPrinter
         writer.WriteLine("Usage:");
         writer.WriteLine("  codexbar usage [--provider <id>] [--all] [--json] [--pretty] [--verbose]");
         writer.WriteLine("  codexbar config <providers|enable|disable|set-api-key|print|path|validate> [flags]");
-        writer.WriteLine("  codexbar serve [--port <n>] [--host <host>] [--interval <seconds>]");
+        writer.WriteLine("  codexbar serve [--port <n>] [--host <host>] [--interval <seconds>] [--token <value>]");
         writer.WriteLine("  codexbar diagnose --provider <id> [--json] [--pretty]");
         writer.WriteLine();
         writer.WriteLine("Global:");
@@ -796,12 +853,12 @@ internal static class HelpPrinter
         writer.WriteLine("  codexbar config enable --provider <id>");
         writer.WriteLine("  codexbar config disable --provider <id>");
         writer.WriteLine("  codexbar config set-api-key --provider <id> [--stdin | --api-key <key>] [--no-enable]");
-        writer.WriteLine("  codexbar config print");
+        writer.WriteLine("  codexbar config print [--show-secrets]");
         writer.WriteLine("  codexbar config path");
         writer.WriteLine("  codexbar config validate");
     }
 
-    public static void PrintServeHelp(TextWriter writer) => writer.WriteLine("Usage: codexbar serve [--port <n>=8787] [--host 127.0.0.1] [--interval <seconds>=30]");
+    public static void PrintServeHelp(TextWriter writer) => writer.WriteLine("Usage: codexbar serve [--port <n>=8787] [--host 127.0.0.1] [--interval <seconds>=30] [--token <value>] (--token is required for non-loopback hosts; clients send Authorization: Bearer <value> or ?token=<value>)");
     public static void PrintDiagnoseHelp(TextWriter writer) => writer.WriteLine("Usage: codexbar diagnose --provider <id> [--json] [--pretty]");
 }
 

@@ -156,6 +156,13 @@ internal static class CursorParser
         var identity = ReadIdentity(meJson, ReadString(data, "plan", "planName", "membershipType"));
 
         var hasData = plan is not null || autoComposer is not null || extras.Count > 0;
+        if (!hasData)
+        {
+            // Surface an error instead of a permanently blank card (mirrors Codex/Claude, which
+            // throw when a usage response contains no rate limits or credits).
+            throw new InvalidOperationException("Cursor usage response contained no recognizable usage data.");
+        }
+
         return new UsageSnapshot
         {
             Provider = ProviderId.Cursor,
@@ -164,7 +171,7 @@ internal static class CursorParser
             ExtraWindows = extras,
             Identity = identity,
             UpdatedAt = now,
-            Confidence = hasData ? DataConfidence.Exact : DataConfidence.Unknown,
+            Confidence = DataConfidence.Exact,
         };
     }
 

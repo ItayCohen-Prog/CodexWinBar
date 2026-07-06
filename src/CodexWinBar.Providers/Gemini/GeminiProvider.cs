@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -213,6 +215,8 @@ internal sealed partial class GeminiOAuthFetchStrategy : IFetchStrategy
             {
                 File.Move(tempPath, credentialsPath);
             }
+
+            TryRestrictAcl(credentialsPath);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SystemException)
         {
@@ -241,21 +245,69 @@ internal sealed partial class GeminiOAuthFetchStrategy : IFetchStrategy
         }
     }
 
+    // Mirrors ClaudeCredentialStore/CodexCredentialStore: restrict the rewritten credential file
+    // to the current user (Windows-only, best-effort).
+    private static void TryRestrictAcl(string path)
+    {
+        try
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                return;
+            }
+
+            var currentUser = WindowsIdentity.GetCurrent().User;
+            if (currentUser is null)
+            {
+                return;
+            }
+
+            var security = new FileSecurity();
+            security.SetOwner(currentUser);
+            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+            security.AddAccessRule(new FileSystemAccessRule(
+                currentUser,
+                FileSystemRights.FullControl,
+                AccessControlType.Allow));
+            new FileInfo(path).SetAccessControl(security);
+        }
+        catch (Exception)
+        {
+            // Best-effort hardening only; keep refreshed credentials usable if ACL tightening fails.
+        }
+    }
+
+    // gemini-cli writes settings.json with comments and trailing commas, which strict JSON rejects.
+    private static readonly JsonDocumentOptions SettingsJsonOptions = new()
+    {
+        CommentHandling = JsonCommentHandling.Skip,
+        AllowTrailingCommas = true,
+    };
+
     private static void ThrowIfUnsupportedAuthType(string settingsPath)
     {
-        if (!File.Exists(settingsPath))
+        string? selectedType;
+        try
         {
+            if (!File.Exists(settingsPath))
+            {
+                return;
+            }
+
+            using var document = JsonDocument.Parse(File.ReadAllText(settingsPath), SettingsJsonOptions);
+            selectedType = document.RootElement
+                .TryGetProperty("security", out var security)
+                && security.TryGetProperty("auth", out var auth)
+                && auth.TryGetProperty("selectedType", out var selected)
+                && selected.ValueKind == JsonValueKind.String
+                    ? selected.GetString()
+                    : null;
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            // settings.json only supplies an auth-type hint; an unreadable file must not abort the fetch.
             return;
         }
-
-        using var document = JsonDocument.Parse(File.ReadAllText(settingsPath));
-        var selectedType = document.RootElement
-            .TryGetProperty("security", out var security)
-            && security.TryGetProperty("auth", out var auth)
-            && auth.TryGetProperty("selectedType", out var selected)
-            && selected.ValueKind == JsonValueKind.String
-                ? selected.GetString()
-                : null;
 
         if (string.Equals(selectedType, "api-key", StringComparison.OrdinalIgnoreCase))
         {
@@ -270,13 +322,21 @@ internal sealed partial class GeminiOAuthFetchStrategy : IFetchStrategy
 
     private static string? LoadSettingsEmail(string settingsPath)
     {
-        if (!File.Exists(settingsPath))
+        try
         {
+            if (!File.Exists(settingsPath))
+            {
+                return null;
+            }
+
+            using var document = JsonDocument.Parse(File.ReadAllText(settingsPath), SettingsJsonOptions);
+            return FindEmail(document.RootElement);
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            // The settings email is decorative; an unreadable settings.json must not abort the fetch.
             return null;
         }
-
-        using var document = JsonDocument.Parse(File.ReadAllText(settingsPath));
-        return FindEmail(document.RootElement);
     }
 
     private static string? FindEmail(JsonElement element)
@@ -391,18 +451,28 @@ internal static class GeminiQuotaParser
             bucket.ModelId.Contains("flash", StringComparison.OrdinalIgnoreCase)
             && !bucket.ModelId.Contains("flash-lite", StringComparison.OrdinalIgnoreCase)));
 
-        var extraWindows = all.Select(bucket => new NamedRateWindow
-        {
-            Id = bucket.ModelId,
-            Title = bucket.ModelId,
-            Window = ToWindow(bucket),
-        }).ToList();
+        var primaryBucket = pro ?? Lowest(all)!;
+        var secondaryBucket = flash;
+
+        // The primary/secondary buckets are already rendered as the main windows; extras hold
+        // only the remaining models so the flyout does not show the same bucket twice.
+        var extraWindows = all
+            .Where(bucket =>
+                !string.Equals(bucket.ModelId, primaryBucket.ModelId, StringComparison.OrdinalIgnoreCase)
+                && (secondaryBucket is null
+                    || !string.Equals(bucket.ModelId, secondaryBucket.ModelId, StringComparison.OrdinalIgnoreCase)))
+            .Select(bucket => new NamedRateWindow
+            {
+                Id = bucket.ModelId,
+                Title = bucket.ModelId,
+                Window = ToWindow(bucket),
+            }).ToList();
 
         return new UsageSnapshot
         {
             Provider = ProviderId.Gemini,
-            Primary = pro is null ? ToWindow(Lowest(all)!) : ToWindow(pro),
-            Secondary = flash is null ? null : ToWindow(flash),
+            Primary = ToWindow(primaryBucket),
+            Secondary = secondaryBucket is null ? null : ToWindow(secondaryBucket),
             ExtraWindows = extraWindows,
             Identity = new ProviderIdentity
             {

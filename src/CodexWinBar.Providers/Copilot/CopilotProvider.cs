@@ -96,8 +96,9 @@ internal static class CopilotUsageParser
         var chat = snapshots is null ? null : ParseWindow(TryGetProperty(snapshots.Value, "chat"), resetsAt);
         var completions = snapshots is null ? null : ParseWindow(TryGetProperty(snapshots.Value, "completions"), resetsAt);
 
+        // Chat is already surfaced as the Secondary window; extras hold only windows beyond
+        // primary/secondary, otherwise the flyout renders "Chat" twice.
         var extras = new List<NamedRateWindow>();
-        AddExtra(extras, "chat", "Chat", chat);
         AddExtra(extras, "completions", "Completions", completions);
 
         return new UsageSnapshot

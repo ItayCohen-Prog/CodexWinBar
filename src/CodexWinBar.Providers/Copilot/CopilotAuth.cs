@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using CodexWinBar.Core.Http;
@@ -105,8 +106,26 @@ public static class CopilotAuth
             ? value.GetString()
             : null;
 
-    private static int? GetInt(JsonElement element, string name) =>
-        element.TryGetProperty(name, out var value) && value.TryGetInt32(out var number) ? number : null;
+    private static int? GetInt(JsonElement element, string name)
+    {
+        if (!element.TryGetProperty(name, out var value))
+        {
+            return null;
+        }
+
+        // GitHub sometimes returns numeric fields as strings (e.g. "interval":"5");
+        // JsonElement.TryGetInt32 throws on non-Number kinds, so gate on ValueKind first.
+        return value.ValueKind switch
+        {
+            JsonValueKind.Number when value.TryGetInt32(out var number) => number,
+            JsonValueKind.String when int.TryParse(
+                value.GetString(),
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out var parsed) => parsed,
+            _ => null,
+        };
+    }
 }
 
 /// <summary>GitHub OAuth device-code details shown by the settings UI.</summary>

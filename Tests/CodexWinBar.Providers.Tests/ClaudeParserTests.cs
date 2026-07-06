@@ -72,6 +72,38 @@ public sealed class ClaudeParserTests
             Assert.ThrowsAny<Exception>(() => Parse("{broken")));
     }
 
+    [Fact]
+    public void Credentials_without_expiry_are_not_treated_as_expired()
+    {
+        // ExpiresAt == null used to mean "always expired", forcing a full OAuth refresh and
+        // credential-file rewrite on every fetch when the refresh response omitted expires_in.
+        Assert.False(IsExpired(expiresAt: null, Now));
+    }
+
+    [Fact]
+    public void Credentials_with_past_expiry_are_expired_and_future_expiry_are_not()
+    {
+        Assert.True(IsExpired(Now.AddMinutes(-1), Now));
+        Assert.False(IsExpired(Now.AddMinutes(1), Now));
+    }
+
+    private static bool IsExpired(DateTimeOffset? expiresAt, DateTimeOffset now)
+    {
+        var type = Type.GetType(
+            "CodexWinBar.Providers.Claude.ClaudeCredentials, CodexWinBar.Providers",
+            throwOnError: true)!;
+        var credentials = Activator.CreateInstance(
+            type,
+            "access-token",
+            "refresh-token",
+            expiresAt,
+            Array.Empty<string>(),
+            null,
+            null,
+            new System.Text.Json.Nodes.JsonObject())!;
+        return (bool)type.GetMethod("IsExpired")!.Invoke(credentials, [now])!;
+    }
+
     private static UsageSnapshot Parse(string json) =>
         (UsageSnapshot)ProviderParserReflection.Invoke(
             "CodexWinBar.Providers.Claude.ClaudeUsageParser",

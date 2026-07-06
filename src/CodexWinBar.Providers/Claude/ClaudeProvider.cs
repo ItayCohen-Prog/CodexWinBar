@@ -57,7 +57,19 @@ internal sealed class ClaudeOAuthFetchStrategy : IFetchStrategy
             credentials = await RefreshAsync(credentials, path, ctx.Now(), ctx.Log, ct).ConfigureAwait(false);
         }
 
-        var usageJson = await GetUsageAsync(credentials, ct).ConfigureAwait(false);
+        string usageJson;
+        try
+        {
+            usageJson = await GetUsageAsync(credentials, ct).ConfigureAwait(false);
+        }
+        catch (UnauthorizedProviderException) when (!string.IsNullOrWhiteSpace(credentials.RefreshToken))
+        {
+            // The token may be revoked, or stale without a recorded expiry (IsExpired treats an
+            // unknown expiry as valid); mirror Codex's 401 -> refresh -> retry path before
+            // surfacing an auth error.
+            credentials = await RefreshAsync(credentials, path, ctx.Now(), ctx.Log, ct).ConfigureAwait(false);
+            usageJson = await GetUsageAsync(credentials, ct).ConfigureAwait(false);
+        }
         var snapshot = ClaudeUsageParser.Parse(usageJson, ctx.Now(), credentials.SubscriptionType, credentials.RateLimitTier);
         if (snapshot.Primary is not null || snapshot.Secondary is not null || snapshot.Tertiary is not null ||
             snapshot.ExtraWindows.Count > 0 || snapshot.Credits is not null)
@@ -385,7 +397,11 @@ internal sealed record ClaudeCredentials(
     string? RateLimitTier,
     JsonNode RawRoot)
 {
-    public bool IsExpired(DateTimeOffset now) => this.ExpiresAt is null || now.ToUniversalTime() >= this.ExpiresAt.Value;
+    // A credential with no recorded expiry is assumed still valid rather than perpetually
+    // expired; treating null as expired forced a full OAuth refresh + credential rewrite on
+    // every fetch when the refresh response also omitted expires_in. A genuinely stale token
+    // is caught by the 401 -> refresh -> retry path in FetchAsync instead.
+    public bool IsExpired(DateTimeOffset now) => this.ExpiresAt is { } expiresAt && now.ToUniversalTime() >= expiresAt;
 }
 
 internal static class ClaudeUsageParser

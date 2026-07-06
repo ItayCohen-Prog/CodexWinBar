@@ -81,4 +81,19 @@ public sealed class CursorParserTests
         Assert.IsAssignableFrom<System.Text.Json.JsonException>(Assert.ThrowsAny<Exception>(() =>
             ProviderParserReflection.Invoke(ParserType, "Parse", "{broken", null, DateTimeOffset.UnixEpoch)));
     }
+
+    [Fact]
+    public void Parse_throws_when_no_usage_data_is_recognized()
+    {
+        // A structurally valid payload with no recognizable windows must surface an error
+        // instead of a silent, permanently blank card.
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            ProviderParserReflection.Invoke(
+                ParserType,
+                "Parse",
+                """{ "unrelated": { "something": 1 } }""",
+                null,
+                DateTimeOffset.UnixEpoch));
+        Assert.Contains("Cursor", ex.Message);
+    }
 }

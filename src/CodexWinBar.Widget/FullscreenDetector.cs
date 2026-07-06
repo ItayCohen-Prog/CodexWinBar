@@ -2,17 +2,21 @@ namespace CodexWinBar.Widget;
 
 internal static class FullscreenDetector
 {
-    internal static bool IsForegroundFullscreenOnMonitor(IntPtr referenceWindow)
+    /// <summary>
+    /// True when the foreground window covers all of <paramref name="monitor"/>. Per-monitor by design:
+    /// each widget passes ITS OWN taskbar's monitor, so a fullscreen app on one display only hides the
+    /// widget on that display. <paramref name="ignoreWindow"/> (the widget itself) never counts.
+    /// </summary>
+    internal static bool IsForegroundFullscreenOnMonitor(IntPtr monitor, IntPtr ignoreWindow)
     {
         IntPtr foreground = NativeMethods.GetForegroundWindow();
-        if (foreground == IntPtr.Zero || foreground == referenceWindow)
+        if (foreground == IntPtr.Zero || foreground == ignoreWindow || monitor == IntPtr.Zero)
         {
             return false;
         }
 
-        IntPtr referenceMonitor = NativeMethods.MonitorFromWindow(referenceWindow, NativeMethods.MONITOR_DEFAULTTONEAREST);
         IntPtr foregroundMonitor = NativeMethods.MonitorFromWindow(foreground, NativeMethods.MONITOR_DEFAULTTONEAREST);
-        if (referenceMonitor == IntPtr.Zero || foregroundMonitor == IntPtr.Zero || referenceMonitor != foregroundMonitor)
+        if (foregroundMonitor != monitor)
         {
             return false;
         }

@@ -3,18 +3,74 @@ using System.Drawing;
 
 namespace CodexWinBar.Widget;
 
-internal sealed record TaskbarInfo(IntPtr TaskbarHwnd, IntPtr TrayHwnd, Rectangle TaskbarRect, Rectangle ClientRect, Rectangle TrayRect, int Edge, bool IsRtl, bool IsExplorer);
+/// <summary>Snapshot of one taskbar (the primary Shell_TrayWnd or a secondary Shell_SecondaryTrayWnd).
+/// <paramref name="Monitor"/> is the HMONITOR the taskbar lives on and is the stable identity widgets
+/// are keyed by; <paramref name="TrayHwnd"/>/<paramref name="TrayRect"/> are empty on secondary
+/// taskbars, which have no notification area.</summary>
+internal sealed record TaskbarInfo(IntPtr TaskbarHwnd, IntPtr TrayHwnd, IntPtr Monitor, bool IsPrimary, Rectangle TaskbarRect, Rectangle ClientRect, Rectangle TrayRect, int Edge, bool IsRtl, bool IsExplorer);
 
 internal static class TaskbarInterop
 {
+    private const string PrimaryTaskbarClass = "Shell_TrayWnd";
+    private const string SecondaryTaskbarClass = "Shell_SecondaryTrayWnd";
+
+    /// <summary>Snapshot of the primary taskbar (Shell_TrayWnd), or null when Explorer is not running.</summary>
     internal static TaskbarInfo? TryGetPrimaryTaskbar()
     {
-        IntPtr taskbar = NativeMethods.FindWindowW("Shell_TrayWnd", null);
-        if (taskbar == IntPtr.Zero)
+        IntPtr taskbar = NativeMethods.FindWindowW(PrimaryTaskbarClass, null);
+        return taskbar == IntPtr.Zero ? null : BuildInfo(taskbar, isPrimary: true);
+    }
+
+    /// <summary>
+    /// Snapshots every taskbar currently present: the primary Shell_TrayWnd plus one
+    /// Shell_SecondaryTrayWnd per additional display when "show taskbar on all displays" is enabled.
+    /// Secondary taskbars are enumerated with a FindWindowExW(NULL, …) top-level walk by class name
+    /// (equivalent to EnumWindows + GetClassName, without the callback).
+    /// </summary>
+    internal static List<TaskbarInfo> EnumerateTaskbars()
+    {
+        List<TaskbarInfo> taskbars = [];
+        IntPtr primary = NativeMethods.FindWindowW(PrimaryTaskbarClass, null);
+        if (primary != IntPtr.Zero)
         {
-            return null;
+            taskbars.Add(BuildInfo(primary, isPrimary: true));
         }
 
+        IntPtr secondary = IntPtr.Zero;
+        while ((secondary = NativeMethods.FindWindowExW(IntPtr.Zero, secondary, SecondaryTaskbarClass, null)) != IntPtr.Zero)
+        {
+            taskbars.Add(BuildInfo(secondary, isPrimary: false));
+        }
+
+        return taskbars;
+    }
+
+    /// <summary>Finds the taskbar currently hosted on <paramref name="monitor"/> (primary or secondary),
+    /// or null when that monitor has no taskbar (display removed, or taskbar mid-recreation).</summary>
+    internal static TaskbarInfo? TryGetTaskbarForMonitor(IntPtr monitor)
+    {
+        IntPtr primary = NativeMethods.FindWindowW(PrimaryTaskbarClass, null);
+        if (primary != IntPtr.Zero && NativeMethods.MonitorFromWindow(primary, NativeMethods.MONITOR_DEFAULTTONEAREST) == monitor)
+        {
+            return BuildInfo(primary, isPrimary: true);
+        }
+
+        IntPtr secondary = IntPtr.Zero;
+        while ((secondary = NativeMethods.FindWindowExW(IntPtr.Zero, secondary, SecondaryTaskbarClass, null)) != IntPtr.Zero)
+        {
+            if (NativeMethods.MonitorFromWindow(secondary, NativeMethods.MONITOR_DEFAULTTONEAREST) == monitor)
+            {
+                return BuildInfo(secondary, isPrimary: false);
+            }
+        }
+
+        return null;
+    }
+
+    private static TaskbarInfo BuildInfo(IntPtr taskbar, bool isPrimary)
+    {
+        // Secondary taskbars have no TrayNotifyWnd; the descendant walk simply yields Zero there and
+        // callers fall back to the taskbar's far edge for anchoring.
         IntPtr tray = FindDescendant(taskbar, "TrayNotifyWnd");
         _ = NativeMethods.GetWindowRect(taskbar, out NativeMethods.RECT taskbarRect);
         _ = NativeMethods.GetClientRect(taskbar, out NativeMethods.RECT clientRect);
@@ -24,18 +80,49 @@ internal static class TaskbarInterop
             _ = NativeMethods.GetWindowRect(tray, out trayRect);
         }
 
+        IntPtr monitor = NativeMethods.MonitorFromWindow(taskbar, NativeMethods.MONITOR_DEFAULTTONEAREST);
         long exStyle = NativeMethods.GetWindowLongPtrW(taskbar, NativeMethods.GWL_EXSTYLE).ToInt64();
-        int edge = GetTaskbarEdge();
+        int edge = isPrimary ? GetTaskbarEdge() : GuessEdgeFromMonitor(taskbarRect, monitor);
 
         return new TaskbarInfo(
             taskbar,
             tray,
+            monitor,
+            isPrimary,
             ToRectangle(taskbarRect),
             ToRectangle(clientRect),
             ToRectangle(trayRect),
             edge,
             (exStyle & NativeMethods.WS_EX_LAYOUTRTL) != 0,
             IsExplorerProcess(taskbar));
+    }
+
+    /// <summary>
+    /// Infers which monitor edge a secondary taskbar hugs. ABM_GETTASKBARPOS only reports the primary
+    /// taskbar, so for secondaries the edge is derived geometrically: a wide bar is top/bottom, a tall
+    /// bar left/right, disambiguated by which half of the monitor its centre sits in.
+    /// </summary>
+    private static int GuessEdgeFromMonitor(NativeMethods.RECT taskbarRect, IntPtr monitor)
+    {
+        NativeMethods.MONITORINFO info = new()
+        {
+            cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.MONITORINFO>(),
+        };
+        if (taskbarRect.IsEmpty || monitor == IntPtr.Zero || !NativeMethods.GetMonitorInfoW(monitor, ref info))
+        {
+            return NativeMethods.ABE_BOTTOM;
+        }
+
+        if (taskbarRect.Width >= taskbarRect.Height)
+        {
+            int barCenterY = taskbarRect.Top + (taskbarRect.Height / 2);
+            int monitorCenterY = info.rcMonitor.Top + (info.rcMonitor.Height / 2);
+            return barCenterY >= monitorCenterY ? NativeMethods.ABE_BOTTOM : NativeMethods.ABE_TOP;
+        }
+
+        int barCenterX = taskbarRect.Left + (taskbarRect.Width / 2);
+        int monitorCenterX = info.rcMonitor.Left + (info.rcMonitor.Width / 2);
+        return barCenterX >= monitorCenterX ? NativeMethods.ABE_RIGHT : NativeMethods.ABE_LEFT;
     }
 
     internal static bool IsAutoHidden()

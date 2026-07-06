@@ -21,8 +21,12 @@ internal static class WidgetLog
 
 internal sealed class WidgetWindow : IDisposable
 {
-    private const string WidgetClassName = "CodexWinBarWidget";
-    private const string ControllerClassName = "CodexWinBarWidgetController";
+    // Window class names are unique per instance (multiple widgets — one per taskbar — live in this
+    // process, each on its own STA thread). Sharing a class name would silently bind every window to the
+    // FIRST instance's WndProc delegates, routing another taskbar's messages into the wrong instance.
+    private static int _instanceCounter;
+    private readonly string _widgetClassName;
+    private readonly string _controllerClassName;
     private const uint RenderMessage = NativeMethods.WM_APP + 1;
     private const uint RepositionMessage = NativeMethods.WM_APP + 2;
     private const uint RecreateMessage = NativeMethods.WM_APP + 3;
@@ -45,6 +49,12 @@ internal sealed class WidgetWindow : IDisposable
     private readonly NativeMethods.WinEventDelegate _eventProc;
     private readonly IntPtr _module;
     private readonly bool _anchorLeft;
+
+    // The monitor (HMONITOR) whose taskbar this instance targets — its stable identity. The taskbar
+    // hwnd is re-resolved from it (see ResolveTaskbar) so Explorer restarts, which recreate every
+    // taskbar window, don't strand the instance.
+    private readonly IntPtr _monitor;
+    private readonly bool _isPrimary;
     private WidgetMode _requestedMode;
     private WidgetMode _effectiveMode = WidgetMode.Hidden;
     private WidgetMode? _attemptedMode;
@@ -75,17 +85,25 @@ internal sealed class WidgetWindow : IDisposable
     private Rectangle _screenRect;
     private readonly List<Rectangle> _chipBounds = [];
 
-    internal WidgetWindow(WidgetHost host, WidgetMode requestedMode, bool anchorLeft)
+    internal WidgetWindow(WidgetHost host, WidgetMode requestedMode, bool anchorLeft, IntPtr monitor, bool isPrimary)
     {
         _host = host;
         _requestedMode = requestedMode;
         _anchorLeft = anchorLeft;
+        _monitor = monitor;
+        _isPrimary = isPrimary;
+        int instanceId = Interlocked.Increment(ref _instanceCounter);
+        _widgetClassName = "CodexWinBarWidget_" + instanceId;
+        _controllerClassName = "CodexWinBarWidgetController_" + instanceId;
         _renderer = new WidgetRenderer(_theme);
         _controllerProc = ControllerWndProc;
         _widgetProc = WidgetWndProc;
         _eventProc = WinEventProc;
         _module = NativeMethods.GetModuleHandleW(null);
     }
+
+    /// <summary>Re-resolves this instance's taskbar by monitor (survives taskbar hwnd recreation).</summary>
+    private TaskbarInfo? ResolveTaskbar() => TaskbarInterop.TryGetTaskbarForMonitor(_monitor);
 
     internal IntPtr Controller => _controller;
 
@@ -105,7 +123,7 @@ internal sealed class WidgetWindow : IDisposable
         {
             RegisterClasses();
             _taskbarCreatedMessage = NativeMethods.RegisterWindowMessageW("TaskbarCreated");
-            _controller = NativeMethods.CreateWindowExW(0, ControllerClassName, null, NativeMethods.WS_OVERLAPPED, 0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, _module, IntPtr.Zero);
+            _controller = NativeMethods.CreateWindowExW(0, _controllerClassName, null, NativeMethods.WS_OVERLAPPED, 0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, _module, IntPtr.Zero);
             // Startup-ready handshake: the controller now exists, so a QuitMessage posted by Stop
             // will be delivered (posted messages queue even before the pump starts).
             ControllerReady?.Invoke();
@@ -155,14 +173,13 @@ internal sealed class WidgetWindow : IDisposable
             _controller = IntPtr.Zero;
         }
 
-        // Unregister the window classes (safe now that both windows are destroyed) so the NEXT Start
-        // re-registers them with fresh WndProc delegates. If the class keeps pointing at this instance's
-        // delegates, they get garbage-collected on teardown and a later message into the stale delegate
-        // hard-crashes the whole process via Environment.FailFast — this is what killed the app when the
-        // widget mode was changed (e.g. to Hidden), because a restart's RegisterClassExW silently no-ops
-        // on the still-registered class and the window keeps calling the dead delegate.
-        _ = NativeMethods.UnregisterClassW(WidgetClassName, _module);
-        _ = NativeMethods.UnregisterClassW(ControllerClassName, _module);
+        // Unregister this instance's window classes (safe now that both windows are destroyed). The
+        // classes point at this instance's WndProc delegates, which get garbage-collected after
+        // teardown — a later message into a stale delegate hard-crashes the whole process via
+        // Environment.FailFast. Class names are unique per instance (see _instanceCounter), so this
+        // never races another live widget's registration.
+        _ = NativeMethods.UnregisterClassW(_widgetClassName, _module);
+        _ = NativeMethods.UnregisterClassW(_controllerClassName, _module);
 
         _renderer.Dispose();
     }
@@ -195,7 +212,7 @@ internal sealed class WidgetWindow : IDisposable
             lpfnWndProc = _controllerProc,
             hInstance = _module,
             hCursor = _arrowCursor,
-            lpszClassName = ControllerClassName,
+            lpszClassName = _controllerClassName,
         };
         _ = NativeMethods.RegisterClassExW(ref controller);
 
@@ -205,7 +222,7 @@ internal sealed class WidgetWindow : IDisposable
             lpfnWndProc = _widgetProc,
             hInstance = _module,
             hCursor = _arrowCursor,
-            lpszClassName = WidgetClassName,
+            lpszClassName = _widgetClassName,
         };
         _ = NativeMethods.RegisterClassExW(ref widget);
     }
@@ -219,7 +236,7 @@ internal sealed class WidgetWindow : IDisposable
     private void Recreate()
     {
         _hoveredIndex = -1;
-        TaskbarInfo? info = TaskbarInterop.TryGetPrimaryTaskbar();
+        TaskbarInfo? info = ResolveTaskbar();
         if (info is null)
         {
             SetEffectiveMode(WidgetMode.Hidden, "taskbar not found");
@@ -317,7 +334,7 @@ internal sealed class WidgetWindow : IDisposable
         DestroyWidget();
         _attemptedMode = WidgetMode.Embedded;
         MeasureForTaskbar(info);
-        _widget = NativeMethods.CreateWindowExW(NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_LAYERED, WidgetClassName, null, NativeMethods.WS_POPUP, 0, 0, _width, _height, IntPtr.Zero, IntPtr.Zero, _module, IntPtr.Zero);
+        _widget = NativeMethods.CreateWindowExW(NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_LAYERED, _widgetClassName, null, NativeMethods.WS_POPUP, 0, 0, _width, _height, IntPtr.Zero, IntPtr.Zero, _module, IntPtr.Zero);
         // The SetParent return value (previous parent) is ignored: NULL is a legitimate success for a
         // top-level WS_POPUP window, so ProbeEmbedded validates the reparent by inspection instead.
         _ = NativeMethods.SetParent(_widget, info.TaskbarHwnd);
@@ -349,8 +366,16 @@ internal sealed class WidgetWindow : IDisposable
     private void CreateOverlayOrHidden(string reason)
     {
         DestroyWidget();
-        TaskbarInfo? info = TaskbarInterop.TryGetPrimaryTaskbar();
-        if (info is null || info.TrayHwnd == IntPtr.Zero)
+        TaskbarInfo? info = ResolveTaskbar();
+        if (info is null)
+        {
+            SetEffectiveMode(WidgetMode.Hidden, reason + "; taskbar unavailable");
+            return;
+        }
+
+        // Secondary taskbars never have a tray; only treat a missing tray as fatal on the primary,
+        // where its absence signals a broken/mid-recreation taskbar.
+        if (info.IsPrimary && info.TrayHwnd == IntPtr.Zero)
         {
             SetEffectiveMode(WidgetMode.Hidden, reason + "; tray unavailable");
             return;
@@ -359,7 +384,7 @@ internal sealed class WidgetWindow : IDisposable
         _taskbar = info.TaskbarHwnd;
         _tray = info.TrayHwnd;
         MeasureForTaskbar(info);
-        _widget = NativeMethods.CreateWindowExW(NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_TOPMOST | NativeMethods.WS_EX_LAYERED, WidgetClassName, null, NativeMethods.WS_POPUP, 0, 0, _width, _height, IntPtr.Zero, IntPtr.Zero, _module, IntPtr.Zero);
+        _widget = NativeMethods.CreateWindowExW(NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_TOPMOST | NativeMethods.WS_EX_LAYERED, _widgetClassName, null, NativeMethods.WS_POPUP, 0, 0, _width, _height, IntPtr.Zero, IntPtr.Zero, _module, IntPtr.Zero);
         PositionOverlay(info);
         _ = NativeMethods.SetWindowPos(_widget, NativeMethods.HWND_TOPMOST, _screenRect.X, _screenRect.Y, _width, _height, NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
         _ = Render();
@@ -401,6 +426,11 @@ internal sealed class WidgetWindow : IDisposable
             {
                 y = Scale(8);
             }
+            else if (info.TrayRect.IsEmpty)
+            {
+                // No tray (secondary taskbar): anchor to the far (bottom) end of the bar instead.
+                y = Math.Max(Scale(8), info.ClientRect.Height - _height - Scale(8));
+            }
             else
             {
                 NativeMethods.RECT trayClient = new() { Left = info.TrayRect.Left, Top = info.TrayRect.Top, Right = info.TrayRect.Right, Bottom = info.TrayRect.Bottom };
@@ -413,6 +443,11 @@ internal sealed class WidgetWindow : IDisposable
             if (_anchorLeft)
             {
                 x = Scale(8);
+            }
+            else if (info.TrayRect.IsEmpty)
+            {
+                // No tray (secondary taskbar): anchor to the right edge of the taskbar client area.
+                x = Math.Max(0, info.ClientRect.Width - _width - Scale(8));
             }
             else
             {
@@ -437,12 +472,16 @@ internal sealed class WidgetWindow : IDisposable
         int y;
         if (_vertical)
         {
+            // No tray on secondary taskbars: anchor to the taskbar's far (bottom) edge instead.
+            int trayTop = info.TrayRect.IsEmpty ? info.TaskbarRect.Bottom - Scale(2) : info.TrayRect.Top;
             x = info.TaskbarRect.Left + Math.Max(0, (info.TaskbarRect.Width - _width) / 2);
-            y = _anchorLeft ? info.TaskbarRect.Top + Scale(8) : Math.Max(info.TaskbarRect.Top + Scale(8), info.TrayRect.Top - _height - gap);
+            y = _anchorLeft ? info.TaskbarRect.Top + Scale(8) : Math.Max(info.TaskbarRect.Top + Scale(8), trayTop - _height - gap);
         }
         else
         {
-            x = _anchorLeft ? info.TaskbarRect.Left + Scale(8) : info.TrayRect.Left - _width - gap;
+            // No tray on secondary taskbars: anchor to the taskbar's right edge instead.
+            int trayLeft = info.TrayRect.IsEmpty ? info.TaskbarRect.Right - Scale(2) : info.TrayRect.Left;
+            x = _anchorLeft ? info.TaskbarRect.Left + Scale(8) : trayLeft - _width - gap;
             y = info.TaskbarRect.Top + Math.Max(0, (info.TaskbarRect.Height - _height) / 2);
         }
 
@@ -608,7 +647,7 @@ internal sealed class WidgetWindow : IDisposable
 
     private void Reposition()
     {
-        TaskbarInfo? info = TaskbarInterop.TryGetPrimaryTaskbar();
+        TaskbarInfo? info = ResolveTaskbar();
         if (info is null || _widget == IntPtr.Zero)
         {
             return;
@@ -657,7 +696,7 @@ internal sealed class WidgetWindow : IDisposable
             return;
         }
 
-        bool hide = TaskbarInterop.IsAutoHidden() || FullscreenDetector.IsForegroundFullscreenOnMonitor(_taskbar);
+        bool hide = TaskbarInterop.IsAutoHidden() || FullscreenDetector.IsForegroundFullscreenOnMonitor(_monitor, _widget);
         if (hide != _overlayHidden)
         {
             _overlayHidden = hide;
@@ -678,7 +717,7 @@ internal sealed class WidgetWindow : IDisposable
             _attemptedMode = null;
         }
 
-        _host.SetEffectiveModeFromThread(mode, reason);
+        _host.SetEffectiveModeFromThread(_isPrimary, mode, reason);
     }
 
     private IntPtr ControllerWndProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
@@ -701,7 +740,7 @@ internal sealed class WidgetWindow : IDisposable
                     return IntPtr.Zero;
                 case RecreateMessage:
                     Thread.Sleep(250);
-                    for (int i = 0; i < 3 && TaskbarInterop.TryGetPrimaryTaskbar() is null; i++)
+                    for (int i = 0; i < 3 && ResolveTaskbar() is null; i++)
                     {
                         Thread.Sleep(1000);
                     }

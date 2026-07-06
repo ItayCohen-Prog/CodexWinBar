@@ -153,6 +153,11 @@ internal sealed class AppShell : IDisposable
         this.UpdateWidget();
         this.Log($"CodexWinBar {Assembly.GetExecutingAssembly().GetName().Version} started.");
         this.CheckForUpdatesInBackground();
+        // Warm the flyout's render/animation pipeline once the app is idle, so the FIRST real open
+        // animates instead of popping in (WPF drops the first animation on a cold composition).
+        _ = this.app.Dispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle,
+            new Action(() => this.flyout.PreWarm()));
     }
 
     // Fire-and-forget update check. Velopack only manages updates for an installed copy (IsInstalled

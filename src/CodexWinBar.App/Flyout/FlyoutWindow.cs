@@ -78,6 +78,7 @@ public sealed class FlyoutWindow : Window
     private bool isRefreshingUi;
     private bool wasActivated;
     private bool isClosing;
+    private bool isPreWarming;
     private int animationGeneration;
     private int measureNonce;
     private int currentEdge = AbeBottom;
@@ -154,7 +155,49 @@ public sealed class FlyoutWindow : Window
     }
 
     /// <summary>Gets whether the flyout is currently visible.</summary>
-    public bool IsOpen => this.IsVisible && !this.isClosing;
+    public bool IsOpen => this.IsVisible && !this.isClosing && !this.isPreWarming;
+
+    /// <summary>
+    /// Renders the flyout once off-screen and invisibly at startup so WPF's composition/animation
+    /// pipeline is warm — otherwise the very first real open drops its slide/fade animation. The window
+    /// is non-activating during the warm-up (no focus steal, no Activated/Deactivated, no dismiss hook),
+    /// and <see cref="IsOpen"/> stays false throughout so nothing treats the warm-up as an open flyout.
+    /// Hide keeps the HWND alive, so the next real open reuses the warmed window.
+    /// </summary>
+    public void PreWarm()
+    {
+        if (this.IsVisible || this.isPreWarming)
+        {
+            return;
+        }
+
+        this.isPreWarming = true;
+        this.ShowActivated = false;
+        this.Opacity = 0;
+        this.Left = -32000;
+        this.Top = -32000;
+        try
+        {
+            this.Show();
+        }
+        catch (Exception ex)
+        {
+            this.log?.Invoke($"flyout pre-warm failed: {ex.GetType().Name}");
+            this.isPreWarming = false;
+            this.ShowActivated = true;
+            this.Opacity = 1;
+            return;
+        }
+
+        // After one render pass the pipeline is warm; hide and restore for real opens.
+        _ = this.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+        {
+            this.Hide();
+            this.isPreWarming = false;
+            this.ShowActivated = true;
+            this.Opacity = 1;
+        }));
+    }
 
     /// <summary>Toggles the flyout, anchored to a widget rectangle expressed in physical screen pixels.</summary>
     public void Toggle(DrawingRectangle anchorPhysicalPx, ProviderId? focusProvider = null)

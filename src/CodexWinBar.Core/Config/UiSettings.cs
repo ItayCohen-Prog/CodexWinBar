@@ -168,6 +168,20 @@ public sealed class UiSettings
     public bool QuotaWeeklyEnabled { get; set; } = true;
 
     /// <summary>
+    /// Whether pace notifications are enabled (toast when a window's projected end-of-window usage
+    /// crosses into the at-risk band). Opt-in; independent of quota threshold notifications.
+    /// </summary>
+    [JsonPropertyName("paceNotificationsEnabled")]
+    public bool PaceNotificationsEnabled { get; set; }
+
+    /// <summary>
+    /// Whether pace notifications also fire when a window enters the under-using band (leaving a
+    /// meaningful chunk of quota unused). Only consulted when <see cref="PaceNotificationsEnabled"/> is on.
+    /// </summary>
+    [JsonPropertyName("paceUnderuseNotificationsEnabled")]
+    public bool PaceUnderuseNotificationsEnabled { get; set; } = true;
+
+    /// <summary>
     /// Widget hosting mode.
     /// </summary>
     [JsonPropertyName("widgetMode")]

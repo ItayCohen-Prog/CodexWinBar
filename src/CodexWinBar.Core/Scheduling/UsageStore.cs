@@ -113,12 +113,12 @@ public sealed class UsageStore : IUsageStore
         var batchResults = new List<ProviderBatchResult>();
         try
         {
-            foreach (var descriptor in enabled)
-            {
-                ct.ThrowIfCancellationRequested();
-                var result = await this.RefreshProviderCoreAsync(descriptor, ct).ConfigureAwait(false);
-                batchResults.Add(result);
-            }
+            // Fan out per-provider refreshes: each provider owns an independent slot/generation, so
+            // they fetch concurrently instead of head-of-line blocking behind the slowest provider.
+            // RefreshProviderCoreAsync never throws for cancellation/errors (it publishes them as a
+            // ProviderBatchResult), so WhenAll completes with one result per provider.
+            var refreshTasks = enabled.Select(descriptor => this.RefreshProviderCoreAsync(descriptor, ct)).ToArray();
+            batchResults.AddRange(await Task.WhenAll(refreshTasks).ConfigureAwait(false));
 
             await this.PollStatusesAsync(enabled, ct).ConfigureAwait(false);
         }
@@ -350,10 +350,8 @@ public sealed class UsageStore : IUsageStore
     private async Task RefreshFlyoutProvidersAsync()
     {
         var providers = this.StaleOrMissingDescriptors();
-        foreach (var descriptor in providers)
-        {
-            await this.RefreshProviderCoreAsync(descriptor, CancellationToken.None).ConfigureAwait(false);
-        }
+        await Task.WhenAll(providers.Select(descriptor =>
+            this.RefreshProviderCoreAsync(descriptor, CancellationToken.None))).ConfigureAwait(false);
     }
 
     private void ReschedulePeriodicTimer()

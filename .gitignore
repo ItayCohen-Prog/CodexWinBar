@@ -54,3 +54,6 @@ artifacts/
 # Code-signing secrets (never commit)
 build/azure-signing.json
 *-signing.json
+
+# Local Claude Code project notes (kept local, not committed)
+CLAUDE.md

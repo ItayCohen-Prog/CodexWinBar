@@ -55,6 +55,5 @@ artifacts/
 build/azure-signing.json
 *-signing.json
 
-# Local agent instruction files (kept local, not committed)
+# Local Claude Code notes (kept local, not committed). AGENTS.md IS committed — it's the shared agent guide.
 CLAUDE.md
-AGENTS.md

@@ -46,6 +46,7 @@ public sealed class FlyoutWindow : Window
     private const uint AbmGetTaskbarPos = 0x00000005;
     private const double ShadowMarginDip = 16;
     private static readonly TimeSpan OpenDismissGrace = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan StaleDataAge = TimeSpan.FromMinutes(10);
     private static readonly Duration OpenSlideDuration = new(TimeSpan.FromMilliseconds(260));
     private static readonly Duration OpenFadeDuration = new(TimeSpan.FromMilliseconds(120));
     private static readonly Duration CloseSlideDuration = new(TimeSpan.FromMilliseconds(200));
@@ -204,10 +205,9 @@ public sealed class FlyoutWindow : Window
     {
         try
         {
-            // The flyout always shows exactly one provider. A missing focus (tray/keyboard activation)
-            // falls back to the first provider — there is no combined all-providers view.
-            focusProvider ??= this.store.States.Count > 0 ? this.store.States[0].Provider : null;
-
+            // A null focus (tray/keyboard activation) means the combined all-providers view: every
+            // provider's card stacked in one scrollable panel, capped to the monitor work area by
+            // PrepareSessionWindow. A concrete focus (widget chip click) shows that provider alone.
             if (this.IsOpen)
             {
                 if (this.currentFocusProvider == focusProvider)
@@ -755,6 +755,11 @@ public sealed class FlyoutWindow : Window
             content.Children.Add(this.CreateIncidentRow(status));
         }
 
+        if (state.Snapshot is { } stamped)
+        {
+            content.Children.Add(this.CreateUpdatedRow(stamped.UpdatedAt));
+        }
+
         return card;
     }
 
@@ -1133,6 +1138,43 @@ public sealed class FlyoutWindow : Window
 
         var identity = state.Snapshot?.Identity;
         return FirstNonEmpty(identity?.Plan, identity?.AccountEmail, identity?.AccountOrganization, identity?.LoginMethod) ?? "usage";
+    }
+
+    /// <summary>
+    /// Subtle "Updated Xm ago" freshness caption at the bottom of a provider card, recomputed on every
+    /// rebuild (state changes, open, and the minute countdown tick — no extra timer needed). Data older
+    /// than <see cref="StaleDataAge"/> dims further to signal staleness; the caption also shows next to
+    /// the error subtitle so the user knows how old the last-good data is.
+    /// </summary>
+    private UIElement CreateUpdatedRow(DateTimeOffset updatedAt) => new TextBlock
+    {
+        Text = UpdatedText(updatedAt),
+        FontSize = 10,
+        Foreground = this.ResourceBrush("FlyoutSecondaryForeground"),
+        Opacity = DateTimeOffset.UtcNow - updatedAt > StaleDataAge ? 0.6 : 1.0,
+        Margin = new Thickness(0, 8, 0, 0),
+    };
+
+    /// <summary>Relative freshness text for a snapshot, e.g. "Updated just now" / "Updated 5m ago".</summary>
+    private static string UpdatedText(DateTimeOffset updatedAt)
+    {
+        var age = DateTimeOffset.UtcNow - updatedAt;
+        if (age < TimeSpan.FromMinutes(1))
+        {
+            return "Updated just now";
+        }
+
+        if (age.TotalHours < 1)
+        {
+            return string.Create(CultureInfo.InvariantCulture, $"Updated {(int)age.TotalMinutes}m ago");
+        }
+
+        if (age.TotalDays < 1)
+        {
+            return string.Create(CultureInfo.InvariantCulture, $"Updated {(int)age.TotalHours}h ago");
+        }
+
+        return string.Create(CultureInfo.InvariantCulture, $"Updated {(int)age.TotalDays}d ago");
     }
 
     private string ResetText(RateWindow window)

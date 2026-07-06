@@ -98,6 +98,7 @@ internal sealed class AppShell : IDisposable
     private readonly FlyoutWindow flyout;
     private readonly TrayIcon trayIcon;
     private readonly QuotaNotifier quotaNotifier;
+    private readonly PaceNotifier paceNotifier;
     private readonly CancellationTokenSource pipeCancellation = new();
     private readonly Action usageStateChangedHandler;
     // Providers the user has already opened while at-risk; suppresses the bob until they drop out of the
@@ -140,6 +141,7 @@ internal sealed class AppShell : IDisposable
             this.Quit,
             this.Log);
         this.quotaNotifier = new QuotaNotifier(this.usageStore, this.configStore, this.uiStore, this.trayIcon);
+        this.paceNotifier = new PaceNotifier(this.usageStore, this.configStore, this.uiStore, this.trayIcon);
         this.usageStateChangedHandler = () => this.app.Dispatcher.BeginInvoke(() => this.UpdateWidget());
     }
 
@@ -205,6 +207,7 @@ internal sealed class AppShell : IDisposable
         this.usageStore.StateChanged -= this.usageStateChangedHandler;
         this.usageStore.Dispose();
         this.quotaNotifier.Dispose();
+        this.paceNotifier.Dispose();
         this.trayIcon.Dispose();
         this.widgetHost.Dispose();
         this.pipeCancellation.Dispose();

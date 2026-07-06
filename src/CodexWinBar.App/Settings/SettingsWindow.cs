@@ -234,8 +234,36 @@ public sealed class SettingsWindow : Window
 
         group.Children.Add(this.CreateQuotaNotificationsCard(settings));
 
+        Border? underuseCard = null;
+        group.Children.Add(this.SettingCard("\uEC4A", "Pace notifications",
+            "Notify when a usage window is on pace to run out before it resets",
+            new ToggleSwitch(settings.PaceNotificationsEnabled, isChecked =>
+            {
+                this.SaveUi(ui => ui.PaceNotificationsEnabled = isChecked);
+                SetUnderuseEnabled(isChecked);
+            })));
+
+        underuseCard = this.SettingCard("\uE74B", "Also notify on under-use",
+            "Alert when a window is barely used and quota is going to waste",
+            new ToggleSwitch(settings.PaceUnderuseNotificationsEnabled, isChecked =>
+                this.SaveUi(ui => ui.PaceUnderuseNotificationsEnabled = isChecked)));
+        underuseCard.Margin = new Thickness(24, 0, 0, 2);
+        SetUnderuseEnabled(settings.PaceNotificationsEnabled);
+        group.Children.Add(underuseCard);
+
         panel.Children.Add(group);
         this.SetContent(panel);
+
+        void SetUnderuseEnabled(bool enabled)
+        {
+            if (underuseCard is null)
+            {
+                return;
+            }
+
+            underuseCard.IsEnabled = enabled;
+            underuseCard.Opacity = enabled ? 1.0 : 0.55;
+        }
     }
 
     private void ShowDisplay()
@@ -351,6 +379,10 @@ public sealed class SettingsWindow : Window
         {
             this.AddCopilotEditor(detail, status);
         }
+        else if (descriptor.Id == ProviderId.Cursor)
+        {
+            this.AddCursorCookieEditor(descriptor, detail);
+        }
         else
         {
             detail.Children.Add(Text(this.CredentialHint(descriptor.Id)));
@@ -359,7 +391,7 @@ public sealed class SettingsWindow : Window
     }
 
     private bool ProviderNeedsConfig(ProviderId id) =>
-        id is ProviderId.OpenRouter or ProviderId.Zai or ProviderId.OpenAIAdmin or ProviderId.Copilot or ProviderId.Codex or ProviderId.Claude or ProviderId.Gemini;
+        id is ProviderId.OpenRouter or ProviderId.Zai or ProviderId.OpenAIAdmin or ProviderId.Copilot or ProviderId.Codex or ProviderId.Claude or ProviderId.Gemini or ProviderId.Cursor;
 
     private FrameworkElement ProviderLogo(ProviderDescriptor descriptor, double size)
     {
@@ -432,6 +464,45 @@ public sealed class SettingsWindow : Window
         buttons.Children.Add(ButtonWithIcon(LogoImages.SignInGlyph, "Sign in", async () => await this.StartCopilotSignInAsync(), true));
         buttons.Children.Add(ButtonWithIcon(LogoImages.RefreshGlyph, "Refresh", async () => await this.RefreshProviderAsync(ProviderId.Copilot)));
         detail.Children.Add(buttons);
+    }
+
+    private void AddCursorCookieEditor(ProviderDescriptor descriptor, Panel detail)
+    {
+        var entry = this.configStore.EntryFor(this.configStore.Load(), descriptor.Id);
+        detail.Children.Add(Text(string.IsNullOrWhiteSpace(entry.CookieHeader) ? "No session cookie saved." : "Session cookie saved: ..."));
+        detail.Children.Add(Text("Paste the WorkosCursorSessionToken cookie value (or the full Cookie header) from a signed-in "
+            + "cursor.com browser session. The CURSOR_COOKIE / CURSOR_SESSION_TOKEN environment variables also work."));
+        var password = StyledPasswordBox();
+        detail.Children.Add(password);
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
+        buttons.Children.Add(Button("Save", () =>
+        {
+            this.SaveProviderEntry(descriptor.Id, item => item with { CookieHeader = NormalizeCursorCookie(password.Password) });
+            password.Clear();
+            this.RefreshProviderCard(descriptor.Id);
+        }, true));
+        buttons.Children.Add(Button("Clear", () =>
+        {
+            this.SaveProviderEntry(descriptor.Id, item => item with { CookieHeader = null });
+            this.RefreshProviderCard(descriptor.Id);
+        }));
+        buttons.Children.Add(ButtonWithIcon(LogoImages.RefreshGlyph, "Refresh", async () => await this.RefreshProviderAsync(descriptor.Id)));
+        detail.Children.Add(buttons);
+    }
+
+    /// <summary>
+    /// The Cursor strategy sends the saved value verbatim as the Cookie header, so a bare
+    /// WorkosCursorSessionToken value (no '=') is wrapped into the cookie pair Cursor expects.
+    /// </summary>
+    private static string? NormalizeCursorCookie(string? raw)
+    {
+        var value = raw?.Trim();
+        if (string.IsNullOrEmpty(value))
+        {
+            return null;
+        }
+
+        return value.Contains('=', StringComparison.Ordinal) ? value : $"WorkosCursorSessionToken={value}";
     }
 
     private async Task StartCopilotSignInAsync()

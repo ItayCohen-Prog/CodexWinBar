@@ -17,6 +17,7 @@ public sealed class ThresholdTrack : FrameworkElement
 
     private readonly List<int> values = [];
     private int? hoveredValue;
+    private int? hoverAddValue;
     private DragState? drag;
 
     public ThresholdTrack()
@@ -106,12 +107,30 @@ public sealed class ThresholdTrack : FrameworkElement
         if (this.drag is { } state)
         {
             this.DrawDot(context, state.LiveValue, ActiveDotSize, accent, ring);
-            this.DrawBubble(context, state.LiveValue, popupBackground, popupBorder, foreground);
+            var caption = state.HasDragged
+                ? state.LiveValue.ToString(CultureInfo.InvariantCulture)
+                : state.IsNew
+                    ? $"Add {state.LiveValue}"
+                    : $"{state.LiveValue} - release to remove";
+            if (!state.HasDragged && !state.IsNew)
+            {
+                this.DrawRemoveGlyph(context, state.LiveValue, ring);
+            }
+
+            this.DrawBubble(context, state.LiveValue, caption, popupBackground, popupBorder, foreground);
         }
         else if (this.hoveredValue is { } hover && this.values.Contains(hover))
         {
             this.DrawDot(context, hover, ActiveDotSize, accent, ring);
-            this.DrawBubble(context, hover, popupBackground, popupBorder, foreground);
+            this.DrawRemoveGlyph(context, hover, ring);
+            this.DrawBubble(context, hover, $"{hover} - click to remove", popupBackground, popupBorder, foreground);
+        }
+        else if (this.hoverAddValue is { } add)
+        {
+            // Ghost preview: clicking an empty spot on the track adds a marker here.
+            this.DrawDot(context, add, DotSize, accent.WithOpacity(0.45), ring.WithOpacity(0.45));
+            this.DrawAddGlyph(context, add, ring.WithOpacity(0.8));
+            this.DrawBubble(context, add, $"Add {add}", popupBackground, popupBorder, foreground);
         }
     }
 
@@ -127,6 +146,7 @@ public sealed class ThresholdTrack : FrameworkElement
         if (hit is not null)
         {
             this.drag = new DragState(hit.Value, hit.Value, hit.Value, point, false, false);
+            this.hoverAddValue = null;
             this.CaptureMouse();
             args.Handled = true;
             this.InvalidateVisual();
@@ -137,6 +157,7 @@ public sealed class ThresholdTrack : FrameworkElement
         {
             var value = this.ValueForX(point.X);
             this.drag = new DragState(null, value, value, point, true, false);
+            this.hoverAddValue = null;
             this.CaptureMouse();
             args.Handled = true;
             this.InvalidateVisual();
@@ -165,7 +186,10 @@ public sealed class ThresholdTrack : FrameworkElement
 
         var hit = this.HitTestValue(point);
         this.hoveredValue = hit;
-        this.Cursor = hit is not null || Math.Abs(point.Y - TrackY) <= 14 ? Cursors.Hand : null;
+        var onTrack = Math.Abs(point.Y - TrackY) <= 14;
+        var addCandidate = hit is null && onTrack ? this.ValueForX(point.X) : (int?)null;
+        this.hoverAddValue = addCandidate is { } candidate && !this.values.Contains(candidate) ? candidate : null;
+        this.Cursor = hit is not null || onTrack ? Cursors.Hand : null;
         this.InvalidateVisual();
     }
 
@@ -194,6 +218,9 @@ public sealed class ThresholdTrack : FrameworkElement
 
         this.ResetValues();
         this.hoveredValue = state.LiveValue;
+        // After a click-delete the cursor still sits on the empty spot: show the add ghost right
+        // away so re-adding the marker (undo) is a single click.
+        this.hoverAddValue = this.values.Contains(state.LiveValue) ? null : state.LiveValue;
         this.ValuesChanged?.Invoke(this.values.ToArray());
         args.Handled = true;
         this.InvalidateVisual();
@@ -204,6 +231,7 @@ public sealed class ThresholdTrack : FrameworkElement
         if (this.drag is null)
         {
             this.hoveredValue = null;
+            this.hoverAddValue = null;
             this.Cursor = null;
             this.InvalidateVisual();
         }
@@ -230,9 +258,29 @@ public sealed class ThresholdTrack : FrameworkElement
         context.DrawEllipse(fill, new Pen(ring, 2), center, size / 2, size / 2);
     }
 
-    private void DrawBubble(DrawingContext context, int value, Brush background, Brush border, Brush foreground)
+    /// <summary>Draws an "x" inside a marker dot to signal that clicking it removes the threshold.</summary>
+    private void DrawRemoveGlyph(DrawingContext context, int value, Brush stroke)
     {
-        var text = this.Formatted(value.ToString(CultureInfo.InvariantCulture), 12, foreground, TextAlignment.Left);
+        var center = new Point(this.XForValue(value), TrackY);
+        const double arm = 3;
+        var pen = new Pen(stroke, 1.6) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round };
+        context.DrawLine(pen, new Point(center.X - arm, center.Y - arm), new Point(center.X + arm, center.Y + arm));
+        context.DrawLine(pen, new Point(center.X - arm, center.Y + arm), new Point(center.X + arm, center.Y - arm));
+    }
+
+    /// <summary>Draws a "+" inside the ghost dot that previews where a click adds a threshold.</summary>
+    private void DrawAddGlyph(DrawingContext context, int value, Brush stroke)
+    {
+        var center = new Point(this.XForValue(value), TrackY);
+        const double arm = 3;
+        var pen = new Pen(stroke, 1.6) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round };
+        context.DrawLine(pen, new Point(center.X - arm, center.Y), new Point(center.X + arm, center.Y));
+        context.DrawLine(pen, new Point(center.X, center.Y - arm), new Point(center.X, center.Y + arm));
+    }
+
+    private void DrawBubble(DrawingContext context, int value, string caption, Brush background, Brush border, Brush foreground)
+    {
+        var text = this.Formatted(caption, 12, foreground, TextAlignment.Left);
         var width = text.WidthIncludingTrailingWhitespace + 16;
         var height = text.Height + 8;
         var x = Math.Clamp(this.XForValue(value) - width / 2, 0, Math.Max(0, this.ActualWidth - width));

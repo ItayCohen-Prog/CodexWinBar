@@ -606,7 +606,10 @@ internal sealed class WidgetRenderer : IDisposable
         if (!string.IsNullOrWhiteSpace(chip.Text))
         {
             using SolidBrush textBrush = new(fg);
-            graphics.DrawString(chip.Text, font, textBrush, new PointF(x, y + (contentHeight - font.GetHeight(graphics)) / 2));
+            // Snap the baseline to a whole pixel: a fractional Y softens grid-fitted text vertically,
+            // most visibly at 100% DPI where each pixel is larger.
+            var textY = (float)Math.Round(y + ((contentHeight - font.GetHeight(graphics)) / 2));
+            graphics.DrawString(chip.Text, font, textBrush, new PointF(x, textY));
             SizeF text = graphics.MeasureString(chip.Text, font, int.MaxValue, StringFormat.GenericTypographic);
             x += (int)Math.Ceiling(text.Width);
         }
@@ -653,7 +656,9 @@ internal sealed class WidgetRenderer : IDisposable
             x += gaugeWidth + gap;
             using SolidBrush textBrush = new(fg);
             string percent = FormatPercent(usage.Value);
-            graphics.DrawString(percent, font, textBrush, new PointF(x, y + (contentHeight - font.GetHeight(graphics)) / 2));
+            // Snap the baseline to a whole pixel (see DrawChip) so grid-fitted text stays crisp at 100% DPI.
+            var textY = (float)Math.Round(y + ((contentHeight - font.GetHeight(graphics)) / 2));
+            graphics.DrawString(percent, font, textBrush, new PointF(x, textY));
             SizeF text = graphics.MeasureString(percent, font, int.MaxValue, StringFormat.GenericTypographic);
             x += (int)Math.Ceiling(text.Width);
         }

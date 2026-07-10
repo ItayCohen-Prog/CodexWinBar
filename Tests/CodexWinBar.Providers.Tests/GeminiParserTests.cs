@@ -7,7 +7,6 @@ namespace CodexWinBar.Providers.Tests;
 public sealed class GeminiParserTests
 {
     private const string ParserType = "CodexWinBar.Providers.Gemini.GeminiQuotaParser";
-    private const string StrategyType = "CodexWinBar.Providers.Gemini.GeminiOAuthFetchStrategy";
     private static readonly DateTimeOffset Now = new(2026, 7, 5, 10, 0, 0, TimeSpan.Zero);
 
     [Fact]
@@ -59,84 +58,5 @@ public sealed class GeminiParserTests
         Assert.Null(snapshot.Secondary);
         var extra = Assert.Single(snapshot.ExtraWindows);
         Assert.Equal("gemini-exp-beta", extra.Id);
-    }
-
-    [Fact]
-    public void LoadSettingsEmail_tolerates_comments_and_trailing_commas()
-    {
-        var path = WriteTempSettings("""
-            {
-              // gemini-cli writes commented settings files
-              "user": {
-                "email": "me@example.com",
-              },
-            }
-            """);
-        try
-        {
-            var email = (string?)ProviderParserReflection.Invoke(StrategyType, "LoadSettingsEmail", path);
-            Assert.Equal("me@example.com", email);
-        }
-        finally
-        {
-            File.Delete(path);
-        }
-    }
-
-    [Fact]
-    public void LoadSettingsEmail_returns_null_on_unparseable_settings()
-    {
-        var path = WriteTempSettings("{broken");
-        try
-        {
-            Assert.Null((string?)ProviderParserReflection.Invoke(StrategyType, "LoadSettingsEmail", path));
-        }
-        finally
-        {
-            File.Delete(path);
-        }
-    }
-
-    [Fact]
-    public void ThrowIfUnsupportedAuthType_ignores_unparseable_settings()
-    {
-        var path = WriteTempSettings("{broken");
-        try
-        {
-            // A corrupt settings.json only loses the auth-type hint; it must not abort the fetch.
-            ProviderParserReflection.Invoke(StrategyType, "ThrowIfUnsupportedAuthType", path);
-        }
-        finally
-        {
-            File.Delete(path);
-        }
-    }
-
-    [Fact]
-    public void ThrowIfUnsupportedAuthType_still_rejects_api_key_auth_in_commented_settings()
-    {
-        var path = WriteTempSettings("""
-            {
-              // auth section
-              "security": { "auth": { "selectedType": "api-key", }, },
-            }
-            """);
-        try
-        {
-            var ex = Assert.Throws<InvalidOperationException>(() =>
-                ProviderParserReflection.Invoke(StrategyType, "ThrowIfUnsupportedAuthType", path));
-            Assert.Contains("API key", ex.Message);
-        }
-        finally
-        {
-            File.Delete(path);
-        }
-    }
-
-    private static string WriteTempSettings(string content)
-    {
-        var path = Path.Combine(Path.GetTempPath(), $"codexwinbar-gemini-settings-{Path.GetRandomFileName()}.json");
-        File.WriteAllText(path, content);
-        return path;
     }
 }

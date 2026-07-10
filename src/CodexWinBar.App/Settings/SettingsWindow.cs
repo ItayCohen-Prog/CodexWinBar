@@ -16,11 +16,15 @@ using Microsoft.Win32;
 using CodexWinBar.App.Assets;
 using CodexWinBar.App.Interop;
 using CodexWinBar.App.Startup;
+using CodexWinBar.Core.Auth;
 using CodexWinBar.Core.Config;
 using CodexWinBar.Core.Providers;
 using CodexWinBar.Core.Scheduling;
 using CodexWinBar.Providers;
+using CodexWinBar.Providers.Claude;
+using CodexWinBar.Providers.Codex;
 using CodexWinBar.Providers.Copilot;
+using CodexWinBar.Providers.Gemini;
 
 namespace CodexWinBar.App.Settings;
 
@@ -43,7 +47,12 @@ public sealed class SettingsWindow : Window
     private readonly HttpClient http = new();
     private readonly bool isDark;
     private readonly SolidColorBrush accentBrush;
+    private readonly AppCredentialStore credentialStore = new(Environment.GetEnvironmentVariable);
     private CancellationTokenSource? copilotSignIn;
+
+    // One OAuth sign-in per provider: starting one card's sign-in cancels only that provider's
+    // prior attempt, not another card's in-flight sign-in.
+    private readonly Dictionary<ProviderId, CancellationTokenSource> oauthSignIns = [];
     private TextBlock? activeCopilotStatus;
     private StackPanel? activeCopilotDetail;
     private string activePane = "General";
@@ -79,6 +88,13 @@ public sealed class SettingsWindow : Window
             this.usageStore.StateChanged -= this.OnUsageStateChanged;
             this.copilotSignIn?.Cancel();
             this.copilotSignIn?.Dispose();
+            foreach (var cts in this.oauthSignIns.Values)
+            {
+                cts.Cancel();
+                cts.Dispose();
+            }
+
+            this.oauthSignIns.Clear();
             this.http.Dispose();
             if (ReferenceEquals(current, this))
             {
@@ -383,12 +399,24 @@ public sealed class SettingsWindow : Window
         {
             this.AddCursorCookieEditor(descriptor, detail);
         }
+        else if (CredentialNameFor(descriptor.Id) is not null)
+        {
+            this.AddOAuthSignInEditor(descriptor, detail, status);
+        }
         else
         {
-            detail.Children.Add(Text(this.CredentialHint(descriptor.Id)));
+            detail.Children.Add(Text("This provider uses credentials managed outside this settings pane."));
             detail.Children.Add(ButtonWithIcon(LogoImages.RefreshGlyph, "Refresh", async () => await this.RefreshProviderAsync(descriptor.Id)));
         }
     }
+
+    private static string? CredentialNameFor(ProviderId id) => id switch
+    {
+        ProviderId.Codex => CodexAuth.CredentialName,
+        ProviderId.Claude => ClaudeAuth.CredentialName,
+        ProviderId.Gemini => GeminiAuth.CredentialName,
+        _ => null,
+    };
 
     private bool ProviderNeedsConfig(ProviderId id) =>
         id is ProviderId.OpenRouter or ProviderId.Zai or ProviderId.OpenAIAdmin or ProviderId.Copilot or ProviderId.Codex or ProviderId.Claude or ProviderId.Gemini or ProviderId.Cursor;
@@ -453,6 +481,87 @@ public sealed class SettingsWindow : Window
         }));
         buttons.Children.Add(ButtonWithIcon(LogoImages.RefreshGlyph, "Refresh", async () => await this.RefreshProviderAsync(descriptor.Id)));
         detail.Children.Add(buttons);
+    }
+
+    private void AddOAuthSignInEditor(ProviderDescriptor descriptor, StackPanel detail, TextBlock status)
+    {
+        var name = CredentialNameFor(descriptor.Id)!;
+        var displayName = descriptor.Metadata.DisplayName;
+        var signedIn = this.credentialStore.Exists(name);
+        detail.Children.Add(Text(signedIn
+            ? "Connected through in-app sign-in. The token is stored encrypted (Windows DPAPI) under "
+                + @"%LOCALAPPDATA%\CodexWinBar\credentials and is only ever sent back to "
+                + $"{displayName} to read usage."
+            : $"Not connected. Sign in opens {displayName}'s login page in your browser; CodexWinBar "
+                + "stores the resulting token encrypted (Windows DPAPI) and only ever sends it back to "
+                + $"{displayName} to read usage."));
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
+        buttons.Children.Add(ButtonWithIcon(
+            LogoImages.SignInGlyph,
+            "Sign in",
+            async () => await this.StartOAuthSignInAsync(descriptor, status),
+            true));
+        if (signedIn)
+        {
+            buttons.Children.Add(Button("Sign out", () =>
+            {
+                this.credentialStore.Delete(name);
+                this.RefreshProviderCard(descriptor.Id);
+                _ = this.RefreshProviderAsync(descriptor.Id);
+            }));
+        }
+
+        buttons.Children.Add(ButtonWithIcon(LogoImages.RefreshGlyph, "Refresh", async () => await this.RefreshProviderAsync(descriptor.Id)));
+        detail.Children.Add(buttons);
+    }
+
+    private async Task StartOAuthSignInAsync(ProviderDescriptor descriptor, TextBlock status)
+    {
+        // The wait ends when the browser round-trip completes; the timeout stops an abandoned
+        // sign-in from holding the loopback listener (and Codex's fixed ports) open forever.
+        if (this.oauthSignIns.TryGetValue(descriptor.Id, out var existing))
+        {
+            existing.Cancel();
+            existing.Dispose();
+        }
+
+        var cts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+        this.oauthSignIns[descriptor.Id] = cts;
+        var ct = cts.Token;
+        status.Text = "Complete the sign-in in your browser...";
+
+        try
+        {
+            var email = descriptor.Id switch
+            {
+                ProviderId.Codex => await CodexAuth.SignInAsync(
+                    this.http, this.credentialStore, uri => OpenUri(uri.ToString()), ct),
+                ProviderId.Claude => await ClaudeAuth.SignInAsync(
+                    this.http, this.credentialStore, uri => OpenUri(uri.ToString()), ct),
+                ProviderId.Gemini => await GeminiAuth.SignInAsync(
+                    this.http,
+                    this.credentialStore,
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    uri => OpenUri(uri.ToString()),
+                    ct),
+                _ => throw new InvalidOperationException($"{descriptor.Metadata.DisplayName} does not support in-app sign-in."),
+            };
+
+            status.Text = string.IsNullOrWhiteSpace(email) ? "Sign-in complete." : $"Signed in as {email}.";
+            this.RefreshProviderCard(descriptor.Id);
+            await this.RefreshProviderAsync(descriptor.Id);
+        }
+        catch (OperationCanceledException)
+        {
+            status.Text = "Sign-in cancelled or timed out.";
+        }
+        catch (Exception ex)
+        {
+            // Any other failure (non-JSON token response, DPAPI/disk save error, no browser
+            // association, etc.) must surface here rather than escaping this async void handler
+            // to the dispatcher, which would swallow it and leave the card stuck mid-sign-in.
+            status.Text = $"Sign-in failed: {ex.Message}";
+        }
     }
 
     private void AddCopilotEditor(StackPanel detail, TextBlock status)
@@ -593,14 +702,6 @@ public sealed class SettingsWindow : Window
         var name = identity?.AccountEmail ?? identity?.AccountOrganization ?? identity?.Plan;
         return string.IsNullOrWhiteSpace(name) ? "Signed in" : name;
     }
-
-    private string CredentialHint(ProviderId id) => id switch
-    {
-        ProviderId.Codex => @"Codex reads credentials from %CODEX_HOME%\auth.json or %USERPROFILE%\.codex\auth.json.",
-        ProviderId.Claude => @"Claude reads credentials from %USERPROFILE%\.claude\.credentials.json.",
-        ProviderId.Gemini => @"Gemini reads credentials from %USERPROFILE%\.gemini\oauth_creds.json.",
-        _ => "This provider uses credentials managed outside this settings pane.",
-    };
 
     private async Task RefreshProviderAsync(ProviderId id)
     {

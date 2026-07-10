@@ -194,6 +194,13 @@ public sealed class UiSettings
     public WidgetSide WidgetSide { get; set; } = WidgetSide.Right;
 
     /// <summary>
+    /// Whether the first-run onboarding (connect-your-providers) has been shown and dismissed.
+    /// Defaults to false so a fresh install presents onboarding once.
+    /// </summary>
+    [JsonPropertyName("onboardingCompleted")]
+    public bool OnboardingCompleted { get; set; }
+
+    /// <summary>
     /// Repairs values that persisted JSON cannot be trusted to keep valid: the refresh cadence
     /// must be positive (or null for manual refresh), quota threshold lists must be non-null with
     /// entries clamped to 0-99, and enum values must be defined.

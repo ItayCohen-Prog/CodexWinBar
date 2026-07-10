@@ -159,7 +159,11 @@ internal sealed class AppShell : IDisposable
         // animates instead of popping in (WPF drops the first animation on a cold composition).
         _ = this.app.Dispatcher.BeginInvoke(
             System.Windows.Threading.DispatcherPriority.ApplicationIdle,
-            new Action(() => this.flyout.PreWarm()));
+            new Action(() =>
+            {
+                this.flyout.PreWarm();
+                this.ShowOnboardingIfFirstRun();
+            }));
     }
 
     // Fire-and-forget update check. Velopack only manages updates for an installed copy (IsInstalled
@@ -272,6 +276,23 @@ internal sealed class AppShell : IDisposable
     private void OpenSettings()
     {
         SettingsWindow.ShowOrActivate(this.configStore, this.uiStore, this.usageStore, this.ApplySettings);
+    }
+
+    // First launch (no onboarding recorded yet) opens the connect-your-providers welcome. It marks
+    // itself complete on close, so it appears once. Providers stay disconnected until the user signs in.
+    private void ShowOnboardingIfFirstRun()
+    {
+        if (this.uiStore.Load().OnboardingCompleted)
+        {
+            return;
+        }
+
+        OnboardingWindow.Show(
+            this.descriptors,
+            this.configStore,
+            this.uiStore,
+            this.usageStore,
+            this.ApplySettings);
     }
 
     private void ApplySettings()

@@ -1,8 +1,6 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
-using System.Security.AccessControl;
-using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -24,7 +22,7 @@ public static class CodexProvider
             DisplayName = "Codex",
             SessionLabel = "5h",
             WeeklyLabel = "Weekly",
-            DefaultEnabled = true,
+            DefaultEnabled = false,
             SupportsCredits = true,
             DashboardUrl = new Uri("https://chatgpt.com/codex"),
             StatusPageUrl = new Uri("https://status.openai.com"),
@@ -43,16 +41,15 @@ internal sealed class CodexOAuthFetchStrategy : IFetchStrategy
 
     public FetchKind Kind => FetchKind.Oauth;
 
-    public bool IsAvailable(FetchContext ctx) => File.Exists(CodexCredentialStore.GetAuthPath(ctx));
+    public bool IsAvailable(FetchContext ctx) => ctx.Credentials.Exists(CodexAuth.CredentialName);
 
     public async Task<UsageSnapshot> FetchAsync(FetchContext ctx, CancellationToken ct)
     {
-        var path = CodexCredentialStore.GetAuthPath(ctx);
-        var credentials = CodexCredentialStore.Load(path);
+        var credentials = CodexCredentialStore.Load(ctx);
 
         if (CodexCredentialStore.ShouldRefresh(credentials, ctx.Now()))
         {
-            credentials = await RefreshAsync(ctx, credentials, path, ct).ConfigureAwait(false);
+            credentials = await RefreshAsync(ctx, credentials, ct).ConfigureAwait(false);
         }
 
         var usageJson = await GetUsageAsync(ctx, credentials, ct).ConfigureAwait(false);
@@ -91,7 +88,6 @@ internal sealed class CodexOAuthFetchStrategy : IFetchStrategy
     private static async Task<CodexCredentials> RefreshAsync(
         FetchContext ctx,
         CodexCredentials credentials,
-        string path,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(credentials.RefreshToken))
@@ -103,7 +99,7 @@ internal sealed class CodexOAuthFetchStrategy : IFetchStrategy
         using var request = new HttpRequestMessage(HttpMethod.Post, "https://auth.openai.com/oauth/token");
         request.Content = JsonContent(new JsonObject
         {
-            ["client_id"] = "app_EMoamEEZ73f0CkXaXp7hrann",
+            ["client_id"] = CodexAuth.ClientId,
             ["grant_type"] = "refresh_token",
             ["refresh_token"] = credentials.RefreshToken,
             ["scope"] = "openid profile email",
@@ -122,7 +118,7 @@ internal sealed class CodexOAuthFetchStrategy : IFetchStrategy
         }
 
         var refreshed = CodexCredentialStore.MergeRefreshResponse(credentials, body, ctx.Now());
-        CodexCredentialStore.Save(path, refreshed, ctx.Log);
+        CodexCredentialStore.Save(ctx, refreshed);
         return refreshed;
     }
 
@@ -140,8 +136,7 @@ internal sealed class CodexOAuthFetchStrategy : IFetchStrategy
         }
         catch (UnauthorizedProviderException) when (!string.IsNullOrWhiteSpace(credentials.RefreshToken))
         {
-            var refreshed = await RefreshAsync(ctx, credentials, CodexCredentialStore.GetAuthPath(ctx), ct)
-                .ConfigureAwait(false);
+            var refreshed = await RefreshAsync(ctx, credentials, ct).ConfigureAwait(false);
             return await SendJsonGetAsync(
                 refreshed,
                 "https://chatgpt.com/backend-api/wham/usage",
@@ -215,31 +210,20 @@ internal static class CodexCredentialStore
 {
     private static readonly TimeSpan RefreshAge = TimeSpan.FromDays(8);
 
-    public static string GetAuthPath(FetchContext ctx)
+    public static CodexCredentials Load(FetchContext ctx)
     {
-        var codexHome = ctx.Environment("CODEX_HOME");
-        var basePath = string.IsNullOrWhiteSpace(codexHome)
-            ? Path.Combine(ctx.UserProfileDirectory, ".codex")
-            : codexHome.Trim();
-        return Path.Combine(basePath, "auth.json");
-    }
-
-    public static CodexCredentials Load(string path)
-    {
-        if (!File.Exists(path))
-        {
-            throw new UnauthorizedProviderException("Codex auth.json was not found. Run codex to sign in.");
-        }
+        var json = ctx.Credentials.Load(CodexAuth.CredentialName) ??
+            throw new UnauthorizedProviderException("Codex is not signed in. Use Sign in on the Codex card in Settings.");
 
         JsonNode root;
         try
         {
-            root = JsonNode.Parse(File.ReadAllText(path)) ??
+            root = JsonNode.Parse(json) ??
                 throw new JsonException("empty document");
         }
         catch (JsonException ex)
         {
-            throw new InvalidOperationException("Codex auth.json could not be parsed.", ex);
+            throw new InvalidOperationException("Codex stored credentials could not be parsed.", ex);
         }
 
         var apiKey = ReadString(root["OPENAI_API_KEY"]);
@@ -253,7 +237,7 @@ internal static class CodexCredentialStore
         var refreshToken = ReadString(tokens?["refresh_token"]) ?? ReadString(tokens?["refreshToken"]);
         if (string.IsNullOrWhiteSpace(accessToken) || refreshToken is null)
         {
-            throw new UnauthorizedProviderException("Codex auth.json exists but contains no usable tokens.");
+            throw new UnauthorizedProviderException("Codex stored credentials contain no usable tokens. Sign in again from Settings.");
         }
 
         return new CodexCredentials(
@@ -289,7 +273,7 @@ internal static class CodexCredentialStore
         };
     }
 
-    public static void Save(string path, CodexCredentials credentials, Action<string>? log = null)
+    public static void Save(FetchContext ctx, CodexCredentials credentials)
     {
         var root = credentials.RawRoot.DeepClone().AsObject();
         root["OPENAI_API_KEY"] = null;
@@ -302,35 +286,7 @@ internal static class CodexCredentialStore
         };
         root["last_refresh"] = credentials.LastRefresh?.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
 
-        var directory = Path.GetDirectoryName(path);
-        if (!string.IsNullOrEmpty(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        var tempPath = Path.Combine(directory ?? ".", $".{Path.GetFileName(path)}.{Path.GetRandomFileName()}.tmp");
-        try
-        {
-            File.WriteAllText(tempPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-            if (File.Exists(path))
-            {
-                File.Replace(tempPath, path, null);
-            }
-            else
-            {
-                File.Move(tempPath, path);
-            }
-
-            TryRestrictAcl(path);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SystemException)
-        {
-            log?.Invoke($"Codex credential write-back skipped. {ex.GetType().Name}: {ex.Message}");
-        }
-        finally
-        {
-            TryDelete(tempPath);
-        }
+        ctx.Credentials.Save(CodexAuth.CredentialName, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
     }
 
     private static string? ReadString(JsonNode? node) => node?.GetValueKind() == JsonValueKind.String
@@ -348,51 +304,6 @@ internal static class CodexCredentialStore
         return DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed)
             ? parsed.ToUniversalTime()
             : null;
-    }
-
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
-        catch (Exception)
-        {
-            // Best-effort cleanup only.
-        }
-    }
-
-    private static void TryRestrictAcl(string path)
-    {
-        try
-        {
-            if (!OperatingSystem.IsWindows())
-            {
-                return;
-            }
-
-            var currentUser = WindowsIdentity.GetCurrent().User;
-            if (currentUser is null)
-            {
-                return;
-            }
-
-            var security = new FileSecurity();
-            security.SetOwner(currentUser);
-            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
-            security.AddAccessRule(new FileSystemAccessRule(
-                currentUser,
-                FileSystemRights.FullControl,
-                AccessControlType.Allow));
-            new FileInfo(path).SetAccessControl(security);
-        }
-        catch (Exception)
-        {
-            // Best-effort hardening; fetch should not fail after a successful refresh because ACL tightening failed.
-        }
     }
 
     public static bool ShouldRefresh(CodexCredentials credentials, DateTimeOffset now) =>

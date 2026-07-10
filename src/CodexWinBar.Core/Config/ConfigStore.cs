@@ -176,10 +176,12 @@ public sealed class ConfigStore(Func<string, string?> env, string userProfileDir
 
     private static CodexBarConfig CreateDefaultConfig() => new()
     {
+        // Nothing is enabled by default: a provider turns on only when the user connects it
+        // (via first-run onboarding or Settings). Fresh installs therefore start fully disconnected.
         Providers = ProviderIds.All.Select(id => new ProviderConfigEntry
         {
             Id = id.ConfigId(),
-            Enabled = id is ProviderId.Codex or ProviderId.Claude,
+            Enabled = false,
             Source = "auto",
         }).ToArray(),
     };

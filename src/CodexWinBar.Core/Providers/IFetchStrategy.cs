@@ -1,3 +1,4 @@
+using CodexWinBar.Core.Auth;
 using CodexWinBar.Core.Models;
 
 namespace CodexWinBar.Core.Providers;
@@ -27,6 +28,15 @@ public sealed class FetchContext
     public required Func<DateTimeOffset> Now { get; init; }
     /// <summary>Diagnostics sink; messages must never contain secrets.</summary>
     public required Action<string> Log { get; init; }
+
+    /// <summary>Test seam: overrides <see cref="Credentials"/> when set.</summary>
+    public AppCredentialStore? CredentialStoreOverride { get; init; }
+
+    private AppCredentialStore? credentials;
+
+    /// <summary>App-owned credential store holding tokens captured by in-app sign-in.</summary>
+    public AppCredentialStore Credentials =>
+        this.CredentialStoreOverride ?? (this.credentials ??= new AppCredentialStore(this.Environment, this.Log));
 }
 
 /// <summary>One way of fetching usage for a provider. Strategies are stateless and thread-safe.</summary>

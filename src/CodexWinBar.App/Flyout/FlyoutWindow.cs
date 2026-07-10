@@ -1104,8 +1104,8 @@ public sealed class FlyoutWindow : Window
 
         content.Children.Add(new TextBlock
         {
-            Text = "Connect a provider to see your usage limits at a glance. Codex and Claude sign in with your "
-                + "existing session — others just need an API key.",
+            Text = "Connect the AI providers you use to see your usage limits at a glance. Codex, Claude and Copilot "
+                + "sign in from Settings; the rest just need an API key. Nothing is connected until you sign in.",
             FontSize = 12,
             TextWrapping = TextWrapping.Wrap,
             Foreground = this.ResourceBrush("FlyoutSecondaryForeground"),
@@ -1445,13 +1445,18 @@ public sealed class FlyoutWindow : Window
             return;
         }
 
-        var widthPx = wr.Right - wr.Left;
+        var previousWidthPx = wr.Right - wr.Left;
         var heightPx = wr.Bottom - wr.Top;
         var monitor = MonitorFromRect(ref anchorPhysicalPx, MonitorDefaultToNearest);
         var info = MonitorInfo.Create();
         _ = GetMonitorInfo(monitor, ref info);
         var work = info.Work;
         var transform = (this.source ?? (HwndSource?)PresentationSource.FromVisual(this))?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
+        // PreWarm creates and hides the HWND before its first real placement. WPF can retain that
+        // creation monitor's physical width after the hidden window crosses a DPI boundary, even
+        // though its transform has changed (for example, 380 px becoming 253 px at 150% scaling).
+        // Reassert the fixed logical width at the current DPI whenever we place the native window.
+        var widthPx = Math.Max(1, (int)Math.Round(this.Width / Math.Max(transform.M11, 0.01)));
         var shadowMarginXPx = (int)Math.Round(ShadowMarginDip / Math.Max(transform.M11, 0.01));
         var shadowMarginYPx = (int)Math.Round(ShadowMarginDip / Math.Max(transform.M22, 0.01));
         var panelWidthPx = Math.Max(1, widthPx - (shadowMarginXPx * 2));
@@ -1461,7 +1466,12 @@ public sealed class FlyoutWindow : Window
         var panelY = (int)panelYd;
         var x = (int)Math.Max(work.Left, Math.Min(panelX - shadowMarginXPx, work.Right - widthPx));
         var y = (int)Math.Max(work.Top, Math.Min(panelY - shadowMarginYPx, work.Bottom - heightPx));
-        _ = SetWindowPos(hwnd, HwndTop, x, y, 0, 0, SwpNoSize | SwpNoActivate);
+        _ = SetWindowPos(hwnd, HwndTop, x, y, widthPx, heightPx, SwpNoActivate);
+        if (previousWidthPx != widthPx)
+        {
+            this.log?.Invoke($"flyout width corrected from {previousWidthPx}px to {widthPx}px for current DPI");
+        }
+
         this.log?.Invoke($"flyout placed edge={this.currentEdge} at ({x},{y}) size {widthPx}x{heightPx}; panel at ({x + shadowMarginXPx},{y + shadowMarginYPx}) size {panelWidthPx}x{panelHeightPx} (physical)");
     }
 

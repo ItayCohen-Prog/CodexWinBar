@@ -6,4 +6,7 @@
     <!-- Provider brand logos rasterized from upstream steipete/CodexBar SVGs (docs/logos). -->
     <EmbeddedResource Include="Assets\logos\*.png" />
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />
+  </ItemGroup>
 </Project>

@@ -1,9 +1,6 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
-using System.Security.AccessControl;
-using System.Security.Principal;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodexWinBar.Core.Http;
@@ -24,7 +21,7 @@ public static class ClaudeProvider
             DisplayName = "Claude",
             SessionLabel = "Session",
             WeeklyLabel = "Weekly",
-            DefaultEnabled = true,
+            DefaultEnabled = false,
             DashboardUrl = new Uri("https://claude.ai/settings/usage"),
             StatusPageUrl = new Uri("https://status.anthropic.com"),
         },
@@ -41,12 +38,11 @@ internal sealed class ClaudeOAuthFetchStrategy : IFetchStrategy
 
     public FetchKind Kind => FetchKind.Oauth;
 
-    public bool IsAvailable(FetchContext ctx) => ClaudeCredentialStore.HasClaudeOAuth(ctx);
+    public bool IsAvailable(FetchContext ctx) => ctx.Credentials.Exists(ClaudeAuth.CredentialName);
 
     public async Task<UsageSnapshot> FetchAsync(FetchContext ctx, CancellationToken ct)
     {
-        var path = ClaudeCredentialStore.GetCredentialsPath(ctx);
-        var credentials = ClaudeCredentialStore.Load(path);
+        var credentials = ClaudeCredentialStore.Load(ctx);
         if (!credentials.Scopes.Contains("user:profile", StringComparer.Ordinal))
         {
             throw new UnauthorizedProviderException("Claude OAuth token cannot call usage because it lacks user:profile scope.");
@@ -54,7 +50,7 @@ internal sealed class ClaudeOAuthFetchStrategy : IFetchStrategy
 
         if (credentials.IsExpired(ctx.Now()))
         {
-            credentials = await RefreshAsync(credentials, path, ctx.Now(), ctx.Log, ct).ConfigureAwait(false);
+            credentials = await RefreshAsync(ctx, credentials, ct).ConfigureAwait(false);
         }
 
         string usageJson;
@@ -67,7 +63,7 @@ internal sealed class ClaudeOAuthFetchStrategy : IFetchStrategy
             // The token may be revoked, or stale without a recorded expiry (IsExpired treats an
             // unknown expiry as valid); mirror Codex's 401 -> refresh -> retry path before
             // surfacing an auth error.
-            credentials = await RefreshAsync(credentials, path, ctx.Now(), ctx.Log, ct).ConfigureAwait(false);
+            credentials = await RefreshAsync(ctx, credentials, ct).ConfigureAwait(false);
             usageJson = await GetUsageAsync(credentials, ct).ConfigureAwait(false);
         }
         var snapshot = ClaudeUsageParser.Parse(usageJson, ctx.Now(), credentials.SubscriptionType, credentials.RateLimitTier);
@@ -83,10 +79,8 @@ internal sealed class ClaudeOAuthFetchStrategy : IFetchStrategy
     public bool ShouldFallback(Exception error, FetchContext ctx) => false;
 
     private static async Task<ClaudeCredentials> RefreshAsync(
+        FetchContext ctx,
         ClaudeCredentials credentials,
-        string path,
-        DateTimeOffset now,
-        Action<string> log,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(credentials.RefreshToken))
@@ -102,7 +96,7 @@ internal sealed class ClaudeOAuthFetchStrategy : IFetchStrategy
         [
             new KeyValuePair<string, string>("grant_type", "refresh_token"),
             new KeyValuePair<string, string>("refresh_token", credentials.RefreshToken),
-            new KeyValuePair<string, string>("client_id", "9d1c250a-e61b-44d9-88ed-5944d1962f5e"),
+            new KeyValuePair<string, string>("client_id", ClaudeAuth.ClientId),
         ]);
 
         using var response = await ProviderHttpClient.Shared.SendAsync(request, timeout.Token).ConfigureAwait(false);
@@ -117,8 +111,8 @@ internal sealed class ClaudeOAuthFetchStrategy : IFetchStrategy
             throw new HttpRequestException($"Claude OAuth refresh failed with HTTP {(int)response.StatusCode}.");
         }
 
-        var refreshed = ClaudeCredentialStore.MergeRefreshResponse(credentials, body, now);
-        ClaudeCredentialStore.Save(path, refreshed, log);
+        var refreshed = ClaudeCredentialStore.MergeRefreshResponse(credentials, body, ctx.Now());
+        ClaudeCredentialStore.Save(ctx, refreshed);
         return refreshed;
     }
 
@@ -147,51 +141,25 @@ internal sealed class ClaudeOAuthFetchStrategy : IFetchStrategy
 
 internal static class ClaudeCredentialStore
 {
-    public static string GetCredentialsPath(FetchContext ctx) =>
-        Path.Combine(ctx.UserProfileDirectory, ".claude", ".credentials.json");
-
-    public static bool HasClaudeOAuth(FetchContext ctx)
+    public static ClaudeCredentials Load(FetchContext ctx)
     {
-        var path = GetCredentialsPath(ctx);
-        if (!File.Exists(path))
-        {
-            return false;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(File.ReadAllText(path));
-            return document.RootElement.ValueKind == JsonValueKind.Object &&
-                document.RootElement.TryGetProperty("claudeAiOauth", out var oauth) &&
-                oauth.ValueKind == JsonValueKind.Object;
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
-
-    public static ClaudeCredentials Load(string path)
-    {
-        if (!File.Exists(path))
-        {
-            throw new UnauthorizedProviderException("Claude credentials file was not found. Run claude to sign in.");
-        }
+        var json = ctx.Credentials.Load(ClaudeAuth.CredentialName) ??
+            throw new UnauthorizedProviderException("Claude is not signed in. Use Sign in on the Claude card in Settings.");
 
         JsonNode root;
         try
         {
-            root = JsonNode.Parse(File.ReadAllText(path)) ?? throw new JsonException("empty document");
+            root = JsonNode.Parse(json) ?? throw new JsonException("empty document");
         }
         catch (JsonException ex)
         {
-            throw new InvalidOperationException("Claude credentials file could not be parsed.", ex);
+            throw new InvalidOperationException("Claude stored credentials could not be parsed.", ex);
         }
 
         var oauth = root["claudeAiOauth"]?.AsObject();
         if (oauth is null)
         {
-            throw new UnauthorizedProviderException("Claude credentials file does not contain claudeAiOauth.");
+            throw new UnauthorizedProviderException("Claude stored credentials do not contain claudeAiOauth. Sign in again from Settings.");
         }
 
         var accessToken = ReadString(oauth["accessToken"]);
@@ -233,7 +201,7 @@ internal static class ClaudeCredentialStore
         };
     }
 
-    public static void Save(string path, ClaudeCredentials credentials, Action<string>? log = null)
+    public static void Save(FetchContext ctx, ClaudeCredentials credentials)
     {
         var root = credentials.RawRoot.DeepClone().AsObject();
         var oauth = root["claudeAiOauth"] as JsonObject ?? [];
@@ -245,35 +213,7 @@ internal static class ClaudeCredentialStore
         oauth["rateLimitTier"] = credentials.RateLimitTier;
         root["claudeAiOauth"] = oauth;
 
-        var directory = Path.GetDirectoryName(path);
-        if (!string.IsNullOrEmpty(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        var tempPath = Path.Combine(directory ?? ".", $".{Path.GetFileName(path)}.{Path.GetRandomFileName()}.tmp");
-        try
-        {
-            File.WriteAllText(tempPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-            if (File.Exists(path))
-            {
-                File.Replace(tempPath, path, null);
-            }
-            else
-            {
-                File.Move(tempPath, path);
-            }
-
-            TryRestrictAcl(path);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SystemException)
-        {
-            log?.Invoke($"Claude credential write-back skipped. {ex.GetType().Name}: {ex.Message}");
-        }
-        finally
-        {
-            TryDelete(tempPath);
-        }
+        ctx.Credentials.Save(ClaudeAuth.CredentialName, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
     }
 
     private static string? ReadString(JsonNode? node) => node?.GetValueKind() == JsonValueKind.String
@@ -342,50 +282,6 @@ internal static class ClaudeCredentialStore
             : null;
     }
 
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
-        catch (Exception)
-        {
-            // Best-effort cleanup only.
-        }
-    }
-
-    private static void TryRestrictAcl(string path)
-    {
-        try
-        {
-            if (!OperatingSystem.IsWindows())
-            {
-                return;
-            }
-
-            var currentUser = WindowsIdentity.GetCurrent().User;
-            if (currentUser is null)
-            {
-                return;
-            }
-
-            var security = new FileSecurity();
-            security.SetOwner(currentUser);
-            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
-            security.AddAccessRule(new FileSystemAccessRule(
-                currentUser,
-                FileSystemRights.FullControl,
-                AccessControlType.Allow));
-            new FileInfo(path).SetAccessControl(security);
-        }
-        catch (Exception)
-        {
-            // Best-effort hardening only; keep refreshed credentials usable if ACL tightening fails.
-        }
-    }
 }
 
 internal sealed record ClaudeCredentials(

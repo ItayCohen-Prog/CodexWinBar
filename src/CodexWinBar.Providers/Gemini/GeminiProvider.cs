@@ -1,8 +1,6 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
-using System.Security.AccessControl;
-using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -33,10 +31,8 @@ public static class GeminiProvider
     };
 }
 
-internal sealed partial class GeminiOAuthFetchStrategy : IFetchStrategy
+internal sealed class GeminiOAuthFetchStrategy : IFetchStrategy
 {
-    private const string CredentialsRelativePath = ".gemini/oauth_creds.json";
-    private const string SettingsRelativePath = ".gemini/settings.json";
     private static readonly Uri TokenUri = new("https://oauth2.googleapis.com/token");
     private static readonly Uri QuotaUri = new("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota");
     private static readonly Uri LoadCodeAssistUri = new("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist");
@@ -46,18 +42,17 @@ internal sealed partial class GeminiOAuthFetchStrategy : IFetchStrategy
 
     public FetchKind Kind => FetchKind.Oauth;
 
-    public bool IsAvailable(FetchContext ctx) => File.Exists(CredentialsPath(ctx.UserProfileDirectory));
+    public bool IsAvailable(FetchContext ctx) => ctx.Credentials.Exists(GeminiAuth.CredentialName);
 
     public async Task<UsageSnapshot> FetchAsync(FetchContext ctx, CancellationToken ct)
     {
-        ThrowIfUnsupportedAuthType(SettingsPath(ctx.UserProfileDirectory));
-
-        var credentialsPath = CredentialsPath(ctx.UserProfileDirectory);
-        var credentials = LoadCredentials(credentialsPath);
+        var rawCredentials = ctx.Credentials.Load(GeminiAuth.CredentialName) ??
+            throw new UnauthorizedProviderException("Gemini is not signed in. Use Sign in on the Gemini card in Settings.");
+        var credentials = LoadCredentials(rawCredentials);
         var accessToken = credentials.AccessToken;
         if (string.IsNullOrWhiteSpace(accessToken) || credentials.ExpiresAt <= ctx.Now().ToUniversalTime().AddMinutes(1))
         {
-            accessToken = await RefreshAsync(ctx, credentialsPath, credentials.RefreshToken, ct).ConfigureAwait(false);
+            accessToken = await RefreshAsync(ctx, rawCredentials, credentials.RefreshToken, ct).ConfigureAwait(false);
         }
 
         var projectId = await LoadProjectIdAsync(ctx.Http, accessToken, ct).ConfigureAwait(false);
@@ -84,14 +79,14 @@ internal sealed partial class GeminiOAuthFetchStrategy : IFetchStrategy
             throw new HttpRequestException($"Gemini quota request failed with HTTP {(int)response.StatusCode}.");
         }
 
-        return GeminiQuotaParser.Parse(body, ctx.Now(), LoadSettingsEmail(SettingsPath(ctx.UserProfileDirectory)));
+        return GeminiQuotaParser.Parse(body, ctx.Now(), credentials.Email);
     }
 
     public bool ShouldFallback(Exception error, FetchContext ctx) => false;
 
     private static async Task<string> RefreshAsync(
         FetchContext ctx,
-        string credentialsPath,
+        string rawCredentials,
         string? refreshToken,
         CancellationToken ct)
     {
@@ -100,18 +95,15 @@ internal sealed partial class GeminiOAuthFetchStrategy : IFetchStrategy
             throw new UnauthorizedProviderException("Gemini refresh token is missing.");
         }
 
-        var client = GeminiOAuthClientCredentials.Resolve(ctx.UserProfileDirectory);
-        if (client is null)
-        {
+        var client = GeminiOAuthClientCredentials.Resolve(ctx.UserProfileDirectory) ??
             throw new InvalidOperationException("Could not locate Gemini CLI OAuth client configuration.");
-        }
 
         using var request = new HttpRequestMessage(HttpMethod.Post, TokenUri)
         {
             Content = new FormUrlEncodedContent(new Dictionary<string, string>
             {
-                ["client_id"] = client.Value.ClientId,
-                ["client_secret"] = client.Value.ClientSecret,
+                ["client_id"] = client.ClientId,
+                ["client_secret"] = client.ClientSecret,
                 ["refresh_token"] = refreshToken,
                 ["grant_type"] = "refresh_token",
             }),
@@ -131,7 +123,7 @@ internal sealed partial class GeminiOAuthFetchStrategy : IFetchStrategy
             throw new HttpRequestException($"Gemini token refresh failed with HTTP {(int)response.StatusCode}.");
         }
 
-        return PersistRefresh(credentialsPath, body, ctx.Now(), ctx.Log);
+        return PersistRefresh(ctx, rawCredentials, body);
     }
 
     private static async Task<string?> LoadProjectIdAsync(HttpClient http, string accessToken, CancellationToken ct)
@@ -167,25 +159,21 @@ internal sealed partial class GeminiOAuthFetchStrategy : IFetchStrategy
         }
     }
 
-    private static GeminiCredentials LoadCredentials(string path)
+    private static GeminiCredentials LoadCredentials(string json)
     {
-        if (!File.Exists(path))
-        {
-            throw new UnauthorizedProviderException("Gemini OAuth credentials file is missing.");
-        }
-
-        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
-        var accessToken = GetString(root, "access_token");
-        var refreshToken = GetString(root, "refresh_token");
-        var expiresAt = GetExpiry(root);
-        return new GeminiCredentials(accessToken, refreshToken, expiresAt);
+        return new GeminiCredentials(
+            GetString(root, "access_token"),
+            GetString(root, "refresh_token"),
+            GetExpiry(root),
+            GetString(root, "email"));
     }
 
-    private static string PersistRefresh(string credentialsPath, string refreshJson, DateTimeOffset now, Action<string> log)
+    private static string PersistRefresh(FetchContext ctx, string rawCredentials, string refreshJson)
     {
-        var existing = JsonNode.Parse(File.ReadAllText(credentialsPath))?.AsObject()
-            ?? throw new InvalidOperationException("Gemini credentials file is not a JSON object.");
+        var existing = JsonNode.Parse(rawCredentials)?.AsObject()
+            ?? throw new InvalidOperationException("Gemini stored credentials are not a JSON object.");
         using var document = JsonDocument.Parse(refreshJson);
         var root = document.RootElement;
         var accessToken = GetString(root, "access_token")
@@ -199,182 +187,11 @@ internal sealed partial class GeminiOAuthFetchStrategy : IFetchStrategy
 
         if (root.TryGetProperty("expires_in", out var expiresInElement) && expiresInElement.TryGetDouble(out var expiresIn))
         {
-            existing["expiry_date"] = now.ToUniversalTime().AddSeconds(expiresIn).ToUnixTimeMilliseconds();
+            existing["expiry_date"] = ctx.Now().ToUniversalTime().AddSeconds(expiresIn).ToUnixTimeMilliseconds();
         }
 
-        var directory = Path.GetDirectoryName(credentialsPath);
-        var tempPath = Path.Combine(directory ?? ".", $".{Path.GetFileName(credentialsPath)}.{Path.GetRandomFileName()}.tmp");
-        try
-        {
-            File.WriteAllText(tempPath, existing.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-            if (File.Exists(credentialsPath))
-            {
-                File.Replace(tempPath, credentialsPath, null);
-            }
-            else
-            {
-                File.Move(tempPath, credentialsPath);
-            }
-
-            TryRestrictAcl(credentialsPath);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SystemException)
-        {
-            log($"Gemini credential write-back skipped. {ex.GetType().Name}: {ex.Message}");
-        }
-        finally
-        {
-            TryDelete(tempPath);
-        }
-
+        ctx.Credentials.Save(GeminiAuth.CredentialName, existing.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         return accessToken;
-    }
-
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
-        catch (Exception)
-        {
-            // Best-effort cleanup only.
-        }
-    }
-
-    // Mirrors ClaudeCredentialStore/CodexCredentialStore: restrict the rewritten credential file
-    // to the current user (Windows-only, best-effort).
-    private static void TryRestrictAcl(string path)
-    {
-        try
-        {
-            if (!OperatingSystem.IsWindows())
-            {
-                return;
-            }
-
-            var currentUser = WindowsIdentity.GetCurrent().User;
-            if (currentUser is null)
-            {
-                return;
-            }
-
-            var security = new FileSecurity();
-            security.SetOwner(currentUser);
-            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
-            security.AddAccessRule(new FileSystemAccessRule(
-                currentUser,
-                FileSystemRights.FullControl,
-                AccessControlType.Allow));
-            new FileInfo(path).SetAccessControl(security);
-        }
-        catch (Exception)
-        {
-            // Best-effort hardening only; keep refreshed credentials usable if ACL tightening fails.
-        }
-    }
-
-    // gemini-cli writes settings.json with comments and trailing commas, which strict JSON rejects.
-    private static readonly JsonDocumentOptions SettingsJsonOptions = new()
-    {
-        CommentHandling = JsonCommentHandling.Skip,
-        AllowTrailingCommas = true,
-    };
-
-    private static void ThrowIfUnsupportedAuthType(string settingsPath)
-    {
-        string? selectedType;
-        try
-        {
-            if (!File.Exists(settingsPath))
-            {
-                return;
-            }
-
-            using var document = JsonDocument.Parse(File.ReadAllText(settingsPath), SettingsJsonOptions);
-            selectedType = document.RootElement
-                .TryGetProperty("security", out var security)
-                && security.TryGetProperty("auth", out var auth)
-                && auth.TryGetProperty("selectedType", out var selected)
-                && selected.ValueKind == JsonValueKind.String
-                    ? selected.GetString()
-                    : null;
-        }
-        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
-        {
-            // settings.json only supplies an auth-type hint; an unreadable file must not abort the fetch.
-            return;
-        }
-
-        if (string.Equals(selectedType, "api-key", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("Gemini API key auth is not supported by this provider; use OAuth personal auth.");
-        }
-
-        if (string.Equals(selectedType, "vertex-ai", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("Gemini Vertex AI auth is not supported by this provider; use OAuth personal auth.");
-        }
-    }
-
-    private static string? LoadSettingsEmail(string settingsPath)
-    {
-        try
-        {
-            if (!File.Exists(settingsPath))
-            {
-                return null;
-            }
-
-            using var document = JsonDocument.Parse(File.ReadAllText(settingsPath), SettingsJsonOptions);
-            return FindEmail(document.RootElement);
-        }
-        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
-        {
-            // The settings email is decorative; an unreadable settings.json must not abort the fetch.
-            return null;
-        }
-    }
-
-    private static string? FindEmail(JsonElement element)
-    {
-        if (element.ValueKind == JsonValueKind.Object)
-        {
-            foreach (var property in element.EnumerateObject())
-            {
-                if (property.Value.ValueKind == JsonValueKind.String
-                    && property.Name.Contains("email", StringComparison.OrdinalIgnoreCase))
-                {
-                    var value = property.Value.GetString();
-                    if (!string.IsNullOrWhiteSpace(value) && value.Contains('@', StringComparison.Ordinal))
-                    {
-                        return value;
-                    }
-                }
-
-                var nested = FindEmail(property.Value);
-                if (nested is not null)
-                {
-                    return nested;
-                }
-            }
-        }
-        else if (element.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var item in element.EnumerateArray())
-            {
-                var nested = FindEmail(item);
-                if (nested is not null)
-                {
-                    return nested;
-                }
-            }
-        }
-
-        return null;
     }
 
     private static DateTimeOffset? GetExpiry(JsonElement root)
@@ -403,13 +220,11 @@ internal sealed partial class GeminiOAuthFetchStrategy : IFetchStrategy
     private static string? GetString(JsonElement root, string name) =>
         root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 
-    private static string CredentialsPath(string userProfileDirectory) =>
-        Path.Combine(userProfileDirectory, CredentialsRelativePath.Replace('/', Path.DirectorySeparatorChar));
-
-    private static string SettingsPath(string userProfileDirectory) =>
-        Path.Combine(userProfileDirectory, SettingsRelativePath.Replace('/', Path.DirectorySeparatorChar));
-
-    private sealed record GeminiCredentials(string? AccessToken, string? RefreshToken, DateTimeOffset? ExpiresAt);
+    private sealed record GeminiCredentials(
+        string? AccessToken,
+        string? RefreshToken,
+        DateTimeOffset? ExpiresAt,
+        string? Email);
 }
 
 internal static class GeminiQuotaParser
@@ -572,6 +387,10 @@ internal static class GeminiQuotaParser
 
 internal static partial class GeminiOAuthClientCredentials
 {
+    // The Gemini CLI's OAuth client (id + installed-app "secret") is NOT embedded here. Gemini is
+    // deferred from the shipping catalog (Google restricts third-party use of the Code Assist API and
+    // is deprecating the individual tier); its client identity is resolved from a local gemini-cli
+    // install at runtime instead of being republished in this repo.
     private static readonly string[] RelativeOAuthPaths =
     [
         "node_modules/@google/gemini-cli/node_modules/@google/gemini-cli-core/dist/src/code_assist/oauth2.js",

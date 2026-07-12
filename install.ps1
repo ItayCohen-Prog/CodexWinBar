@@ -62,5 +62,6 @@ $exe = Get-ChildItem (Join-Path $env:LOCALAPPDATA 'CodexWinBar') -Recurse -Filte
     -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\packages\\' } | Select-Object -First 1
 if ($exe) { Start-Process $exe.FullName }
 
-Write-Host "CodexWinBar $($release.tag_name) installed. It should appear on your taskbar shortly." -ForegroundColor Green
+Write-Host "CodexWinBar $($release.tag_name) installed." -ForegroundColor Green
+Write-Host 'A setup window is opening — connect the providers you use, then the widget appears on the taskbar next to the clock.'
 Write-Host 'It self-updates from here, and you can also install it via: winget install ItayCohen.CodexWinBar (once approved).'

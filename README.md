@@ -52,27 +52,36 @@ browser-cookie and WebView2 seams (Windsurf, Ollama quota, …) are deferred to 
 
 ## Install
 
-Install with [winget](https://learn.microsoft.com/windows/package-manager/):
+Fastest — one line of PowerShell, no admin, no SmartScreen prompt:
+
+```powershell
+irm https://raw.githubusercontent.com/ItayCohen-Prog/CodexWinBar/main/install.ps1 | iex
+```
+
+This grabs the latest release and installs it per-user. Because the download runs through PowerShell
+(not a browser) it never picks up the Mark of the Web, so there's no "Unknown publisher" prompt.
+
+Or with [winget](https://learn.microsoft.com/windows/package-manager/):
 
 ```powershell
 winget install ItayCohen.CodexWinBar
 ```
 
-It installs per-user (no admin), adds Start-Menu and desktop shortcuts, launches automatically, and keeps
-itself up to date. Codex and Claude work immediately if their CLIs are signed in; enable the rest in
-**Settings → Providers**.
+> ⏳ **winget is in review** ([winget-pkgs #398215](https://github.com/microsoft/winget-pkgs/pull/398215)).
+> Until it merges, use the PowerShell command above or the direct download.
 
-> ⏳ **Coming to winget shortly** — the package is in review
-> ([winget-pkgs #398215](https://github.com/microsoft/winget-pkgs/pull/398215)), usually live within a day.
-> Until it merges, use the direct download below.
+Either way it installs per-user (no admin), adds Start-Menu and desktop shortcuts, launches automatically,
+and self-updates. After installing, connect the providers you use in **Settings → Providers** — Codex,
+Claude and Copilot sign in through your browser; OpenRouter, OpenAI Admin, z.ai and Cursor take an API key
+or cookie. Nothing is connected until you sign in.
 
 <details>
-<summary>Direct download (works now) / build from source</summary>
+<summary>Direct download / build from source</summary>
 
 **Direct download:** grab `CodexWinBar-win-Setup.exe` from the
 [Releases page](https://github.com/ItayCohen-Prog/CodexWinBar/releases) and run it. Because it isn't
 code-signed yet, Windows SmartScreen shows an "Unknown publisher" prompt — click **More info → Run anyway**
-(one-time). Installing via winget avoids this.
+(one-time). The PowerShell command and winget both avoid this.
 
 **Build from source:** requires Windows 11 and the [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0).
 

@@ -121,6 +121,9 @@ public sealed class FlyoutWindow : Window
         this.Width = FlyoutWidthDip + (ShadowMarginDip * 2);
         this.Background = Brushes.Transparent;
         this.Focusable = true;
+        this.UseLayoutRounding = true;
+        this.SnapsToDevicePixels = true;
+        TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
         this.scroll = new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
@@ -1138,13 +1141,21 @@ public sealed class FlyoutWindow : Window
         return card;
     }
 
-    private Border CreateCardShell() => new()
+    private Border CreateCardShell()
     {
-        Padding = new Thickness(12),
-        Margin = new Thickness(0, 0, 0, 8),
-        Background = this.ResourceBrush("FlyoutCardBackground"),
-        CornerRadius = new CornerRadius(8),
-    };
+        var card = new Border
+        {
+            Padding = new Thickness(12),
+            Margin = new Thickness(0, 0, 0, 8),
+            Background = this.ResourceBrush("FlyoutCardBackground"),
+            CornerRadius = new CornerRadius(8),
+            SnapsToDevicePixels = true,
+        };
+        // The card background is deliberately opaque, so ClearType is safe even though the outer
+        // shadow margin belongs to an AllowsTransparency window.
+        RenderOptions.SetClearTypeHint(card, ClearTypeHint.Enabled);
+        return card;
+    }
 
     private FrameworkElement CreateProviderGlyph(ProviderDescriptor descriptor, Brush brand, double size)
     {
@@ -1589,9 +1600,10 @@ public sealed class FlyoutWindow : Window
             ["FlyoutSecondaryForeground"] = new SolidColorBrush(Color.FromArgb(0x99, foreground.R, foreground.G, foreground.B)),
             ["FlyoutTrack"] = new SolidColorBrush(Color.FromArgb(0x26, foreground.R, foreground.G, foreground.B)),
             ["FlyoutHover"] = new SolidColorBrush(Color.FromArgb(0x14, foreground.R, foreground.G, foreground.B)),
-            ["FlyoutPanelBackground"] = new SolidColorBrush(dark ? Color.FromArgb(0xFA, 0x2A, 0x2A, 0x2A) : Color.FromArgb(0xFA, 0xF3, 0xF3, 0xF3)),
+            ["FlyoutPanelBackground"] = new SolidColorBrush(dark ? Color.FromRgb(0x2A, 0x2A, 0x2A) : Color.FromRgb(0xF3, 0xF3, 0xF3)),
             ["FlyoutSubtleBorder"] = new SolidColorBrush(Color.FromArgb(dark ? (byte)0x30 : (byte)0x24, foreground.R, foreground.G, foreground.B)),
-            ["FlyoutCardBackground"] = new SolidColorBrush(dark ? Color.FromArgb(0x59, 0x3A, 0x3A, 0x3A) : Color.FromArgb(0xB3, 0xFF, 0xFF, 0xFF)),
+            // Opaque equivalents of the previous translucent colors over FlyoutPanelBackground.
+            ["FlyoutCardBackground"] = new SolidColorBrush(dark ? Color.FromRgb(0x30, 0x30, 0x30) : Color.FromRgb(0xFB, 0xFB, 0xFB)),
             ["FlyoutError"] = new SolidColorBrush(Color.FromRgb(0xC4, 0x2B, 0x1C)),
         };
         this.Resources.MergedDictionaries.Clear();

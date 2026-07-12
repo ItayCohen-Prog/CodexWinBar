@@ -23,7 +23,7 @@ public sealed class UiSettingsTests
         Assert.Equal([20], settings.QuotaWeeklyThresholds);
         Assert.True(settings.QuotaWeeklyEnabled);
         Assert.Equal(WidgetMode.Auto, settings.WidgetMode);
-        Assert.Equal(WidgetSide.Right, settings.WidgetSide);
+        Assert.Equal(WidgetSide.Left, settings.WidgetSide);
     }
 
     [Fact]
@@ -44,11 +44,11 @@ public sealed class UiSettingsTests
         using var temp = TempDir.Create();
         var settingsPath = Path.Combine(temp.Path, "CodexWinBar", "ui-settings.json");
         Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
-        File.WriteAllText(settingsPath, "{\"widgetSide\":\"left\"}");
+        File.WriteAllText(settingsPath, "{\"widgetSide\":\"right\"}");
 
         var settings = new UiSettingsStore(_ => { }, temp.Path).Load();
 
-        AssertDefaults(settings, expectedWidgetSide: WidgetSide.Left);
+        AssertDefaults(settings, expectedWidgetSide: WidgetSide.Right);
     }
 
     [Fact]
@@ -89,7 +89,7 @@ public sealed class UiSettingsTests
         Assert.Equal([20], settings.QuotaWeeklyThresholds);
     }
 
-    private static void AssertDefaults(UiSettings settings, WidgetSide expectedWidgetSide = WidgetSide.Right)
+    private static void AssertDefaults(UiSettings settings, WidgetSide expectedWidgetSide = WidgetSide.Left)
     {
         Assert.Equal(5, settings.RefreshCadenceMinutes);
         Assert.True(settings.MergeIcons);

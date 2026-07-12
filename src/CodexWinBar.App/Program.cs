@@ -241,7 +241,7 @@ internal sealed class AppShell : IDisposable
     private void StartWidgetFromSettings()
     {
         var settings = this.uiStore.Load();
-        var mode = ToWidgetMode(settings.WidgetMode);
+        var mode = ResolveWidgetMode(settings);
         var anchorLeft = settings.WidgetSide == WidgetSide.Left;
         this.lastWidgetModeRequest = mode;
         this.lastWidgetSide = settings.WidgetSide;
@@ -298,7 +298,7 @@ internal sealed class AppShell : IDisposable
     private void ApplySettings()
     {
         var settings = this.uiStore.Load();
-        var mode = ToWidgetMode(settings.WidgetMode);
+        var mode = ResolveWidgetMode(settings);
         if (this.lastWidgetModeRequest != mode || this.lastWidgetSide != settings.WidgetSide)
         {
             this.widgetHost.Stop();
@@ -517,6 +517,11 @@ internal sealed class AppShell : IDisposable
         CoreWidgetMode.Hidden => WidgetHostMode.Hidden,
         _ => WidgetHostMode.Auto,
     };
+
+    // The left side of a centered Windows 11 taskbar is occupied by the system's own Widgets/weather
+    // button, so an embedded strip there would collide — the left placement floats as an overlay instead.
+    private static WidgetHostMode ResolveWidgetMode(UiSettings settings) =>
+        settings.WidgetSide == WidgetSide.Left ? WidgetHostMode.Overlay : ToWidgetMode(settings.WidgetMode);
 
     private static double? WindowPercent(RateWindow? window, bool showUsed)
     {

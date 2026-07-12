@@ -309,11 +309,9 @@ public sealed class SettingsWindow : Window
         {
             if (side.SelectedItem is ComboOption<WidgetSide> option)
             {
-                this.SaveUi(ui =>
-                {
-                    ui.WidgetSide = option.Value;
-                    ui.WidgetMode = option.Value == WidgetSide.Left ? WidgetMode.Overlay : ui.WidgetMode;
-                });
+                // Left is forced to overlay at placement time (ResolveWidgetMode), so the stored
+                // WidgetMode is left untouched here — switching back to Right restores it.
+                this.SaveUi(ui => ui.WidgetSide = option.Value);
             }
         };
         group.Children.Add(this.SettingCard("\uE8AB", "Widget side", "Left pins the widget to the taskbar's left edge", side));

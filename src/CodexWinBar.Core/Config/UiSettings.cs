@@ -191,7 +191,7 @@ public sealed class UiSettings
     /// Widget side preference.
     /// </summary>
     [JsonPropertyName("widgetSide")]
-    public WidgetSide WidgetSide { get; set; } = WidgetSide.Right;
+    public WidgetSide WidgetSide { get; set; } = WidgetSide.Left;
 
     /// <summary>
     /// Whether the first-run onboarding (connect-your-providers) has been shown and dismissed.

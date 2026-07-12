@@ -1452,11 +1452,10 @@ public sealed class FlyoutWindow : Window
         _ = GetMonitorInfo(monitor, ref info);
         var work = info.Work;
         var transform = (this.source ?? (HwndSource?)PresentationSource.FromVisual(this))?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
-        // PreWarm creates and hides the HWND before its first real placement. WPF can retain that
-        // creation monitor's physical width after the hidden window crosses a DPI boundary, even
-        // though its transform has changed (for example, 380 px becoming 253 px at 150% scaling).
-        // Reassert the fixed logical width at the current DPI whenever we place the native window.
-        var widthPx = Math.Max(1, (int)Math.Round(this.Width / Math.Max(transform.M11, 0.01)));
+        // Native SetWindowPos calls can feed the physical width back into Window.Width. Reusing that
+        // mutable value on another DPI then stretches or compresses the flyout by the monitor ratio.
+        // Always scale from the immutable design width instead.
+        var widthPx = IntendedWindowWidthPx(transform.M11);
         var shadowMarginXPx = (int)Math.Round(ShadowMarginDip / Math.Max(transform.M11, 0.01));
         var shadowMarginYPx = (int)Math.Round(ShadowMarginDip / Math.Max(transform.M22, 0.01));
         var panelWidthPx = Math.Max(1, widthPx - (shadowMarginXPx * 2));
@@ -1474,6 +1473,9 @@ public sealed class FlyoutWindow : Window
 
         this.log?.Invoke($"flyout placed edge={this.currentEdge} at ({x},{y}) size {widthPx}x{heightPx}; panel at ({x + shadowMarginXPx},{y + shadowMarginYPx}) size {panelWidthPx}x{panelHeightPx} (physical)");
     }
+
+    internal static int IntendedWindowWidthPx(double deviceToDipX) =>
+        Math.Max(1, (int)Math.Round((FlyoutWidthDip + (ShadowMarginDip * 2)) / Math.Max(deviceToDipX, 0.01)));
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {

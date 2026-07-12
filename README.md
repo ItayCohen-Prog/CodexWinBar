@@ -58,8 +58,10 @@ Fastest — one line of PowerShell, no admin, no SmartScreen prompt:
 irm https://raw.githubusercontent.com/ItayCohen-Prog/CodexWinBar/main/install.ps1 | iex
 ```
 
-This grabs the latest release and installs it per-user. Because the download runs through PowerShell
-(not a browser) it never picks up the Mark of the Web, so there's no "Unknown publisher" prompt.
+This grabs the latest release, **verifies its SHA-256 against the checksum GitHub publishes for the
+asset**, and installs it per-user. Because the download runs through PowerShell (not a browser) it never
+picks up the Mark of the Web, so there's no "Unknown publisher" prompt. The script is short and
+[readable](install.ps1) — it only ever downloads from this repo's own GitHub releases.
 
 Or with [winget](https://learn.microsoft.com/windows/package-manager/):
 

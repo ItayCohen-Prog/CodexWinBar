@@ -8,9 +8,13 @@
     <!-- InvariantGlobalization is incompatible with WPF text layout ("Cannot find non-neutral
          culture related to 'en-us'" on Window.Show) — do not re-enable. -->
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
-    <Version>1.1.1</Version>
+    <Version>1.1.2</Version>
     <Authors>Itay Cohen</Authors>
+    <Company>Itay Cohen</Company>
     <Product>CodexWinBar</Product>
+    <!-- Description populates the Win32 FileDescription resource (shown in Task Manager, the file
+         Properties dialog, and read by reputation/AV heuristics) — keep it a clear product line. -->
+    <Description>CodexWinBar — AI coding-provider usage limits on your Windows 11 taskbar.</Description>
     <Copyright>MIT — fork of steipete/CodexBar</Copyright>
   </PropertyGroup>
 </Project>

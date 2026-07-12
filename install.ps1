@@ -10,6 +10,9 @@
 
 #Requires -Version 5
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1's Invoke-WebRequest renders a per-chunk progress bar that cripples large
+# downloads (turns a ~79 MB fetch from seconds into minutes). Silencing it restores full speed.
+$ProgressPreference = 'SilentlyContinue'
 # Windows PowerShell 5.1 may default to an old TLS; GitHub requires TLS 1.2+.
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
 

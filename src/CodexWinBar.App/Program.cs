@@ -112,6 +112,7 @@ internal sealed class AppShell : IDisposable
     // Set once Velopack has downloaded + staged an update; the flyout shows a restart button for it.
     private UpdateManager? updateManager;
     private UpdateInfo? pendingUpdate;
+    private System.Windows.Threading.DispatcherTimer? updateCheckTimer;
     // Test hook: CODEXWINBAR_FAKE_UPDATE=1 shows the update button and simulates the download flow;
     // =error drives it to the red error state instead. Inert (null) in normal use.
     private readonly string? fakeUpdate = Environment.GetEnvironmentVariable("CODEXWINBAR_FAKE_UPDATE");
@@ -162,7 +163,7 @@ internal sealed class AppShell : IDisposable
         this.StartWidgetFromSettings();
         this.UpdateWidget();
         this.Log($"CodexWinBar {Assembly.GetExecutingAssembly().GetName().Version} started.");
-        this.CheckForUpdatesInBackground();
+        this.StartUpdateChecks();
         // Warm the flyout's render/animation pipeline once the app is idle, so the FIRST real open
         // animates instead of popping in (WPF drops the first animation on a cold composition).
         _ = this.app.Dispatcher.BeginInvoke(
@@ -178,11 +179,35 @@ internal sealed class AppShell : IDisposable
             }));
     }
 
+    // Checks for updates at startup and then every few hours, so the flyout's update button appears
+    // while the app is running — no restart needed to notice a new version. Skipped in the fake-update
+    // test mode (which drives the button directly).
+    private void StartUpdateChecks()
+    {
+        if (this.fakeUpdate is not null)
+        {
+            return;
+        }
+
+        this.CheckForUpdatesInBackground();
+        this.updateCheckTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromHours(3),
+        };
+        this.updateCheckTimer.Tick += (_, _) => this.CheckForUpdatesInBackground();
+        this.updateCheckTimer.Start();
+    }
+
     // Fire-and-forget update check. Velopack only manages updates for an installed copy (IsInstalled
-    // guards dev/portable builds). When an update is found it is downloaded + staged, then the flyout
-    // reveals a restart button so the user knows to apply it — the running session is never interrupted.
+    // guards dev/portable builds). When an update is found the flyout reveals a download button so the
+    // user knows to apply it. Once an update is known, further checks are no-ops (the button is up).
     private void CheckForUpdatesInBackground()
     {
+        if (this.pendingUpdate is not null)
+        {
+            return;
+        }
+
         _ = Task.Run(async () =>
         {
             try
@@ -310,6 +335,7 @@ internal sealed class AppShell : IDisposable
         }
 
         this.disposed = true;
+        this.updateCheckTimer?.Stop();
         this.pipeCancellation.Cancel();
         this.usageStore.StateChanged -= this.usageStateChangedHandler;
         this.usageStore.Dispose();

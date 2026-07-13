@@ -60,6 +60,8 @@ public sealed class FlyoutWindow : Window
     private readonly UiSettingsStore uiStore;
     private readonly Action openSettings;
     private readonly Action quit;
+    private readonly Action onStartUpdateDownload;
+    private readonly Action onApplyUpdate;
     private readonly Action<string>? log;
     private readonly Dictionary<ProviderId, ProviderDescriptor> descriptors;
     private readonly StackPanel stack = new() { Orientation = Orientation.Vertical };
@@ -80,6 +82,10 @@ public sealed class FlyoutWindow : Window
     private bool wasActivated;
     private bool isClosing;
     private bool isPreWarming;
+    private UpdateStage updateStage = UpdateStage.None;
+    private double updateProgress;
+    private string? updateError;
+    private Button? updateButton;
     private DateTimeOffset lastToggleAt;
     private int animationGeneration;
     private int measureNonce;
@@ -102,12 +108,18 @@ public sealed class FlyoutWindow : Window
     private bool suppressDpiClose;
 
     /// <summary>Creates a flyout bound to the usage store and app actions.</summary>
-    public FlyoutWindow(IUsageStore store, UiSettingsStore uiStore, Action openSettings, Action quit, Action<string>? log = null)
+    /// <summary>Lifecycle of the footer's update button: hidden, an available update to download, a
+    /// download in progress, a staged update ready to restart into, or a failed attempt.</summary>
+    private enum UpdateStage { None, Available, Downloading, Ready, Error }
+
+    public FlyoutWindow(IUsageStore store, UiSettingsStore uiStore, Action openSettings, Action quit, Action onStartUpdateDownload, Action onApplyUpdate, Action<string>? log = null)
     {
         this.store = store;
         this.uiStore = uiStore;
         this.openSettings = openSettings;
         this.quit = quit;
+        this.onStartUpdateDownload = onStartUpdateDownload;
+        this.onApplyUpdate = onApplyUpdate;
         this.log = log;
         this.descriptors = ProviderCatalog.CreateAll().ToDictionary(descriptor => descriptor.Id);
         this.mouseProc = this.HandleMouseHook;
@@ -1207,23 +1219,169 @@ public sealed class FlyoutWindow : Window
     private UIElement CreateFooter()
     {
         var footer = new Grid { Margin = new Thickness(0, 2, 0, 0) };
-        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                       // refresh
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });  // spacer
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                       // update (only when staged)
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                       // settings
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                       // close
         var refresh = this.CreateIconButton(this.CreateRefreshGlyph(), "Refresh");
         refresh.Click += async (_, _) => await this.RefreshAllAsync();
         footer.Children.Add(refresh);
+
+        // Update button (left of the gear): hidden until an update is found, then it walks through
+        // download-arrow -> circular progress -> green restart, or a red X on failure. Click behaviour
+        // depends on the current stage (RenderUpdateButton keeps its look in sync).
+        this.updateButton = this.CreateIconButton(null!, string.Empty);
+        this.updateButton.Click += (_, _) => this.OnUpdateButtonClicked();
+        Grid.SetColumn(this.updateButton, 2);
+        footer.Children.Add(this.updateButton);
+        this.RenderUpdateButton();
+
         var settingsButton = this.CreateIconButton(LogoImages.IconGlyph(LogoImages.SettingsGlyph, 13), "Settings");
         settingsButton.Click += (_, _) => { this.HideFlyout("close: settings"); this.openSettings(); };
-        Grid.SetColumn(settingsButton, 2);
+        Grid.SetColumn(settingsButton, 3);
         footer.Children.Add(settingsButton);
         // The X only closes the flyout, never the app — quitting is reserved for the tray menu.
         var closeButton = this.CreateIconButton(LogoImages.IconGlyph(LogoImages.CloseGlyph, 10), "Close");
         closeButton.Click += (_, _) => this.HideFlyout("close: x-button");
-        Grid.SetColumn(closeButton, 3);
+        Grid.SetColumn(closeButton, 4);
         footer.Children.Add(closeButton);
         return footer;
+    }
+
+    /// <summary>An update was found; show the download-arrow button. Safe to call off the UI thread.</summary>
+    public void SetUpdateAvailable() => this.SetUpdateStage(UpdateStage.Available, progress: 0, error: null);
+
+    /// <summary>Download progress (0-100) while an update is downloading.</summary>
+    public void SetUpdateProgress(double percent) => this.SetUpdateStage(UpdateStage.Downloading, percent, null);
+
+    /// <summary>The update finished downloading and is staged; show the green restart button.</summary>
+    public void SetUpdateReady() => this.SetUpdateStage(UpdateStage.Ready, progress: 100, error: null);
+
+    /// <summary>The download/apply failed; show the red X with <paramref name="message"/> on hover.</summary>
+    public void SetUpdateError(string message) => this.SetUpdateStage(UpdateStage.Error, this.updateProgress, message);
+
+    private void SetUpdateStage(UpdateStage stage, double progress, string? error)
+    {
+        _ = this.Dispatcher.BeginInvoke(() =>
+        {
+            this.updateStage = stage;
+            this.updateProgress = progress;
+            this.updateError = error;
+            this.RenderUpdateButton();
+        });
+    }
+
+    private void OnUpdateButtonClicked()
+    {
+        switch (this.updateStage)
+        {
+            case UpdateStage.Available:
+            case UpdateStage.Error:      // retry the download
+                this.SetUpdateStage(UpdateStage.Downloading, progress: 0, error: null);
+                this.onStartUpdateDownload();
+                break;
+            case UpdateStage.Ready:
+                this.HideFlyout("close: apply-update");
+                this.onApplyUpdate();
+                break;
+            default:
+                break;               // ignore clicks while downloading
+        }
+    }
+
+    private static readonly Color UpdateBlue = Color.FromRgb(0x3B, 0x82, 0xF6);
+    private static readonly Color UpdateGreen = Color.FromRgb(0x16, 0xA3, 0x4A);
+    private static readonly Color UpdateRed = Color.FromRgb(0xE0, 0x4B, 0x4B);
+
+    /// <summary>Repaints the footer update button to match <see cref="updateStage"/>.</summary>
+    private void RenderUpdateButton()
+    {
+        if (this.updateButton is null)
+        {
+            return;
+        }
+
+        var button = this.updateButton;
+        button.Visibility = this.updateStage == UpdateStage.None ? Visibility.Collapsed : Visibility.Visible;
+        switch (this.updateStage)
+        {
+            case UpdateStage.Available:
+                button.Content = AccentGlyph(LogoImages.DownloadGlyph, 14, UpdateBlue);
+                button.ToolTip = "Update available — click to download";
+                button.IsHitTestVisible = true;
+                break;
+            case UpdateStage.Downloading:
+                button.Content = BuildProgressRing(this.updateProgress);
+                button.ToolTip = $"Downloading update… {this.updateProgress:0}%";
+                button.IsHitTestVisible = false;
+                break;
+            case UpdateStage.Ready:
+                button.Content = AccentGlyph(LogoImages.RefreshGlyph, 14, UpdateGreen);
+                button.ToolTip = "Update ready — click to restart";
+                button.IsHitTestVisible = true;
+                break;
+            case UpdateStage.Error:
+                button.Content = AccentGlyph(LogoImages.CloseGlyph, 12, UpdateRed);
+                button.ToolTip = this.updateError ?? "Update failed — click to retry";
+                button.IsHitTestVisible = true;
+                break;
+            default:
+                break;
+        }
+    }
+
+    private static TextBlock AccentGlyph(string glyph, double size, Color color)
+    {
+        var text = LogoImages.IconGlyph(glyph, size);
+        text.Foreground = new SolidColorBrush(color);
+        return text;
+    }
+
+    /// <summary>A small determinate circular progress ring (0-100), drawn as a faint full circle with a
+    /// blue arc sweeping clockwise from the top.</summary>
+    private static UIElement BuildProgressRing(double percent)
+    {
+        const double size = 18;
+        const double thickness = 2.5;
+        var radius = (size - thickness) / 2;
+        var grid = new Grid { Width = size, Height = size };
+        grid.Children.Add(new Ellipse
+        {
+            Width = size,
+            Height = size,
+            Stroke = new SolidColorBrush(Color.FromArgb(0x33, UpdateBlue.R, UpdateBlue.G, UpdateBlue.B)),
+            StrokeThickness = thickness,
+            Fill = Brushes.Transparent,
+        });
+
+        var angle = Math.Clamp(percent, 0, 100) / 100.0 * 360.0;
+        if (angle > 0.5)
+        {
+            var center = new Point(size / 2, size / 2);
+            var radians = angle * Math.PI / 180.0;
+            var end = new Point(center.X + (radius * Math.Sin(radians)), center.Y - (radius * Math.Cos(radians)));
+            var figure = new PathFigure { StartPoint = new Point(center.X, center.Y - radius), IsClosed = false };
+            figure.Segments.Add(new ArcSegment
+            {
+                Point = end,
+                Size = new Size(radius, radius),
+                SweepDirection = SweepDirection.Clockwise,
+                IsLargeArc = angle > 180,
+            });
+            var geometry = new PathGeometry();
+            geometry.Figures.Add(figure);
+            grid.Children.Add(new Path
+            {
+                Data = geometry,
+                Stroke = new SolidColorBrush(UpdateBlue),
+                StrokeThickness = thickness,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+            });
+        }
+
+        return grid;
     }
 
     private FrameworkElement CreateRefreshGlyph()

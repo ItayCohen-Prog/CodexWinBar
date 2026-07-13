@@ -109,6 +109,12 @@ internal sealed class AppShell : IDisposable
     private WidgetRenderState lastWidgetState = new() { Chips = [] };
     private bool modeBalloonShown;
     private bool disposed;
+    // Set once Velopack has downloaded + staged an update; the flyout shows a restart button for it.
+    private UpdateManager? updateManager;
+    private UpdateInfo? pendingUpdate;
+    // Test hook: CODEXWINBAR_FAKE_UPDATE=1 shows the update button and simulates the download flow;
+    // =error drives it to the red error state instead. Inert (null) in normal use.
+    private readonly string? fakeUpdate = Environment.GetEnvironmentVariable("CODEXWINBAR_FAKE_UPDATE");
 
     public AppShell(App app)
     {
@@ -133,6 +139,8 @@ internal sealed class AppShell : IDisposable
             this.uiStore,
             this.OpenSettings,
             this.Quit,
+            this.StartUpdateDownload,
+            this.ApplyPendingUpdate,
             this.Log);
         this.trayIcon = new TrayIcon(
             () => this.ToggleFlyout(this.GetActivationAnchor()),
@@ -163,12 +171,16 @@ internal sealed class AppShell : IDisposable
             {
                 this.flyout.PreWarm();
                 this.ShowOnboardingIfFirstRun();
+                if (this.fakeUpdate is not null)
+                {
+                    this.flyout.SetUpdateAvailable();
+                }
             }));
     }
 
     // Fire-and-forget update check. Velopack only manages updates for an installed copy (IsInstalled
-    // guards dev/portable builds). Updates are downloaded and STAGED — applied on the next exit — so the
-    // running session is never interrupted; the user gets the new version the next time they launch.
+    // guards dev/portable builds). When an update is found it is downloaded + staged, then the flyout
+    // reveals a restart button so the user knows to apply it — the running session is never interrupted.
     private void CheckForUpdatesInBackground()
     {
         _ = Task.Run(async () =>
@@ -188,15 +200,106 @@ internal sealed class AppShell : IDisposable
                     return;
                 }
 
-                await manager.DownloadUpdatesAsync(update).ConfigureAwait(false);
-                manager.WaitExitThenApplyUpdates(update);
-                this.Log("Update downloaded; it will be applied the next time CodexWinBar restarts.");
+                // Don't download yet — reveal the download button; the user starts the download by
+                // clicking it (StartUpdateDownload), so they see the progress and control the restart.
+                this.updateManager = manager;
+                this.pendingUpdate = update;
+                this.flyout.SetUpdateAvailable();
+                this.Log($"Update {update.TargetFullRelease.Version} available; download button shown.");
             }
             catch (Exception ex)
             {
                 this.Log($"Update check failed: {ex.GetType().Name}: {ex.Message}");
             }
         });
+    }
+
+    // Downloads the staged update, reporting progress to the flyout's ring; on success the flyout shows
+    // the green restart button, on failure a red X with a friendly message. Invoked from the button.
+    private void StartUpdateDownload()
+    {
+        if (this.fakeUpdate is not null)
+        {
+            this.SimulateUpdateDownload();
+            return;
+        }
+
+        if (this.updateManager is not { } manager || this.pendingUpdate is not { } update)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await manager.DownloadUpdatesAsync(update, progress => this.flyout.SetUpdateProgress(progress)).ConfigureAwait(false);
+                this.flyout.SetUpdateReady();
+                this.Log($"Update {update.TargetFullRelease.Version} downloaded and staged.");
+            }
+            catch (Exception ex)
+            {
+                this.Log($"Update download failed: {ex.GetType().Name}: {ex.Message}");
+                this.flyout.SetUpdateError(FriendlyUpdateError(ex));
+            }
+        });
+    }
+
+    private static string FriendlyUpdateError(Exception ex) => ex switch
+    {
+        System.Net.Http.HttpRequestException or System.Net.WebException or System.Net.Sockets.SocketException
+            => "No internet connection",
+        TaskCanceledException or TimeoutException => "Download timed out — try again",
+        _ => "Update failed — try again",
+    };
+
+    // Simulated download for the CODEXWINBAR_FAKE_UPDATE test hook: sweeps the progress ring 0->100,
+    // then lands on the green restart state (or the red error state when the hook is "error").
+    private void SimulateUpdateDownload()
+    {
+        _ = Task.Run(async () =>
+        {
+            for (var p = 0; p <= 100; p += 6)
+            {
+                this.flyout.SetUpdateProgress(p);
+                await Task.Delay(160).ConfigureAwait(false);
+            }
+
+            if (string.Equals(this.fakeUpdate, "error", StringComparison.OrdinalIgnoreCase))
+            {
+                this.flyout.SetUpdateError("No internet connection");
+            }
+            else
+            {
+                this.flyout.SetUpdateReady();
+            }
+        });
+    }
+
+    // Applies the staged update and relaunches into the new version (invoked from the flyout's restart
+    // button). No-op if nothing is staged.
+    private void ApplyPendingUpdate()
+    {
+        if (this.fakeUpdate is not null)
+        {
+            this.Log("fake update: would apply and restart now.");
+            return;
+        }
+
+        if (this.updateManager is null || this.pendingUpdate is null)
+        {
+            return;
+        }
+
+        try
+        {
+            this.Log($"Applying update {this.pendingUpdate.TargetFullRelease.Version} and restarting.");
+            this.updateManager.ApplyUpdatesAndRestart(this.pendingUpdate);
+        }
+        catch (Exception ex)
+        {
+            this.Log($"Apply update failed: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     public void Dispose()

@@ -16,6 +16,7 @@ internal static class LogoImages
     internal const string SignInGlyph = "\uE77B";
     internal const string WarningGlyph = "\uE7BA";
     internal const string ExternalLinkGlyph = "\uE8A7";
+    internal const string DownloadGlyph = "\uE896";
 
     private static readonly FontFamily IconFontFamily = new("Segoe Fluent Icons, Segoe MDL2 Assets");
     private static readonly Dictionary<(string GlyphKey, bool Dark), BitmapImage> Cache = [];

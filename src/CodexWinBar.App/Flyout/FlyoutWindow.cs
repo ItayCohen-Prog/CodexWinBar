@@ -80,6 +80,7 @@ public sealed class FlyoutWindow : Window
     private bool wasActivated;
     private bool isClosing;
     private bool isPreWarming;
+    private DateTimeOffset lastToggleAt;
     private int animationGeneration;
     private int measureNonce;
     private int currentEdge = AbeBottom;
@@ -218,6 +219,19 @@ public sealed class FlyoutWindow : Window
     {
         try
         {
+            // Coalesce ultra-rapid toggles. Mashing the same widget open/close faster than the
+            // open/close animations settle thrashes the transparent flyout window's show/hide against
+            // the (topmost, layered) overlay widget and tears — invisible when embedded and in the
+            // slower Debug build, visible in Release/overlay. 150 ms is well below a deliberate
+            // open-then-close, so normal use never hits it.
+            var now = DateTimeOffset.UtcNow;
+            if (now - this.lastToggleAt < TimeSpan.FromMilliseconds(150))
+            {
+                return;
+            }
+
+            this.lastToggleAt = now;
+
             // A null focus (tray/keyboard activation) means the combined all-providers view: every
             // provider's card stacked in one scrollable panel, capped to the monitor work area by
             // PrepareSessionWindow. A concrete focus (widget chip click) shows that provider alone.

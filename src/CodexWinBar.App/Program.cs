@@ -647,10 +647,11 @@ internal sealed class AppShell : IDisposable
         _ => WidgetHostMode.Auto,
     };
 
-    // The left side of a centered Windows 11 taskbar is occupied by the system's own Widgets/weather
-    // button, so an embedded strip there would collide — the left placement floats as an overlay instead.
+    // One placement, no choices: the widget always floats as an overlay on the taskbar, auto-positioned
+    // on the side opposite the clock (WidgetWindow.AnchorOppositeTray). WidgetMode is only used to turn
+    // it off — there is no embedded/overlay/side selection anywhere in the UI.
     private static WidgetHostMode ResolveWidgetMode(UiSettings settings) =>
-        settings.WidgetSide == WidgetSide.Left ? WidgetHostMode.Overlay : ToWidgetMode(settings.WidgetMode);
+        settings.WidgetMode == CoreWidgetMode.Hidden ? WidgetHostMode.Hidden : WidgetHostMode.Overlay;
 
     private static double? WindowPercent(RateWindow? window, bool showUsed)
     {

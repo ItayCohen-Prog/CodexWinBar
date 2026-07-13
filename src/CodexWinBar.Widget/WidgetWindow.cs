@@ -395,7 +395,9 @@ internal sealed class WidgetWindow : IDisposable
         _ = Render();
         UpdateBobTimer();
         SetEffectiveMode(WidgetMode.Overlay, reason);
-        _ = NativeMethods.SetTimer(_controller, OverlayPollTimer, 2000, IntPtr.Zero);
+        // Poll for fullscreen/auto-hide often enough that the overlay disappears promptly when a video
+        // goes fullscreen (a topmost overlay would otherwise stay drawn over borderless-fullscreen apps).
+        _ = NativeMethods.SetTimer(_controller, OverlayPollTimer, 400, IntPtr.Zero);
     }
 
     private void DestroyWidget()
@@ -473,6 +475,8 @@ internal sealed class WidgetWindow : IDisposable
     private void PositionOverlay(TaskbarInfo info)
     {
         int gap = Scale(6);
+        // Always sit on the side opposite the tray/clock (auto-detected), never a user choice.
+        bool anchorStart = AnchorOppositeTray(info);
         int x;
         int y;
         if (_vertical)
@@ -480,18 +484,40 @@ internal sealed class WidgetWindow : IDisposable
             // No tray on secondary taskbars: anchor to the taskbar's far (bottom) edge instead.
             int trayTop = info.TrayRect.IsEmpty ? info.TaskbarRect.Bottom - Scale(2) : info.TrayRect.Top;
             x = info.TaskbarRect.Left + Math.Max(0, (info.TaskbarRect.Width - _width) / 2);
-            y = _anchorLeft ? info.TaskbarRect.Top + Scale(8) : Math.Max(info.TaskbarRect.Top + Scale(8), trayTop - _height - gap);
+            y = anchorStart ? info.TaskbarRect.Top + Scale(8) : Math.Max(info.TaskbarRect.Top + Scale(8), trayTop - _height - gap);
         }
         else
         {
             // No tray on secondary taskbars: anchor to the taskbar's right edge instead.
             int trayLeft = info.TrayRect.IsEmpty ? info.TaskbarRect.Right - Scale(2) : info.TrayRect.Left;
-            x = _anchorLeft ? info.TaskbarRect.Left + Scale(8) : trayLeft - _width - gap;
+            x = anchorStart ? info.TaskbarRect.Left + Scale(8) : trayLeft - _width - gap;
             y = info.TaskbarRect.Top + Math.Max(0, (info.TaskbarRect.Height - _height) / 2);
         }
 
         _placementRect = new Rectangle(x, y, _width, _height);
         _screenRect = _placementRect;
+    }
+
+    /// <summary>True when the widget should anchor to the taskbar's "start" side (left on a horizontal
+    /// bar, top on a vertical one) because the tray/clock is on the opposite end. Secondary taskbars have
+    /// no tray, so they default to the start side. This is auto-detected — there is no placement setting.</summary>
+    private bool AnchorOppositeTray(TaskbarInfo info)
+    {
+        if (info.TrayRect.IsEmpty)
+        {
+            return true;
+        }
+
+        if (_vertical)
+        {
+            int center = info.TaskbarRect.Top + (info.TaskbarRect.Height / 2);
+            int tray = info.TrayRect.Top + (info.TrayRect.Height / 2);
+            return tray >= center;
+        }
+
+        int centerX = info.TaskbarRect.Left + (info.TaskbarRect.Width / 2);
+        int trayX = info.TrayRect.Left + (info.TrayRect.Width / 2);
+        return trayX >= centerX;
     }
 
     private bool Render()
@@ -701,7 +727,10 @@ internal sealed class WidgetWindow : IDisposable
             return;
         }
 
-        bool hide = TaskbarInterop.IsAutoHidden() || FullscreenDetector.IsForegroundFullscreenOnMonitor(_monitor, _widget);
+        // Use the monitor the overlay is ACTUALLY on (not the cached _monitor, which can disagree with
+        // the live layout on multi-monitor setups and then silently defeat the fullscreen check).
+        IntPtr liveMonitor = NativeMethods.MonitorFromWindow(_widget, NativeMethods.MONITOR_DEFAULTTONEAREST);
+        bool hide = TaskbarInterop.IsAutoHidden() || FullscreenDetector.IsForegroundFullscreenOnMonitor(liveMonitor, _widget);
         if (hide != _overlayHidden)
         {
             _overlayHidden = hide;

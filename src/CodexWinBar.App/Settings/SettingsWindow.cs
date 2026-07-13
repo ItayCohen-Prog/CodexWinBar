@@ -288,33 +288,12 @@ public sealed class SettingsWindow : Window
         var panel = Page("Display");
         var group = CardGroup();
 
-        var mode = Combo(Enum.GetValues<WidgetMode>().Select(value => new ComboOption<WidgetMode>(value.ToString(), value)), settings.WidgetMode);
-        mode.SelectionChanged += (_, _) =>
-        {
-            if (mode.SelectedItem is ComboOption<WidgetMode> option)
-            {
-                this.SaveUi(ui => ui.WidgetMode = option.Value);
-            }
-        };
-        group.Children.Add(this.SettingCard("\uE8A7", "Widget mode", null, mode));
-
-        var side = Combo(
-            new[]
-            {
-                new ComboOption<WidgetSide>("Right", WidgetSide.Right),
-                new ComboOption<WidgetSide>("Left", WidgetSide.Left),
-            },
-            settings.WidgetSide);
-        side.SelectionChanged += (_, _) =>
-        {
-            if (side.SelectedItem is ComboOption<WidgetSide> option)
-            {
-                // Left is forced to overlay at placement time (ResolveWidgetMode), so the stored
-                // WidgetMode is left untouched here — switching back to Right restores it.
-                this.SaveUi(ui => ui.WidgetSide = option.Value);
-            }
-        };
-        group.Children.Add(this.SettingCard("\uE8AB", "Widget side", "Left pins the widget to the taskbar's left edge", side));
+        // One placement, no choices: the widget auto-positions on the side of the taskbar opposite the
+        // clock (see AnchorOppositeTray in the widget). The only control is whether it shows at all.
+        var showWidget = new ToggleSwitch(
+            settings.WidgetMode != WidgetMode.Hidden,
+            isChecked => this.SaveUi(ui => ui.WidgetMode = isChecked ? WidgetMode.Overlay : WidgetMode.Hidden));
+        group.Children.Add(this.SettingCard("", "Show widget on the taskbar", "Appears automatically on the side opposite the clock", showWidget));
 
         var textMode = Combo(Enum.GetValues<DisplayTextMode>().Select(value => new ComboOption<DisplayTextMode>(value.ToString(), value)), settings.DisplayTextMode);
         textMode.SelectionChanged += (_, _) =>

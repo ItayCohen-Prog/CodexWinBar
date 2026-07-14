@@ -1250,6 +1250,9 @@ public sealed class SettingsWindow : Window
         return button;
     }
 
+    private static Style? accentButtonStyle;
+    private static Style? plainButtonStyle;
+
     private static Button StyledButton(string text, bool accent)
     {
         var button = new Button
@@ -1262,6 +1265,19 @@ public sealed class SettingsWindow : Window
             HorizontalAlignment = HorizontalAlignment.Left,
             BorderThickness = new Thickness(1),
         };
+
+        // Colours come from the Style (not local values) so the hover Triggers can override them — a local
+        // value beats a Trigger in WPF's property precedence and the hover would never apply.
+        Style? style = accent
+            ? accentButtonStyle ??= TryCreateSettingsButtonStyle(accent: true)
+            : plainButtonStyle ??= TryCreateSettingsButtonStyle(accent: false);
+        if (style is not null)
+        {
+            button.Style = style;
+            return button;
+        }
+
+        // Fallback (template failed to parse): prior local-value styling with WPF's default hover.
         if (accent)
         {
             button.SetResourceReference(Control.BackgroundProperty, "SettingsAccent");
@@ -1276,6 +1292,69 @@ public sealed class SettingsWindow : Window
         }
 
         return button;
+    }
+
+    private static Style? TryCreateSettingsButtonStyle(bool accent)
+    {
+        try
+        {
+            return CreateSettingsButtonStyle(accent);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    // Button style with a custom template whose hover Trigger inverts to a clean high-contrast look,
+    // replacing WPF's default light-blue hover (which made the accent button's white text unreadable).
+    private static Style CreateSettingsButtonStyle(bool accent)
+    {
+        string background = accent ? "SettingsAccent" : "SettingsControlBackground";
+        string foreground = accent ? "SettingsAccentText" : "SettingsForeground";
+        string border = accent ? "SettingsAccent" : "SettingsControlBorder";
+        string xaml = """
+<Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+       TargetType="{x:Type Button}">
+    <Setter Property="Background" Value="{DynamicResource __BG__}" />
+    <Setter Property="Foreground" Value="{DynamicResource __FG__}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource __BORDER__}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="FontFamily" Value="Segoe UI" />
+    <Setter Property="FontSize" Value="14" />
+    <Setter Property="Cursor" Value="Hand" />
+    <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+    <Setter Property="Template">
+        <Setter.Value>
+            <ControlTemplate TargetType="{x:Type Button}">
+                <Border x:Name="Chrome"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="6"
+                        SnapsToDevicePixels="True">
+                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                      Margin="{TemplateBinding Padding}"
+                                      TextElement.Foreground="{TemplateBinding Foreground}" />
+                </Border>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True">
+                        <Setter TargetName="Chrome" Property="Background" Value="{DynamicResource SettingsButtonHoverFill}" />
+                        <Setter TargetName="Chrome" Property="BorderBrush" Value="{DynamicResource SettingsButtonHoverBorder}" />
+                        <Setter Property="Foreground" Value="{DynamicResource SettingsButtonHoverText}" />
+                    </Trigger>
+                    <Trigger Property="IsEnabled" Value="False">
+                        <Setter TargetName="Chrome" Property="Opacity" Value="0.5" />
+                    </Trigger>
+                </ControlTemplate.Triggers>
+            </ControlTemplate>
+        </Setter.Value>
+    </Setter>
+</Style>
+""";
+        xaml = xaml.Replace("__BG__", background).Replace("__FG__", foreground).Replace("__BORDER__", border);
+        return (Style)XamlReader.Parse(xaml);
     }
 
     private static StackPanel IconLabel(string glyph, string text)
@@ -2120,6 +2199,13 @@ public sealed class SettingsWindow : Window
                 ["SettingsSubtleFill"] = new SolidColorBrush(dark ? Color.FromArgb(0x14, 0xff, 0xff, 0xff) : Color.FromArgb(0x14, 0x00, 0x00, 0x00)),
                 ["SettingsControlBackground"] = new SolidColorBrush(dark ? Color.FromArgb(0x0f, 0xff, 0xff, 0xff) : Color.FromArgb(0xf2, 0xff, 0xff, 0xff)),
                 ["SettingsControlBorder"] = new SolidColorBrush(dark ? Color.FromArgb(0x26, 0xff, 0xff, 0xff) : Color.FromArgb(0x26, 0x00, 0x00, 0x00)),
+                ["SettingsAccentText"] = new SolidColorBrush(Colors.White),
+                // Button hover is a clean high-contrast inversion (a plain accent fill kept the default
+                // WPF light-blue hover, which left white text unreadable): light theme = white fill,
+                // black border, black text; dark theme = black fill, white border, white text.
+                ["SettingsButtonHoverFill"] = new SolidColorBrush(dark ? Colors.Black : Colors.White),
+                ["SettingsButtonHoverBorder"] = new SolidColorBrush(dark ? Colors.White : Colors.Black),
+                ["SettingsButtonHoverText"] = new SolidColorBrush(dark ? Colors.White : Colors.Black),
                 ["SettingsComboHoverFill"] = new SolidColorBrush(dark ? Color.FromArgb(0x1f, 0xff, 0xff, 0xff) : Color.FromArgb(0xff, 0xf3, 0xf3, 0xf3)),
                 ["SettingsComboSelectedFill"] = new SolidColorBrush(dark ? Color.FromArgb(0x29, 0xff, 0xff, 0xff) : Color.FromArgb(0xff, 0xee, 0xee, 0xee)),
                 ["SettingsComboPopupBackground"] = new SolidColorBrush(dark ? Color.FromRgb(0x2c, 0x2c, 0x2c) : Color.FromRgb(0xf9, 0xf9, 0xf9)),

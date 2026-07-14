@@ -21,6 +21,25 @@ $assetName = 'CodexWinBar-win-Setup.exe'
 $headers = @{ 'User-Agent' = 'CodexWinBar-Installer'; 'Accept' = 'application/vnd.github+json' }
 $currentExe = Join-Path $env:LOCALAPPDATA 'CodexWinBar\current\CodexWinBar.exe'
 
+# PowerShell's Remove-Item/New-Item/Copy-Item normalize paths through a provider that throws
+# PSArgumentException on the 8.3 short paths Windows returns for non-ASCII (e.g. Hebrew) user profiles
+# (PowerShell/PowerShell#21070), and -ErrorAction cannot suppress it. These helpers use the .NET file
+# APIs, which accept those paths directly, so the account's display language never breaks the install.
+function Remove-PathQuiet([string]$path) {
+    if (-not $path) { return }
+    try {
+        if ([System.IO.Directory]::Exists($path)) { [System.IO.Directory]::Delete($path, $true) }
+        elseif ([System.IO.File]::Exists($path)) { [System.IO.File]::Delete($path) }
+    } catch {}
+}
+function Copy-DatFiles([string]$sourceDir, [string]$destDir) {
+    if (-not [System.IO.Directory]::Exists($sourceDir)) { return }
+    [void][System.IO.Directory]::CreateDirectory($destDir)
+    foreach ($file in [System.IO.Directory]::GetFiles($sourceDir, '*.dat')) {
+        [System.IO.File]::Copy($file, [System.IO.Path]::Combine($destDir, [System.IO.Path]::GetFileName($file)), $true)
+    }
+}
+
 Write-Host 'Finding the latest CodexWinBar release...' -ForegroundColor Cyan
 $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers $headers
 
@@ -77,7 +96,7 @@ Invoke-WebRequest $url -OutFile $dest -UseBasicParsing
 $actual = (Get-FileHash $dest -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($expected) {
     if ($actual -ne $expected) {
-        Remove-Item $dest -ErrorAction SilentlyContinue
+        Remove-PathQuiet $dest
         throw "Checksum mismatch (expected $expected, got $actual). The download may be corrupt or tampered with. Aborting."
     }
     Write-Host "Verified SHA-256: $actual" -ForegroundColor Green
@@ -92,9 +111,7 @@ if (Test-Path -LiteralPath $legacyCredentials) {
     # Versions through 1.1.7 stored app-owned OAuth credentials inside Velopack's install root.
     # A version upgrade can replace that root, so preserve the encrypted files before setup runs.
     $credentialBackup = Join-Path $env:TEMP ("CodexWinBar-credentials-" + [guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Path $credentialBackup | Out-Null
-    Get-ChildItem -LiteralPath $legacyCredentials -Filter '*.dat' -File -ErrorAction SilentlyContinue |
-        Copy-Item -Destination $credentialBackup -Force
+    Copy-DatFiles $legacyCredentials $credentialBackup
 }
 
 $installed = $false
@@ -103,22 +120,18 @@ try {
     $installer = Start-Process -FilePath $dest -ArgumentList '--silent' -PassThru -Wait
     if ($installer.ExitCode -ne 0) { throw "CodexWinBar setup failed with exit code $($installer.ExitCode)." }
 
-    if ($credentialBackup -and (Test-Path -LiteralPath $credentialBackup)) {
-        New-Item -ItemType Directory -Path $safeCredentials -Force | Out-Null
-        Get-ChildItem -LiteralPath $credentialBackup -Filter '*.dat' -File -ErrorAction SilentlyContinue |
-            Copy-Item -Destination $safeCredentials -Force
+    if ($credentialBackup -and [System.IO.Directory]::Exists($credentialBackup)) {
+        Copy-DatFiles $credentialBackup $safeCredentials
     }
 
     $installed = $true
 }
 finally {
-    if (-not $installed -and $credentialBackup -and (Test-Path -LiteralPath $credentialBackup)) {
-        New-Item -ItemType Directory -Path $legacyCredentials -Force | Out-Null
-        Get-ChildItem -LiteralPath $credentialBackup -Filter '*.dat' -File -ErrorAction SilentlyContinue |
-            Copy-Item -Destination $legacyCredentials -Force
+    if (-not $installed -and $credentialBackup -and [System.IO.Directory]::Exists($credentialBackup)) {
+        Copy-DatFiles $credentialBackup $legacyCredentials
     }
-    if ($credentialBackup) { Remove-Item $credentialBackup -Recurse -Force -ErrorAction SilentlyContinue }
-    Remove-Item $dest -Force -ErrorAction SilentlyContinue
+    Remove-PathQuiet $credentialBackup
+    Remove-PathQuiet $dest
 }
 
 # Launch it so the widget appears immediately (Velopack installs under %LOCALAPPDATA%\CodexWinBar).

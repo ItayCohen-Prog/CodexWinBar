@@ -285,6 +285,22 @@ internal static partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool IsZoomed(IntPtr hWnd);
 
+    [LibraryImport("user32.dll", EntryPoint = "GetClassNameW", SetLastError = true)]
+    private static partial int GetClassNameW(IntPtr hWnd, ref ushort lpClassName, int nMaxCount);
+
+    /// <summary>Window class name (for diagnostics), or empty when unavailable.</summary>
+    internal static string GetWindowClass(IntPtr hWnd)
+    {
+        if (hWnd == IntPtr.Zero)
+        {
+            return string.Empty;
+        }
+
+        Span<ushort> buffer = stackalloc ushort[256];
+        int length = GetClassNameW(hWnd, ref System.Runtime.InteropServices.MemoryMarshal.GetReference(buffer), buffer.Length);
+        return length > 0 ? new string(System.Runtime.InteropServices.MemoryMarshal.Cast<ushort, char>(buffer[..length])) : string.Empty;
+    }
+
     [LibraryImport("user32.dll", EntryPoint = "GetWindowThreadProcessId", SetLastError = true)]
     internal static partial uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 

@@ -37,16 +37,17 @@ and weekly windows, reset countdowns, credits, and live provider-status incident
 
 | Provider | Source | Auth |
 |---|---|---|
-| **Codex** | ChatGPT backend usage + reset credits | Codex CLI `~/.codex/auth.json` (OAuth, auto-refresh) or API key |
-| **Claude** | `api.anthropic.com` OAuth usage | Claude Code `~/.claude/.credentials.json` (auto-refresh) |
+| **Codex** | ChatGPT backend usage + reset credits | Browser OAuth built into CodexWinBar (auto-refresh) |
+| **Claude** | `api.anthropic.com` OAuth usage | Browser OAuth built into CodexWinBar (auto-refresh) |
 | **Copilot** | `copilot_internal/user` quota snapshots | GitHub device flow (built into Settings) |
 | **OpenRouter** | credits + key limits | API key |
 | **OpenAI Admin** | org cost dashboards | Admin API key |
 | **z.ai** | coding-plan quota | API key |
 | **Cursor** | plan + Auto/Composer + on-demand usage | Browser session cookie |
 
-Codex and Claude are enabled by default and work with zero setup if their CLIs are signed in. The rest are
-enabled in **Settings → Providers**. Upstream's 50+ provider catalog is on the roadmap — the remaining
+CodexWinBar does not require Codex CLI, Claude Code, or Codex Desktop to be installed. Connect Codex,
+Claude, and Copilot from **Settings → Providers** using their built-in browser sign-ins. The rest are
+enabled there with the credential type shown above. Upstream's 50+ provider catalog is on the roadmap — the remaining
 browser-cookie and WebView2 seams (Windsurf, Ollama quota, …) are deferred to a later release.
 
 ## Install
@@ -71,8 +72,9 @@ the latest release. If the taskbar widget is inaccessible, Settings can also be 
 & "$env:LOCALAPPDATA\CodexWinBar\current\CodexWinBar.exe" --settings
 ```
 
-Older installs can update in place by running the one-line installer again. There is no need to uninstall;
-the installer preserves provider sign-ins and settings.
+Older installs can update in place by running the one-line installer again. There is no need to uninstall
+or delete anything: it detects a missing, outdated, or current installation and performs an install,
+update, or repair as appropriate while preserving provider sign-ins and settings.
 
 Or with [winget](https://learn.microsoft.com/windows/package-manager/):
 
@@ -113,10 +115,10 @@ Settings → General. Logs: `%LOCALAPPDATA%\CodexWinBar\logs\app.log`.
 
 ## Privacy
 
-CodexWinBar keeps your credentials on your machine. It reads provider sessions from their standard local
-locations (e.g. the Codex/Claude/Gemini CLI credential files) and talks **only to each provider's own API**
-to fetch your usage — there is no CodexWinBar server, account, or telemetry, and nothing about your usage
-leaves your computer. Stored credentials are written with restrictive per-user file permissions.
+CodexWinBar keeps your credentials on your machine. Its built-in provider sign-ins store OAuth sessions
+encrypted for your Windows user under `%LOCALAPPDATA%\CodexWinBarData\credentials`, and it talks **only
+to each provider's own API** to fetch your usage — there is no CodexWinBar server, account, or telemetry,
+and nothing about your usage leaves your computer.
 
 ## Architecture
 

@@ -536,7 +536,7 @@ public sealed class SettingsWindow : Window
         var signedIn = this.credentialStore.Exists(name);
         detail.Children.Add(Text(signedIn
             ? "Connected through in-app sign-in. The token is stored encrypted (Windows DPAPI) under "
-                + @"%LOCALAPPDATA%\CodexWinBar\credentials and is only ever sent back to "
+                + @"%LOCALAPPDATA%\CodexWinBarData\credentials and is only ever sent back to "
                 + $"{displayName} to read usage."
             : $"Not connected. Sign in opens {displayName}'s login page in your browser; CodexWinBar "
                 + "stores the resulting token encrypted (Windows DPAPI) and only ever sends it back to "

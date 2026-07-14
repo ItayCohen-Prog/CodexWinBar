@@ -279,6 +279,12 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll", EntryPoint = "GetForegroundWindow")]
     internal static partial IntPtr GetForegroundWindow();
 
+    // True when the window is maximized. Lets us tell a normal maximized window (which leaves the taskbar
+    // usable) apart from a genuine borderless/exclusive fullscreen app (a WS_POPUP that covers the screen).
+    [LibraryImport("user32.dll", EntryPoint = "IsZoomed")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool IsZoomed(IntPtr hWnd);
+
     [LibraryImport("user32.dll", EntryPoint = "GetWindowThreadProcessId", SetLastError = true)]
     internal static partial uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 

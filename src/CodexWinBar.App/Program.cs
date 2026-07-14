@@ -776,12 +776,15 @@ internal sealed class AppShell : IDisposable
             return null;
         }
 
+        // Fall back to the weekly (secondary) window when there is no session (primary) window: many
+        // plans (e.g. Codex weekly-only) expose weekly usage but no session window, and without this the
+        // widget shows the logo and bar with NO number. Weekly falls back as "W 55%" so it reads clearly.
         return settings.DisplayTextMode switch
         {
             DisplayTextMode.ResetTime => ResetText(primary?.ResetsAt ?? secondary?.ResetsAt, settings.ResetTimesShowAbsolute),
-            DisplayTextMode.Pace => PaceText(primary, settings.UsageBarsShowUsed),
+            DisplayTextMode.Pace => PaceText(primary, settings.UsageBarsShowUsed) ?? PaceText(secondary, settings.UsageBarsShowUsed),
             DisplayTextMode.Both => Combine(PercentText(primary, settings.UsageBarsShowUsed), WeeklyText(secondary, settings.UsageBarsShowUsed)),
-            _ => PercentText(primary, settings.UsageBarsShowUsed),
+            _ => PercentText(primary, settings.UsageBarsShowUsed) ?? WeeklyText(secondary, settings.UsageBarsShowUsed),
         };
     }
 

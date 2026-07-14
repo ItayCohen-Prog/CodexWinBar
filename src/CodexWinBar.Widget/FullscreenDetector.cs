@@ -21,6 +21,16 @@ internal static class FullscreenDetector
             return false;
         }
 
+        // A normal MAXIMIZED window is not fullscreen: it leaves the taskbar usable, so the widget must
+        // stay. Only a genuine borderless/exclusive fullscreen app (a WS_POPUP covering the whole monitor,
+        // which is not in the maximized state) should hide the widget. Without this, a maximized window
+        // was mistaken for fullscreen and the widget vanished on every app switch — worse when the taskbar
+        // auto-hides, because then the maximized window's rect covers the entire monitor.
+        if (NativeMethods.IsZoomed(foreground))
+        {
+            return false;
+        }
+
         NativeMethods.MONITORINFO info = new()
         {
             cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.MONITORINFO>(),

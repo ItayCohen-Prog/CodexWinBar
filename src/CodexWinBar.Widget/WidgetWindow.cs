@@ -80,7 +80,6 @@ internal sealed class WidgetWindow : IDisposable
     private bool _trackingMouse;
     private bool _overlayHidden;
     private int _probeFailures;
-    private bool _overlayFallbackForSession;
     private DateTime _displayChangingUntilUtc;
     private Rectangle _placementRect;
     private Rectangle _screenRect;
@@ -279,27 +278,11 @@ internal sealed class WidgetWindow : IDisposable
             return;
         }
 
-        if (_anchorLeft && info.IsRtl)
-        {
-            CreateOverlayOrHidden("left-anchored rtl taskbar forces overlay");
-            return;
-        }
-
-        // All four taskbar edges embed now (bottom/top render horizontally, left/right vertically).
-        //
-        // NOT YET LIVE-TESTED: the top/left/right (non-bottom) embedding + vertical rendering are
-        // code-complete and were verified only via offline renders and the bottom-edge path. They could
-        // not be tested on a real moved taskbar because Windows 11 removed taskbar relocation (the bar
-        // is bottom-only; native top/side support is slated to return in a later Windows update). Verify
-        // on a genuinely movable taskbar — Windows 10, or Win11 with ExplorerPatcher/StartAllBack/
-        // Windhawk — before relying on non-bottom edges. See MeasureForTaskbar / PositionEmbedded below.
-        if (_requestedMode == WidgetMode.Overlay || _overlayFallbackForSession)
-        {
-            CreateOverlayOrHidden(_overlayFallbackForSession ? "embedded probe failed for session" : "overlay requested");
-            return;
-        }
-
-        CreateEmbedded(info);
+        // One rendering mode: a topmost overlay pinned to the taskbar. It is the only approach that
+        // behaves identically on every Windows 11 build — embedding into the XAML taskbar was fragile and
+        // fell back to this anyway — and it stays visible even when the taskbar auto-hides. "Hidden" above
+        // (the user turning the widget off) is the only other state.
+        CreateOverlayOrHidden("overlay");
     }
 
     private static bool IsVerticalEdge(int edge) => edge == NativeMethods.ABE_LEFT || edge == NativeMethods.ABE_RIGHT;
@@ -795,7 +778,6 @@ internal sealed class WidgetWindow : IDisposable
         WidgetLog.Write(reason + " (" + _probeFailures + ")");
         if (_probeFailures >= 2)
         {
-            _overlayFallbackForSession = true;
             _attemptedMode = null;
             CreateOverlayOrHidden(reason);
             return;
@@ -809,7 +791,7 @@ internal sealed class WidgetWindow : IDisposable
 
     private bool Suspended()
     {
-        return TaskbarInterop.IsAutoHidden() || DateTime.UtcNow < _displayChangingUntilUtc || (_effectiveMode == WidgetMode.Overlay && _overlayHidden);
+        return DateTime.UtcNow < _displayChangingUntilUtc || (_effectiveMode == WidgetMode.Overlay && _overlayHidden);
     }
 
     private void Reposition()
@@ -868,7 +850,9 @@ internal sealed class WidgetWindow : IDisposable
         // Use the monitor the overlay is ACTUALLY on (not the cached _monitor, which can disagree with
         // the live layout on multi-monitor setups and then silently defeat the fullscreen check).
         IntPtr liveMonitor = NativeMethods.MonitorFromWindow(_widget, NativeMethods.MONITOR_DEFAULTTONEAREST);
-        bool hide = !_layoutHasRoom || TaskbarInterop.IsAutoHidden() || FullscreenDetector.IsForegroundFullscreenOnMonitor(liveMonitor, _widget);
+        // Only a genuine fullscreen app hides the widget. It deliberately does NOT hide when the taskbar
+        // auto-hides — the widget stays put, as if it were always part of the taskbar.
+        bool hide = !_layoutHasRoom || FullscreenDetector.IsForegroundFullscreenOnMonitor(liveMonitor, _widget);
         if (hide != _overlayHidden)
         {
             _overlayHidden = hide;

@@ -95,6 +95,10 @@ internal sealed class WidgetWindow : IDisposable
     private int? _loggedOccupiedRight;
     private Rectangle? _loggedAppClusterRect;
     private bool _startLayoutLogged;
+    private bool _fitLogged;
+    private int _loggedBudget = int.MinValue;
+    private int _loggedFitWidth = int.MinValue;
+    private bool _loggedAnchorStart;
     private readonly List<Rectangle> _chipBounds = [];
 
     internal WidgetWindow(WidgetHost host, WidgetMode requestedMode, bool anchorLeft, IntPtr monitor, bool isPrimary)
@@ -320,6 +324,17 @@ internal sealed class WidgetWindow : IDisposable
             int budget = HorizontalBudget(info, anchorStart);
             _width = _renderer.Measure(_state, _dpi, vertical: false, budget, _chipBounds);
             _layoutHasRoom = HasHorizontalRoom(budget, _width, _horizontalLayoutKnown, anchorStart);
+            // The chosen tier (Full/Medium show text; Compact drops it) falls out of budget vs. the
+            // measured strip width. Log the geometry when it changes so a machine that wrongly collapses
+            // to Compact reveals exactly why (e.g. a negative/tiny budget or an over-measured cluster).
+            if (!_fitLogged || _loggedBudget != budget || _loggedFitWidth != _width || _loggedAnchorStart != anchorStart)
+            {
+                WidgetLog.Write($"Widget horizontal fit: anchorStart={anchorStart}; budget={budget}px; stripWidth={_width}px; hasRoom={_layoutHasRoom}; taskbar={info.TaskbarRect}; tray={info.TrayRect}; cluster={(_appClusterRect?.ToString() ?? "none")}");
+                _fitLogged = true;
+                _loggedBudget = budget;
+                _loggedFitWidth = _width;
+                _loggedAnchorStart = anchorStart;
+            }
         }
     }
 
@@ -411,9 +426,15 @@ internal sealed class WidgetWindow : IDisposable
         }
         else
         {
-            int trayLeft = info.TrayRect.IsEmpty ? info.TaskbarRect.Right : info.TrayRect.Left;
             int clusterRight = cluster?.Right ?? center;
-            budget = trayLeft - clusterRight - (2 * gap);
+            // The tray's left edge bounds the strip only when the tray is actually to the RIGHT of the
+            // app cluster (the usual LTR taskbar). On an RTL taskbar the tray sits on the LEFT, so
+            // trayLeft is a small left-side X and (trayLeft - clusterRight) goes negative — clamped to 0
+            // that forced the widget into its textless Compact tier. When the tray isn't to the right of
+            // the cluster, bound by the taskbar's right edge instead.
+            int trayLeft = info.TrayRect.IsEmpty ? info.TaskbarRect.Right : info.TrayRect.Left;
+            int rightBound = trayLeft > clusterRight ? trayLeft : info.TaskbarRect.Right;
+            budget = rightBound - clusterRight - (2 * gap);
         }
 
         return Math.Max(0, budget);

@@ -123,7 +123,15 @@ public sealed class UiSettings
     /// Whether to show the pace indicator (projected end-of-window usage) in the flyout and expanded widget.
     /// </summary>
     [JsonPropertyName("showPaceIndicator")]
-    public bool ShowPaceIndicator { get; set; }
+    public bool ShowPaceIndicator { get; set; } = true;
+
+    /// <summary>
+    /// Schema version for one-time settings migrations. Absent in files written before migrations
+    /// existed, so those deserialize to 0 and get migrated on load. New in-memory defaults are stamped
+    /// to the current version by the store so they are never re-migrated.
+    /// </summary>
+    [JsonPropertyName("settingsVersion")]
+    public int SettingsVersion { get; set; }
 
     /// <summary>
     /// Whether CodexWinBar launches at login.

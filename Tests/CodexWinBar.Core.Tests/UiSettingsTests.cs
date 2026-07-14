@@ -89,9 +89,52 @@ public sealed class UiSettingsTests
         Assert.Equal([20], settings.QuotaWeeklyThresholds);
     }
 
+    [Fact]
+    public void UiSettings_defaults_show_pace_indicator_on()
+    {
+        Assert.True(new UiSettings().ShowPaceIndicator);
+    }
+
+    [Fact]
+    public void UiSettingsStore_migrates_legacy_file_to_enable_pace_once()
+    {
+        using var temp = TempDir.Create();
+        var settingsPath = Path.Combine(temp.Path, "CodexWinBar", "ui-settings.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
+        // A file written before the migration existed: pace explicitly off, no schema version.
+        File.WriteAllText(settingsPath, "{\"showPaceIndicator\":false}");
+
+        var store = new UiSettingsStore(_ => { }, temp.Path);
+        var migrated = store.Load();
+
+        Assert.True(migrated.ShowPaceIndicator);
+        Assert.Equal(1, migrated.SettingsVersion);
+
+        // The migration is persisted, so a reload sees the current version and does not run again.
+        var reloaded = store.Load();
+        Assert.True(reloaded.ShowPaceIndicator);
+        Assert.Equal(1, reloaded.SettingsVersion);
+    }
+
+    [Fact]
+    public void UiSettingsStore_respects_pace_off_at_current_version()
+    {
+        using var temp = TempDir.Create();
+        var settingsPath = Path.Combine(temp.Path, "CodexWinBar", "ui-settings.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
+        // Already at the current schema version with pace deliberately off: it must stay off.
+        File.WriteAllText(settingsPath, "{\"settingsVersion\":1,\"showPaceIndicator\":false}");
+
+        var settings = new UiSettingsStore(_ => { }, temp.Path).Load();
+
+        Assert.False(settings.ShowPaceIndicator);
+        Assert.Equal(1, settings.SettingsVersion);
+    }
+
     private static void AssertDefaults(UiSettings settings, WidgetSide expectedWidgetSide = WidgetSide.Left)
     {
         Assert.Equal(5, settings.RefreshCadenceMinutes);
+        Assert.True(settings.ShowPaceIndicator);
         Assert.True(settings.MergeIcons);
         Assert.Equal(DisplayTextMode.Percent, settings.DisplayTextMode);
         Assert.False(settings.UsageBarsShowUsed);

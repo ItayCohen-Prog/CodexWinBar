@@ -19,12 +19,44 @@ try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::S
 $repo = 'ItayCohen-Prog/CodexWinBar'
 $assetName = 'CodexWinBar-win-Setup.exe'
 $headers = @{ 'User-Agent' = 'CodexWinBar-Installer'; 'Accept' = 'application/vnd.github+json' }
+$currentExe = Join-Path $env:LOCALAPPDATA 'CodexWinBar\current\CodexWinBar.exe'
 
 Write-Host 'Finding the latest CodexWinBar release...' -ForegroundColor Cyan
 $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers $headers
 
 $asset = $release.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
 if (-not $asset) { throw "Could not find $assetName in release $($release.tag_name)." }
+
+$latestVersionText = $release.tag_name -replace '^v', ''
+$latestVersion = $null
+try { $latestVersion = [version]$latestVersionText } catch {}
+$installedVersion = $null
+$installedVersionText = $null
+if (Test-Path -LiteralPath $currentExe) {
+    try {
+        $installedVersionText = [Diagnostics.FileVersionInfo]::GetVersionInfo($currentExe).ProductVersion
+        if ($installedVersionText) {
+            $installedVersionText = ($installedVersionText -split '[+-]')[0]
+            $installedVersion = [version]$installedVersionText
+        }
+    } catch {}
+}
+
+if ($installedVersion -and $latestVersion -and $installedVersion -gt $latestVersion) {
+    Write-Host "CodexWinBar $installedVersionText is newer than the latest published release ($latestVersionText). Nothing was changed." -ForegroundColor Yellow
+    Start-Process $currentExe
+    return
+}
+
+$installAction = if (-not (Test-Path -LiteralPath $currentExe)) {
+    'Installing CodexWinBar'
+} elseif ($installedVersion -and $latestVersion -and $installedVersion -lt $latestVersion) {
+    "Updating CodexWinBar from $installedVersionText to $latestVersionText"
+} elseif ($installedVersionText) {
+    "Repairing CodexWinBar $installedVersionText"
+} else {
+    'Repairing/updating the existing CodexWinBar installation'
+}
 
 # Defence in depth: only ever download from this project's own GitHub release location.
 $url = $asset.browser_download_url
@@ -67,7 +99,7 @@ if (Test-Path -LiteralPath $legacyCredentials) {
 
 $installed = $false
 try {
-    Write-Host 'Installing...' -ForegroundColor Cyan
+    Write-Host "$installAction..." -ForegroundColor Cyan
     $installer = Start-Process -FilePath $dest -ArgumentList '--silent' -PassThru -Wait
     if ($installer.ExitCode -ne 0) { throw "CodexWinBar setup failed with exit code $($installer.ExitCode)." }
 
@@ -90,7 +122,6 @@ finally {
 }
 
 # Launch it so the widget appears immediately (Velopack installs under %LOCALAPPDATA%\CodexWinBar).
-$currentExe = Join-Path $env:LOCALAPPDATA 'CodexWinBar\current\CodexWinBar.exe'
 if (Test-Path -LiteralPath $currentExe) { Start-Process $currentExe }
 
 Write-Host "CodexWinBar $($release.tag_name) installed." -ForegroundColor Green

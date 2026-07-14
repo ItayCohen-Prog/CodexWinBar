@@ -840,6 +840,39 @@ internal sealed class WidgetWindow : IDisposable
         UpdateBobTimer();
     }
 
+    // True when an auto-hide taskbar is CURRENTLY retracted (slid off to its thin hover sliver), as
+    // opposed to TaskbarInterop.IsAutoHidden(), which only reports that auto-hide is enabled. Windows
+    // keeps the retracted bar full-size but positioned mostly off the monitor, so only a few pixels of
+    // its thickness stay on-screen; that thin sliver is how we tell "gone" from "shown".
+    private bool TaskbarCurrentlyRetracted(IntPtr monitor)
+    {
+        if (!TaskbarInterop.IsAutoHidden() || _taskbar == IntPtr.Zero || monitor == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        if (!NativeMethods.GetWindowRect(_taskbar, out NativeMethods.RECT bar))
+        {
+            return false;
+        }
+
+        NativeMethods.MONITORINFO mi = new()
+        {
+            cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.MONITORINFO>(),
+        };
+        if (!NativeMethods.GetMonitorInfoW(monitor, ref mi))
+        {
+            return false;
+        }
+
+        int onScreenWidth = Math.Min(bar.Right, mi.rcMonitor.Right) - Math.Max(bar.Left, mi.rcMonitor.Left);
+        int onScreenHeight = Math.Min(bar.Bottom, mi.rcMonitor.Bottom) - Math.Max(bar.Top, mi.rcMonitor.Top);
+        // A bar's thickness is its short dimension (height for a bottom/top bar, width for a side bar).
+        // When retracted, only a ~1-2px sliver stays on-screen; a shown bar is its full ~48px.
+        int onScreenThickness = _vertical ? onScreenWidth : onScreenHeight;
+        return onScreenThickness <= Scale(6);
+    }
+
     private void UpdateOverlayVisibility()
     {
         if (_effectiveMode != WidgetMode.Overlay || _widget == IntPtr.Zero)
@@ -850,9 +883,10 @@ internal sealed class WidgetWindow : IDisposable
         // Use the monitor the overlay is ACTUALLY on (not the cached _monitor, which can disagree with
         // the live layout on multi-monitor setups and then silently defeat the fullscreen check).
         IntPtr liveMonitor = NativeMethods.MonitorFromWindow(_widget, NativeMethods.MONITOR_DEFAULTTONEAREST);
-        // Only a genuine fullscreen app hides the widget. It deliberately does NOT hide when the taskbar
-        // auto-hides — the widget stays put, as if it were always part of the taskbar.
-        bool hide = !_layoutHasRoom || FullscreenDetector.IsForegroundFullscreenOnMonitor(liveMonitor, _widget);
+        // The widget tracks the taskbar like a real part of it: it hides while an auto-hide bar is
+        // retracted (slid away) and returns when it slides back up, and it hides for a genuine fullscreen
+        // app. It does NOT hide merely because auto-hide is enabled — only while the bar is actually gone.
+        bool hide = !_layoutHasRoom || TaskbarCurrentlyRetracted(liveMonitor) || FullscreenDetector.IsForegroundFullscreenOnMonitor(liveMonitor, _widget);
         if (hide != _overlayHidden)
         {
             _overlayHidden = hide;

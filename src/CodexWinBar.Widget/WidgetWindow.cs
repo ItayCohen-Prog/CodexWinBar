@@ -39,6 +39,7 @@ internal sealed class WidgetWindow : IDisposable
     private const nuint OverlayPollTimer = 11;
     private const nuint EmbedProbeRetryTimer = 12;
     private const nuint BobTimer = 13;
+    private const nuint StartLayoutRefreshTimer = 14;
     private const uint BobIntervalMs = 10;
 
     private readonly WidgetHost _host;
@@ -83,6 +84,17 @@ internal sealed class WidgetWindow : IDisposable
     private DateTime _displayChangingUntilUtc;
     private Rectangle _placementRect;
     private Rectangle _screenRect;
+    private IntPtr _startLayoutTaskbar;
+    private uint _startLayoutDpi;
+    private Rectangle _startLayoutTaskbarRect;
+    private DateTime _startLayoutCheckedUtc;
+    private int _startInset;
+    private Rectangle? _appClusterRect;
+    private bool _horizontalLayoutKnown;
+    private bool _layoutHasRoom = true;
+    private int? _loggedOccupiedRight;
+    private Rectangle? _loggedAppClusterRect;
+    private bool _startLayoutLogged;
     private readonly List<Rectangle> _chipBounds = [];
 
     internal WidgetWindow(WidgetHost host, WidgetMode requestedMode, bool anchorLeft, IntPtr monitor, bool isPrimary)
@@ -291,18 +303,91 @@ internal sealed class WidgetWindow : IDisposable
     /// <summary>Sets orientation and computes _width/_height: the strip fills the taskbar's thickness on
     /// the cross-axis (client height when horizontal, client width when vertical) and the measured
     /// content length on the along-axis.</summary>
-    private void MeasureForTaskbar(TaskbarInfo info)
+    private void MeasureForTaskbar(TaskbarInfo info, bool overlay)
     {
         _vertical = IsVerticalEdge(info.Edge);
         if (_vertical)
         {
+            _layoutHasRoom = true;
             _width = Math.Max(1, info.ClientRect.Width);
             _height = _renderer.Measure(_state, _dpi, vertical: true, int.MaxValue, _chipBounds);
         }
         else
         {
+            RefreshHorizontalLayout(info);
             _height = Math.Max(1, info.ClientRect.Height);
-            _width = _renderer.Measure(_state, _dpi, vertical: false, HorizontalBudget(info), _chipBounds);
+            bool anchorStart = overlay ? AnchorOppositeTray(info) : _anchorLeft;
+            int budget = HorizontalBudget(info, anchorStart);
+            _width = _renderer.Measure(_state, _dpi, vertical: false, budget, _chipBounds);
+            _layoutHasRoom = HasHorizontalRoom(budget, _width, _horizontalLayoutKnown, anchorStart);
+        }
+    }
+
+    /// <summary>Refreshes the measured start-side taskbar content without querying Explorer on every
+    /// render/reposition. Setting and display changes invalidate this cache immediately.</summary>
+    private void RefreshHorizontalLayout(TaskbarInfo info)
+    {
+        DateTime now = DateTime.UtcNow;
+        bool cacheValid = SameHorizontalLayoutSource(
+            _startLayoutTaskbar,
+            _startLayoutDpi,
+            _startLayoutTaskbarRect,
+            info.TaskbarHwnd,
+            _dpi,
+            info.TaskbarRect) &&
+            now - _startLayoutCheckedUtc < TimeSpan.FromSeconds(2);
+        if (cacheValid)
+        {
+            return;
+        }
+
+        Rectangle? fallbackCluster = TaskbarInterop.TryGetAppClusterRect(info.TaskbarHwnd);
+        bool sameSource = SameHorizontalLayoutSource(
+            _startLayoutTaskbar,
+            _startLayoutDpi,
+            _startLayoutTaskbarRect,
+            info.TaskbarHwnd,
+            _dpi,
+            info.TaskbarRect);
+        TaskbarStartLayout layout = TaskbarStartOccupancy.Measure(info.TaskbarHwnd, info.TaskbarRect, fallbackCluster);
+        _startLayoutTaskbar = info.TaskbarHwnd;
+        _startLayoutDpi = _dpi;
+        _startLayoutTaskbarRect = info.TaskbarRect;
+        _startLayoutCheckedUtc = now;
+        if (layout.Status == TaskbarStartLayoutStatus.Failed)
+        {
+            if (!sameSource)
+            {
+                _horizontalLayoutKnown = false;
+                _appClusterRect = fallbackCluster;
+                _startInset = Scale(8);
+                _startLayoutLogged = false;
+            }
+
+            return;
+        }
+
+        _horizontalLayoutKnown = true;
+        _appClusterRect = layout.AppClusterRect ?? fallbackCluster;
+        _startInset = StartInset(info.TaskbarRect, layout.OccupiedRight, Scale(8));
+
+        if (!_startLayoutLogged || _loggedOccupiedRight != layout.OccupiedRight || _loggedAppClusterRect != _appClusterRect)
+        {
+            string occupied = layout.OccupiedRight?.ToString() ?? "none";
+            string cluster = _appClusterRect?.ToString() ?? "unknown";
+            WidgetLog.Write($"Taskbar start layout for 0x{info.TaskbarHwnd.ToInt64():X}: occupiedRight={occupied}; inset={_startInset}; appCluster={cluster}");
+            _loggedOccupiedRight = layout.OccupiedRight;
+            _loggedAppClusterRect = _appClusterRect;
+            _startLayoutLogged = true;
+        }
+    }
+
+    private void InvalidateHorizontalLayout(bool discardPending = true)
+    {
+        _startLayoutCheckedUtc = DateTime.MinValue;
+        if (discardPending)
+        {
+            TaskbarStartOccupancy.Invalidate(_taskbar);
         }
     }
 
@@ -310,17 +395,17 @@ internal sealed class WidgetWindow : IDisposable
     /// Free span (physical px) the horizontal strip may occupy without colliding with the centered
     /// taskbar apps: from the tray leftward (right-anchored) or from the left edge rightward
     /// (left-anchored) up to the app cluster. Falls back to the taskbar centre when the app band can't be
-    /// located, and never returns less than a single compact chip so the widget always shows something.
+    /// located. A zero span is preserved so placement can hide instead of overlapping occupied UI.
     /// </summary>
-    private int HorizontalBudget(TaskbarInfo info)
+    private int HorizontalBudget(TaskbarInfo info, bool anchorStart)
     {
         int gap = Scale(6);
         int center = info.TaskbarRect.Left + (info.TaskbarRect.Width / 2);
-        Rectangle? cluster = TaskbarInterop.TryGetAppClusterRect(info.TaskbarHwnd);
+        Rectangle? cluster = _appClusterRect ?? TaskbarInterop.TryGetAppClusterRect(info.TaskbarHwnd);
         int budget;
-        if (_anchorLeft)
+        if (anchorStart)
         {
-            int start = info.TaskbarRect.Left + Scale(8);
+            int start = info.TaskbarRect.Left + Math.Max(Scale(8), _startInset);
             int clusterLeft = cluster?.Left ?? center;
             budget = clusterLeft - start - gap;
         }
@@ -331,14 +416,29 @@ internal sealed class WidgetWindow : IDisposable
             budget = trayLeft - clusterRight - (2 * gap);
         }
 
-        return Math.Max(Scale(30), budget);
+        return Math.Max(0, budget);
     }
+
+    internal static int StartInset(Rectangle taskbarRect, int? occupiedRight, int padding) =>
+        occupiedRight is null ? padding : Math.Max(padding, occupiedRight.Value - taskbarRect.Left + padding);
+
+    internal static bool HasHorizontalRoom(int budget, int measuredWidth, bool startLayoutKnown, bool anchorStart) =>
+        budget > 0 && measuredWidth <= budget && (!anchorStart || startLayoutKnown);
+
+    internal static bool SameHorizontalLayoutSource(
+        IntPtr cachedTaskbar,
+        uint cachedDpi,
+        Rectangle cachedTaskbarRect,
+        IntPtr taskbar,
+        uint dpi,
+        Rectangle taskbarRect) =>
+        cachedTaskbar == taskbar && cachedDpi == dpi && cachedTaskbarRect == taskbarRect;
 
     private void CreateEmbedded(TaskbarInfo info)
     {
         DestroyWidget();
         _attemptedMode = WidgetMode.Embedded;
-        MeasureForTaskbar(info);
+        MeasureForTaskbar(info, overlay: false);
         _widget = NativeMethods.CreateWindowExW(NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_LAYERED, _widgetClassName, null, NativeMethods.WS_POPUP, 0, 0, _width, _height, IntPtr.Zero, IntPtr.Zero, _module, IntPtr.Zero);
         // The SetParent return value (previous parent) is ignored: NULL is a legitimate success for a
         // top-level WS_POPUP window, so ProbeEmbedded validates the reparent by inspection instead.
@@ -353,7 +453,8 @@ internal sealed class WidgetWindow : IDisposable
         exStyle |= NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_LAYERED;
         _ = NativeMethods.SetWindowLongPtrW(_widget, NativeMethods.GWL_EXSTYLE, new IntPtr(exStyle));
         PositionEmbedded(info);
-        _ = NativeMethods.SetWindowPos(_widget, NativeMethods.HWND_TOP, _placementRect.X, _placementRect.Y, _width, _height, NativeMethods.SWP_FRAMECHANGED | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
+        uint visibility = _layoutHasRoom ? NativeMethods.SWP_SHOWWINDOW : NativeMethods.SWP_HIDEWINDOW;
+        _ = NativeMethods.SetWindowPos(_widget, NativeMethods.HWND_TOP, _placementRect.X, _placementRect.Y, _width, _height, NativeMethods.SWP_FRAMECHANGED | NativeMethods.SWP_NOACTIVATE | visibility);
         bool rendered = Render();
         UpdateBobTimer();
         bool valid = ProbeEmbedded(rendered);
@@ -362,6 +463,7 @@ internal sealed class WidgetWindow : IDisposable
             _probeFailures = 0;
             _attemptedMode = null;
             SetEffectiveMode(WidgetMode.Embedded, "embedded");
+            _ = NativeMethods.SetTimer(_controller, StartLayoutRefreshTimer, 5000, IntPtr.Zero);
             return;
         }
 
@@ -388,16 +490,18 @@ internal sealed class WidgetWindow : IDisposable
 
         _taskbar = info.TaskbarHwnd;
         _tray = info.TrayHwnd;
-        MeasureForTaskbar(info);
+        MeasureForTaskbar(info, overlay: true);
         _widget = NativeMethods.CreateWindowExW(NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_TOPMOST | NativeMethods.WS_EX_LAYERED, _widgetClassName, null, NativeMethods.WS_POPUP, 0, 0, _width, _height, IntPtr.Zero, IntPtr.Zero, _module, IntPtr.Zero);
         PositionOverlay(info);
-        _ = NativeMethods.SetWindowPos(_widget, NativeMethods.HWND_TOPMOST, _screenRect.X, _screenRect.Y, _width, _height, NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
+        uint visibility = _layoutHasRoom ? NativeMethods.SWP_SHOWWINDOW : NativeMethods.SWP_HIDEWINDOW;
+        _ = NativeMethods.SetWindowPos(_widget, NativeMethods.HWND_TOPMOST, _screenRect.X, _screenRect.Y, _width, _height, NativeMethods.SWP_NOACTIVATE | visibility);
         _ = Render();
         UpdateBobTimer();
         SetEffectiveMode(WidgetMode.Overlay, reason);
         // Poll for fullscreen/auto-hide often enough that the overlay disappears promptly when a video
         // goes fullscreen (a topmost overlay would otherwise stay drawn over borderless-fullscreen apps).
         _ = NativeMethods.SetTimer(_controller, OverlayPollTimer, 400, IntPtr.Zero);
+        _ = NativeMethods.SetTimer(_controller, StartLayoutRefreshTimer, 5000, IntPtr.Zero);
     }
 
     private void DestroyWidget()
@@ -406,6 +510,7 @@ internal sealed class WidgetWindow : IDisposable
         {
             _ = NativeMethods.KillTimer(_controller, EmbedProbeRetryTimer);
             _ = NativeMethods.KillTimer(_controller, BobTimer);
+            _ = NativeMethods.KillTimer(_controller, StartLayoutRefreshTimer);
         }
 
         _bobActive = false;
@@ -449,7 +554,7 @@ internal sealed class WidgetWindow : IDisposable
         {
             if (_anchorLeft)
             {
-                x = Scale(8);
+                x = Math.Max(Scale(8), _startInset);
             }
             else if (info.TrayRect.IsEmpty)
             {
@@ -490,7 +595,7 @@ internal sealed class WidgetWindow : IDisposable
         {
             // No tray on secondary taskbars: anchor to the taskbar's right edge instead.
             int trayLeft = info.TrayRect.IsEmpty ? info.TaskbarRect.Right - Scale(2) : info.TrayRect.Left;
-            x = anchorStart ? info.TaskbarRect.Left + Scale(8) : trayLeft - _width - gap;
+            x = anchorStart ? info.TaskbarRect.Left + Math.Max(Scale(8), _startInset) : trayLeft - _width - gap;
             y = info.TaskbarRect.Top + Math.Max(0, (info.TaskbarRect.Height - _height) / 2);
         }
 
@@ -522,6 +627,11 @@ internal sealed class WidgetWindow : IDisposable
 
     private bool Render()
     {
+        if (!_layoutHasRoom)
+        {
+            return true;
+        }
+
         if (_widget == IntPtr.Zero)
         {
             return false;
@@ -537,7 +647,7 @@ internal sealed class WidgetWindow : IDisposable
     /// <summary>Starts or stops the bob animation timer based on whether any chip requests attention.</summary>
     private void UpdateBobTimer()
     {
-        bool wanted = _widget != IntPtr.Zero && _controller != IntPtr.Zero;
+        bool wanted = _widget != IntPtr.Zero && _controller != IntPtr.Zero && _layoutHasRoom;
         bool anyAttention = false;
         for (int i = 0; i < _state.Chips.Count; i++)
         {
@@ -595,6 +705,11 @@ internal sealed class WidgetWindow : IDisposable
     private bool ProbeEmbedded(bool rendered)
     {
         if (Suspended())
+        {
+            return true;
+        }
+
+        if (!_layoutHasRoom)
         {
             return true;
         }
@@ -692,11 +807,13 @@ internal sealed class WidgetWindow : IDisposable
             _dpi = 96;
         }
 
-        MeasureForTaskbar(info);
+        bool overlay = _effectiveMode == WidgetMode.Overlay;
+        MeasureForTaskbar(info, overlay);
         if (_effectiveMode == WidgetMode.Embedded || _attemptedMode == WidgetMode.Embedded)
         {
             PositionEmbedded(info);
-            _ = NativeMethods.SetWindowPos(_widget, NativeMethods.HWND_TOP, _placementRect.X, _placementRect.Y, _width, _height, NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
+            uint visibility = _layoutHasRoom ? NativeMethods.SWP_SHOWWINDOW : NativeMethods.SWP_HIDEWINDOW;
+            _ = NativeMethods.SetWindowPos(_widget, NativeMethods.HWND_TOP, _placementRect.X, _placementRect.Y, _width, _height, NativeMethods.SWP_NOACTIVATE | visibility);
             bool rendered = Render();
             if (ProbeEmbedded(rendered))
             {
@@ -730,7 +847,7 @@ internal sealed class WidgetWindow : IDisposable
         // Use the monitor the overlay is ACTUALLY on (not the cached _monitor, which can disagree with
         // the live layout on multi-monitor setups and then silently defeat the fullscreen check).
         IntPtr liveMonitor = NativeMethods.MonitorFromWindow(_widget, NativeMethods.MONITOR_DEFAULTTONEAREST);
-        bool hide = TaskbarInterop.IsAutoHidden() || FullscreenDetector.IsForegroundFullscreenOnMonitor(liveMonitor, _widget);
+        bool hide = !_layoutHasRoom || TaskbarInterop.IsAutoHidden() || FullscreenDetector.IsForegroundFullscreenOnMonitor(liveMonitor, _widget);
         if (hide != _overlayHidden)
         {
             _overlayHidden = hide;
@@ -784,10 +901,12 @@ internal sealed class WidgetWindow : IDisposable
                 case NativeMethods.WM_DISPLAYCHANGE:
                 case NativeMethods.WM_DPICHANGED:
                     _displayChangingUntilUtc = DateTime.UtcNow.AddSeconds(2);
+                    InvalidateHorizontalLayout();
                     _ = NativeMethods.PostMessageW(hwnd, RepositionMessage, IntPtr.Zero, IntPtr.Zero);
                     return IntPtr.Zero;
                 case NativeMethods.WM_SETTINGCHANGE:
                     _theme.NotifySettingChanged();
+                    InvalidateHorizontalLayout();
                     _ = NativeMethods.PostMessageW(hwnd, RepositionMessage, IntPtr.Zero, IntPtr.Zero);
                     return IntPtr.Zero;
                 case NativeMethods.WM_TIMER:
@@ -817,6 +936,11 @@ internal sealed class WidgetWindow : IDisposable
                             _lastBobOffset = bobOffset;
                             _ = Render();
                         }
+                    }
+                    else if ((nuint)wParam == StartLayoutRefreshTimer)
+                    {
+                        InvalidateHorizontalLayout(discardPending: false);
+                        Reposition();
                     }
 
                     return IntPtr.Zero;
@@ -974,6 +1098,7 @@ internal sealed class WidgetWindow : IDisposable
 
         if (hwnd == _taskbar || hwnd == _tray)
         {
+            InvalidateHorizontalLayout();
             _ = NativeMethods.SetTimer(_controller, RepositionTimer, 250, IntPtr.Zero);
         }
     }

@@ -15,5 +15,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\CodexWinBar.App\CodexWinBar.App.csproj" />
+    <ProjectReference Include="..\..\src\CodexWinBar.Widget\CodexWinBar.Widget.csproj" />
   </ItemGroup>
 </Project>

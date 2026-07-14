@@ -98,6 +98,9 @@ internal sealed class WidgetWindow : IDisposable
     private int _loggedBudget = int.MinValue;
     private int _loggedFitWidth = int.MinValue;
     private bool _loggedAnchorStart;
+    private bool _overlayDecisionLogged;
+    private bool _lastLoggedOverlayHide;
+    private DateTime _lastOverlayLogUtc = DateTime.MinValue;
     private readonly List<Rectangle> _chipBounds = [];
 
     internal WidgetWindow(WidgetHost host, WidgetMode requestedMode, bool anchorLeft, IntPtr monitor, bool isPrimary)
@@ -840,20 +843,21 @@ internal sealed class WidgetWindow : IDisposable
         UpdateBobTimer();
     }
 
-    // True when an auto-hide taskbar is CURRENTLY retracted (slid off to its thin hover sliver), as
-    // opposed to TaskbarInterop.IsAutoHidden(), which only reports that auto-hide is enabled. Windows
-    // keeps the retracted bar full-size but positioned mostly off the monitor, so only a few pixels of
-    // its thickness stay on-screen; that thin sliver is how we tell "gone" from "shown".
-    private bool TaskbarCurrentlyRetracted(IntPtr monitor)
-    {
-        if (!TaskbarInterop.IsAutoHidden() || _taskbar == IntPtr.Zero || monitor == IntPtr.Zero)
-        {
-            return false;
-        }
+    // Full breakdown of the retract check, so diagnostics can see the measurements behind it.
+    private readonly record struct RetractInfo(
+        bool Retracted, bool AutoHideEnabled, int OnScreenThickness,
+        NativeMethods.RECT BarRect, NativeMethods.RECT MonitorRect);
 
-        if (!NativeMethods.GetWindowRect(_taskbar, out NativeMethods.RECT bar))
+    // Describes whether an auto-hide taskbar is CURRENTLY retracted (slid off to its thin hover sliver),
+    // as opposed to TaskbarInterop.IsAutoHidden(), which only reports that auto-hide is enabled. Windows
+    // keeps the retracted bar full-size but positioned mostly off the monitor, so only a few pixels of its
+    // thickness stay on-screen; that thin sliver is how we tell "gone" from "shown".
+    private RetractInfo DescribeRetract(IntPtr monitor)
+    {
+        bool autoHide = TaskbarInterop.IsAutoHidden();
+        if (!autoHide || _taskbar == IntPtr.Zero || monitor == IntPtr.Zero || !NativeMethods.GetWindowRect(_taskbar, out NativeMethods.RECT bar))
         {
-            return false;
+            return new RetractInfo(false, autoHide, -1, default, default);
         }
 
         NativeMethods.MONITORINFO mi = new()
@@ -862,7 +866,7 @@ internal sealed class WidgetWindow : IDisposable
         };
         if (!NativeMethods.GetMonitorInfoW(monitor, ref mi))
         {
-            return false;
+            return new RetractInfo(false, autoHide, -1, bar, default);
         }
 
         int onScreenWidth = Math.Min(bar.Right, mi.rcMonitor.Right) - Math.Max(bar.Left, mi.rcMonitor.Left);
@@ -870,7 +874,7 @@ internal sealed class WidgetWindow : IDisposable
         // A bar's thickness is its short dimension (height for a bottom/top bar, width for a side bar).
         // When retracted, only a ~1-2px sliver stays on-screen; a shown bar is its full ~48px.
         int onScreenThickness = _vertical ? onScreenWidth : onScreenHeight;
-        return onScreenThickness <= Scale(6);
+        return new RetractInfo(onScreenThickness <= Scale(6), autoHide, onScreenThickness, bar, mi.rcMonitor);
     }
 
     private void UpdateOverlayVisibility()
@@ -881,18 +885,50 @@ internal sealed class WidgetWindow : IDisposable
         }
 
         // Use the monitor the overlay is ACTUALLY on (not the cached _monitor, which can disagree with
-        // the live layout on multi-monitor setups and then silently defeat the fullscreen check).
+        // the live layout on multi-monitor setups and then silently defeat the checks).
         IntPtr liveMonitor = NativeMethods.MonitorFromWindow(_widget, NativeMethods.MONITOR_DEFAULTTONEAREST);
+        RetractInfo retract = DescribeRetract(liveMonitor);
+        FullscreenInfo full = FullscreenDetector.Describe(liveMonitor, _widget);
         // The widget tracks the taskbar like a real part of it: it hides while an auto-hide bar is
         // retracted (slid away) and returns when it slides back up, and it hides for a genuine fullscreen
         // app. It does NOT hide merely because auto-hide is enabled — only while the bar is actually gone.
-        bool hide = !_layoutHasRoom || TaskbarCurrentlyRetracted(liveMonitor) || FullscreenDetector.IsForegroundFullscreenOnMonitor(liveMonitor, _widget);
+        bool hide = !_layoutHasRoom || retract.Retracted || full.IsFullscreen;
+        LogOverlayDecision(hide, liveMonitor, retract, full);
         if (hide != _overlayHidden)
         {
             _overlayHidden = hide;
             _ = NativeMethods.ShowWindow(_widget, hide ? NativeMethods.SW_HIDE : NativeMethods.SW_SHOWNOACTIVATE);
         }
     }
+
+    // Comprehensive per-instance diagnostics for the overlay show/hide decision. Logs on every change of
+    // the decision (so a flash between hidden/shown shows up as rapid transitions) and otherwise at most
+    // once every 2s (so a steady state — e.g. "always shown on one monitor" — still records its inputs).
+    // Two widgets (one per taskbar) log independently; compare their lines to see why the monitors differ.
+    private void LogOverlayDecision(bool hide, IntPtr liveMonitor, RetractInfo retract, FullscreenInfo full)
+    {
+        DateTime now = DateTime.UtcNow;
+        bool changed = hide != _lastLoggedOverlayHide || !_overlayDecisionLogged;
+        if (!changed && (now - _lastOverlayLogUtc) < TimeSpan.FromSeconds(2))
+        {
+            return;
+        }
+
+        _overlayDecisionLogged = true;
+        _lastOverlayLogUtc = now;
+        _lastLoggedOverlayHide = hide;
+
+        string role = _isPrimary ? "primary" : "secondary";
+        string fgClass = NativeMethods.GetWindowClass(full.Foreground);
+        WidgetLog.Write(
+            $"Overlay decision [{role} tb=0x{_taskbar.ToInt64():X} assignedMon=0x{_monitor.ToInt64():X} liveMon=0x{liveMonitor.ToInt64():X} dpi={_dpi} vertical={_vertical}]: " +
+            $"HIDE={hide} changed={changed} | layoutHasRoom={_layoutHasRoom} | " +
+            $"retract{{enabled={retract.AutoHideEnabled} thickness={retract.OnScreenThickness} retracted={retract.Retracted} bar={Fmt(retract.BarRect)} mon={Fmt(retract.MonitorRect)}}} | " +
+            $"fullscreen{{fg=0x{full.Foreground.ToInt64():X} '{fgClass}' same={full.SameMonitor} zoomed={full.Zoomed} covers={full.CoversMonitor} isFull={full.IsFullscreen} fgRect={Fmt(full.ForegroundRect)}}} | " +
+            $"placement={_placementRect.X},{_placementRect.Y},{_placementRect.Width}x{_placementRect.Height} overlayHidden={_overlayHidden}");
+    }
+
+    private static string Fmt(NativeMethods.RECT r) => $"{r.Left},{r.Top},{r.Right},{r.Bottom}";
 
     private void SetEffectiveMode(WidgetMode mode, string reason)
     {

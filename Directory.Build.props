@@ -8,7 +8,7 @@
     <!-- InvariantGlobalization is incompatible with WPF text layout ("Cannot find non-neutral
          culture related to 'en-us'" on Window.Show) — do not re-enable. -->
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
-    <Version>1.1.12</Version>
+    <Version>1.1.13</Version>
     <Authors>Itay Cohen</Authors>
     <Company>Itay Cohen</Company>
     <Product>CodexWinBar</Product>

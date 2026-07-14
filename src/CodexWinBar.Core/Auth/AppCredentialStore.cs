@@ -5,7 +5,7 @@ namespace CodexWinBar.Core.Auth;
 
 /// <summary>
 /// App-owned credential storage: one DPAPI-encrypted (current-user scope) JSON document per provider
-/// under %LOCALAPPDATA%\CodexWinBar\credentials. Providers sign in through the app and store tokens
+/// under %LOCALAPPDATA%\CodexWinBarData\credentials. Providers sign in through the app and store tokens
 /// here; the app never reads other tools' credential files.
 /// </summary>
 public sealed class AppCredentialStore(Func<string, string?> env, Action<string>? log = null)
@@ -27,7 +27,9 @@ public sealed class AppCredentialStore(Func<string, string?> env, Action<string>
             localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         }
 
-        return Path.Combine(localAppData, "CodexWinBar", "credentials");
+        var directory = Path.Combine(localAppData, "CodexWinBarData", "credentials");
+        MigrateLegacyCredentials(Path.Combine(localAppData, "CodexWinBar", "credentials"), directory);
+        return directory;
     }
 
     /// <summary>Whether a credential document exists for <paramref name="name"/>.</summary>
@@ -85,6 +87,32 @@ public sealed class AppCredentialStore(Func<string, string?> env, Action<string>
     public void Delete(string name) => TryDelete(this.PathFor(name));
 
     private string PathFor(string name) => Path.Combine(this.ResolveDirectory(), name + ".dat");
+
+    private static void MigrateLegacyCredentials(string legacyDirectory, string directory)
+    {
+        if (!Directory.Exists(legacyDirectory))
+        {
+            return;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(directory);
+            foreach (var legacyPath in Directory.EnumerateFiles(legacyDirectory, "*.dat", SearchOption.TopDirectoryOnly))
+            {
+                var destination = Path.Combine(directory, Path.GetFileName(legacyPath));
+                if (!File.Exists(destination))
+                {
+                    File.Copy(legacyPath, destination);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // A failed migration must not stop startup. The installer also performs this copy before
+            // replacing older Velopack installs, where the legacy directory lived under the app root.
+        }
+    }
 
     private static void TryDelete(string path)
     {

@@ -1,7 +1,7 @@
 # CodexWinBar installer (PowerShell).
 #
 # Usage (PowerShell):
-#   irm https://raw.githubusercontent.com/ItayCohen-Prog/CodexWinBar/main/install.ps1 | iex
+#   irm https://codexwinbar.webivize.com | iex
 #
 # Downloads the latest published CodexWinBar release, verifies its SHA-256 against the checksum
 # GitHub publishes for the asset, and installs it to %LOCALAPPDATA%\CodexWinBar (per-user, no admin).
@@ -53,14 +53,45 @@ if ($expected) {
     Write-Host "SHA-256: $actual (no published checksum to compare against)" -ForegroundColor Yellow
 }
 
-Write-Host 'Installing...' -ForegroundColor Cyan
-Start-Process -FilePath $dest -ArgumentList '--silent' -Wait
-Remove-Item $dest -ErrorAction SilentlyContinue
+$legacyCredentials = Join-Path $env:LOCALAPPDATA 'CodexWinBar\credentials'
+$safeCredentials = Join-Path $env:LOCALAPPDATA 'CodexWinBarData\credentials'
+$credentialBackup = $null
+if (Test-Path -LiteralPath $legacyCredentials) {
+    # Versions through 1.1.7 stored app-owned OAuth credentials inside Velopack's install root.
+    # A version upgrade can replace that root, so preserve the encrypted files before setup runs.
+    $credentialBackup = Join-Path $env:TEMP ("CodexWinBar-credentials-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $credentialBackup | Out-Null
+    Get-ChildItem -LiteralPath $legacyCredentials -Filter '*.dat' -File -ErrorAction SilentlyContinue |
+        Copy-Item -Destination $credentialBackup -Force
+}
+
+$installed = $false
+try {
+    Write-Host 'Installing...' -ForegroundColor Cyan
+    $installer = Start-Process -FilePath $dest -ArgumentList '--silent' -PassThru -Wait
+    if ($installer.ExitCode -ne 0) { throw "CodexWinBar setup failed with exit code $($installer.ExitCode)." }
+
+    if ($credentialBackup -and (Test-Path -LiteralPath $credentialBackup)) {
+        New-Item -ItemType Directory -Path $safeCredentials -Force | Out-Null
+        Get-ChildItem -LiteralPath $credentialBackup -Filter '*.dat' -File -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $safeCredentials -Force
+    }
+
+    $installed = $true
+}
+finally {
+    if (-not $installed -and $credentialBackup -and (Test-Path -LiteralPath $credentialBackup)) {
+        New-Item -ItemType Directory -Path $legacyCredentials -Force | Out-Null
+        Get-ChildItem -LiteralPath $credentialBackup -Filter '*.dat' -File -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $legacyCredentials -Force
+    }
+    if ($credentialBackup) { Remove-Item $credentialBackup -Recurse -Force -ErrorAction SilentlyContinue }
+    Remove-Item $dest -Force -ErrorAction SilentlyContinue
+}
 
 # Launch it so the widget appears immediately (Velopack installs under %LOCALAPPDATA%\CodexWinBar).
-$exe = Get-ChildItem (Join-Path $env:LOCALAPPDATA 'CodexWinBar') -Recurse -Filter 'CodexWinBar.exe' `
-    -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\packages\\' } | Select-Object -First 1
-if ($exe) { Start-Process $exe.FullName }
+$currentExe = Join-Path $env:LOCALAPPDATA 'CodexWinBar\current\CodexWinBar.exe'
+if (Test-Path -LiteralPath $currentExe) { Start-Process $currentExe }
 
 Write-Host "CodexWinBar $($release.tag_name) installed." -ForegroundColor Green
 Write-Host 'A setup window is opening — connect the providers you use and the widget appears on your taskbar.'

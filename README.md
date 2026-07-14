@@ -40,7 +40,6 @@ and weekly windows, reset countdowns, credits, and live provider-status incident
 | **Codex** | ChatGPT backend usage + reset credits | Codex CLI `~/.codex/auth.json` (OAuth, auto-refresh) or API key |
 | **Claude** | `api.anthropic.com` OAuth usage | Claude Code `~/.claude/.credentials.json` (auto-refresh) |
 | **Copilot** | `copilot_internal/user` quota snapshots | GitHub device flow (built into Settings) |
-| **Gemini** | Cloud Code quota API | Gemini CLI `~/.gemini/oauth_creds.json` |
 | **OpenRouter** | credits + key limits | API key |
 | **OpenAI Admin** | org cost dashboards | Admin API key |
 | **z.ai** | coding-plan quota | API key |
@@ -55,13 +54,25 @@ browser-cookie and WebView2 seams (Windsurf, Ollama quota, …) are deferred to 
 Fastest — one line of PowerShell, no admin, no SmartScreen prompt:
 
 ```powershell
-irm https://raw.githubusercontent.com/ItayCohen-Prog/CodexWinBar/main/install.ps1 | iex
+irm https://codexwinbar.webivize.com | iex
 ```
 
 This grabs the latest release, **verifies its SHA-256 against the checksum GitHub publishes for the
 asset**, and installs it per-user. Because the download runs through PowerShell (not a browser) it never
 picks up the Mark of the Web, so there's no "Unknown publisher" prompt. The script is short and
 [readable](install.ps1) — it only ever downloads from this repo's own GitHub releases.
+
+### Updating
+
+From version 1.1.8 onward, open **Settings → General → App updates** to check, download, and restart into
+the latest release. If the taskbar widget is inaccessible, Settings can also be opened directly:
+
+```powershell
+& "$env:LOCALAPPDATA\CodexWinBar\current\CodexWinBar.exe" --settings
+```
+
+Older installs can update in place by running the one-line installer again. There is no need to uninstall;
+the installer preserves provider sign-ins and settings.
 
 Or with [winget](https://learn.microsoft.com/windows/package-manager/):
 

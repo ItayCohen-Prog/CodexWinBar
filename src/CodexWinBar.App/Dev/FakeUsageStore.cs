@@ -1,11 +1,12 @@
 using CodexWinBar.Core.Models;
 using CodexWinBar.Core.Providers;
 using CodexWinBar.Core.Scheduling;
+using CodexWinBar.Providers;
 
 namespace CodexWinBar.App.Dev;
 
 /// <summary>
-/// Dev-only <see cref="IUsageStore"/> that serves synthetic, provider-specific usage for every provider
+/// Dev-only <see cref="IUsageStore"/> that serves synthetic, provider-specific usage for every shipping provider
 /// so the UI can be exercised end-to-end without real subscriptions. Enabled by setting the environment
 /// variable <c>CODEXWINBAR_FAKE=1</c>. Each provider is shaped to mirror the field mix its real parser
 /// emits (percent windows vs. scalar value fields vs. credits vs. service status), which is exactly what
@@ -18,11 +19,12 @@ internal sealed class FakeUsageStore : IUsageStore
     public FakeUsageStore(Action<string>? log = null)
     {
         var now = DateTimeOffset.UtcNow;
-        var built = Build(now);
+        var supported = ProviderCatalog.CreateAll().Select(item => item.Id).ToHashSet();
+        var built = Build(now).Where(item => supported.Contains(item.Provider)).ToArray();
         // CODEXWINBAR_FAKE_COUNT caps how many providers are served, to exercise the widget's
         // space-aware tiers (Full/Medium/Compact) at different provider counts.
         var limit = Environment.GetEnvironmentVariable("CODEXWINBAR_FAKE_COUNT");
-        this.states = int.TryParse(limit, out var n) && n >= 0 && n < built.Count
+        this.states = int.TryParse(limit, out var n) && n >= 0 && n < built.Length
             ? [.. built.Take(n)]
             : built;
         log?.Invoke($"FakeUsageStore active: serving {this.states.Count} synthetic providers.");

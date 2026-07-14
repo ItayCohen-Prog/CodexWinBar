@@ -16,6 +16,7 @@ using Microsoft.Win32;
 using CodexWinBar.App.Assets;
 using CodexWinBar.App.Interop;
 using CodexWinBar.App.Startup;
+using CodexWinBar.App.Updates;
 using CodexWinBar.Core.Auth;
 using CodexWinBar.Core.Config;
 using CodexWinBar.Core.Providers;
@@ -40,6 +41,8 @@ public sealed class SettingsWindow : Window
     private readonly UiSettingsStore uiStore;
     private readonly IUsageStore usageStore;
     private readonly Action applySettings;
+    private readonly Func<AppUpdateStatus> getUpdateStatus;
+    private readonly Action onUpdateAction;
     private readonly IReadOnlyList<ProviderDescriptor> providers;
     private readonly Grid contentHost = new();
     private readonly List<NavRow> navRows = [];
@@ -55,14 +58,24 @@ public sealed class SettingsWindow : Window
     private readonly Dictionary<ProviderId, CancellationTokenSource> oauthSignIns = [];
     private TextBlock? activeCopilotStatus;
     private StackPanel? activeCopilotDetail;
+    private TextBlock? updateStatusText;
+    private Button? updateActionButton;
     private string activePane = "General";
 
-    private SettingsWindow(ConfigStore cfg, UiSettingsStore ui, IUsageStore store, Action applySettings)
+    private SettingsWindow(
+        ConfigStore cfg,
+        UiSettingsStore ui,
+        IUsageStore store,
+        Action applySettings,
+        Func<AppUpdateStatus> getUpdateStatus,
+        Action onUpdateAction)
     {
         this.configStore = cfg;
         this.uiStore = ui;
         this.usageStore = store;
         this.applySettings = applySettings;
+        this.getUpdateStatus = getUpdateStatus;
+        this.onUpdateAction = onUpdateAction;
         this.providers = ProviderCatalog.CreateAll();
         this.isDark = !SystemAppsUseLightTheme();
         this.accentBrush = new SolidColorBrush(ReadAccentColor());
@@ -108,7 +121,13 @@ public sealed class SettingsWindow : Window
     /// <summary>
     /// Shows the singleton settings window, or activates the existing instance.
     /// </summary>
-    public static void ShowOrActivate(ConfigStore cfg, UiSettingsStore ui, IUsageStore store, Action applySettings)
+    internal static void ShowOrActivate(
+        ConfigStore cfg,
+        UiSettingsStore ui,
+        IUsageStore store,
+        Action applySettings,
+        Func<AppUpdateStatus> getUpdateStatus,
+        Action onUpdateAction)
     {
         if (current is { IsVisible: true })
         {
@@ -121,9 +140,19 @@ public sealed class SettingsWindow : Window
             return;
         }
 
-        current = new SettingsWindow(cfg, ui, store, applySettings);
+        current = new SettingsWindow(cfg, ui, store, applySettings, getUpdateStatus, onUpdateAction);
         current.Show();
         current.Activate();
+    }
+
+    internal static void NotifyUpdateStatus(AppUpdateStatus status)
+    {
+        if (current is not { } window)
+        {
+            return;
+        }
+
+        _ = window.Dispatcher.BeginInvoke(() => window.ApplyUpdateStatus(status));
     }
 
     private void OnSourceInitialized(object? sender, EventArgs e)
@@ -248,6 +277,33 @@ public sealed class SettingsWindow : Window
         group.Children.Add(this.SettingCard("\uE9D9", "Provider status checks", "Poll provider status pages for incidents",
             new ToggleSwitch(settings.StatusChecksEnabled, isChecked => this.SaveUi(ui => ui.StatusChecksEnabled = isChecked))));
 
+        var updateControls = new StackPanel
+        {
+            MinWidth = 220,
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        this.updateStatusText = new TextBlock
+        {
+            MaxWidth = 270,
+            FontSize = 12,
+            TextAlignment = TextAlignment.Right,
+            TextWrapping = TextWrapping.Wrap,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 0, 8, 6),
+        };
+        this.updateStatusText.SetResourceReference(TextBlock.ForegroundProperty, "SettingsMutedForeground");
+        updateControls.Children.Add(this.updateStatusText);
+        this.updateActionButton = Button("Check now", this.onUpdateAction, accent: true);
+        this.updateActionButton.HorizontalAlignment = HorizontalAlignment.Right;
+        this.updateActionButton.Margin = new Thickness(0);
+        updateControls.Children.Add(this.updateActionButton);
+        group.Children.Add(this.SettingCard(
+            "\uE895",
+            "App updates",
+            "Check, download, and install CodexWinBar releases without opening the taskbar flyout",
+            updateControls));
+        this.ApplyUpdateStatus(this.getUpdateStatus());
+
         group.Children.Add(this.CreateQuotaNotificationsCard(settings));
 
         Border? underuseCard = null;
@@ -280,6 +336,19 @@ public sealed class SettingsWindow : Window
             underuseCard.IsEnabled = enabled;
             underuseCard.Opacity = enabled ? 1.0 : 0.55;
         }
+    }
+
+    private void ApplyUpdateStatus(AppUpdateStatus status)
+    {
+        if (this.updateStatusText is null || this.updateActionButton is null)
+        {
+            return;
+        }
+
+        var presentation = AppUpdatePresentations.For(status);
+        this.updateStatusText.Text = presentation.Status;
+        this.updateActionButton.Content = presentation.ButtonLabel;
+        this.updateActionButton.IsEnabled = presentation.ButtonEnabled;
     }
 
     private void ShowDisplay()

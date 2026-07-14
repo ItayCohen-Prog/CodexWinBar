@@ -7,6 +7,7 @@ using CodexWinBar.App.Flyout;
 using CodexWinBar.App.Notifications;
 using CodexWinBar.App.Settings;
 using CodexWinBar.App.Tray;
+using CodexWinBar.App.Updates;
 using CodexWinBar.Core.Config;
 using CodexWinBar.Core.Models;
 using CodexWinBar.Core.Providers;
@@ -47,16 +48,17 @@ public static class Program
             return 0;
         }
 
+        var openSettings = args.Contains("--settings", StringComparer.OrdinalIgnoreCase);
         singleInstanceMutex = new Mutex(initiallyOwned: true, MutexName, out var createdNew);
         if (!createdNew)
         {
-            SendActivationToPrimary();
+            SendActivationToPrimary(openSettings ? "settings" : "show");
             singleInstanceMutex.Dispose();
             return 0;
         }
 
         var app = new App();
-        var shell = new AppShell(app);
+        var shell = new AppShell(app, openSettings);
         app.InitializeShell(shell);
         var exitCode = app.Run();
         singleInstanceMutex.ReleaseMutex();
@@ -64,14 +66,14 @@ public static class Program
         return exitCode;
     }
 
-    private static void SendActivationToPrimary()
+    private static void SendActivationToPrimary(string command)
     {
         try
         {
             using var pipe = new NamedPipeClientStream(".", PipeName, PipeDirection.Out);
             pipe.Connect(750);
             using var writer = new StreamWriter(pipe) { AutoFlush = true };
-            writer.WriteLine("show");
+            writer.WriteLine(command);
         }
         catch (Exception ex) when (ex is IOException or TimeoutException or UnauthorizedAccessException)
         {
@@ -88,6 +90,7 @@ internal sealed class AppShell : IDisposable
     /// </summary>
     private static readonly System.Drawing.Rectangle FallbackAnchor = new(0, 1_000_000, 1, 1);
     private readonly App app;
+    private readonly bool startWithSettings;
     private readonly RollingLog log;
     private readonly ConfigStore configStore;
     private readonly UiSettingsStore uiStore;
@@ -112,14 +115,17 @@ internal sealed class AppShell : IDisposable
     // Set once Velopack has downloaded + staged an update; the flyout shows a restart button for it.
     private UpdateManager? updateManager;
     private UpdateInfo? pendingUpdate;
+    private AppUpdateStatus updateStatus = new(AppUpdateStage.Idle);
+    private int updateCheckRunning;
     private System.Windows.Threading.DispatcherTimer? updateCheckTimer;
     // Test hook: CODEXWINBAR_FAKE_UPDATE=1 shows the update button and simulates the download flow;
     // =error drives it to the red error state instead. Inert (null) in normal use.
     private readonly string? fakeUpdate = Environment.GetEnvironmentVariable("CODEXWINBAR_FAKE_UPDATE");
 
-    public AppShell(App app)
+    public AppShell(App app, bool startWithSettings = false)
     {
         this.app = app;
+        this.startWithSettings = startWithSettings;
         this.log = new RollingLog();
         this.configStore = new ConfigStore(
             Environment.GetEnvironmentVariable,
@@ -171,10 +177,17 @@ internal sealed class AppShell : IDisposable
             new Action(() =>
             {
                 this.flyout.PreWarm();
-                this.ShowOnboardingIfFirstRun();
+                if (this.startWithSettings)
+                {
+                    this.OpenSettings();
+                }
+                else
+                {
+                    this.ShowOnboardingIfFirstRun();
+                }
                 if (this.fakeUpdate is not null)
                 {
-                    this.flyout.SetUpdateAvailable();
+                    this.SetUpdateStatus(new AppUpdateStatus(AppUpdateStage.Available, "test"));
                 }
             }));
     }
@@ -201,13 +214,28 @@ internal sealed class AppShell : IDisposable
     // Fire-and-forget update check. Velopack only manages updates for an installed copy (IsInstalled
     // guards dev/portable builds). When an update is found the flyout reveals a download button so the
     // user knows to apply it. Once an update is known, further checks are no-ops (the button is up).
-    private void CheckForUpdatesInBackground()
+    private void CheckForUpdatesInBackground(bool userInitiated = false)
     {
         if (this.pendingUpdate is not null)
+        {
+            var status = Volatile.Read(ref this.updateStatus);
+            if (status.Stage is AppUpdateStage.Idle or AppUpdateStage.Checking or
+                AppUpdateStage.UpToDate or AppUpdateStage.CheckError)
+            {
+                this.SetUpdateStatus(new AppUpdateStatus(
+                    AppUpdateStage.Available,
+                    this.pendingUpdate.TargetFullRelease.Version.ToString()));
+            }
+
+            return;
+        }
+
+        if (Interlocked.Exchange(ref this.updateCheckRunning, 1) != 0)
         {
             return;
         }
 
+        this.SetUpdateStatus(new AppUpdateStatus(AppUpdateStage.Checking));
         _ = Task.Run(async () =>
         {
             try
@@ -216,12 +244,17 @@ internal sealed class AppShell : IDisposable
                     new GithubSource("https://github.com/ItayCohen-Prog/CodexWinBar", accessToken: null, prerelease: false));
                 if (!manager.IsInstalled)
                 {
+                    this.SetUpdateStatus(new AppUpdateStatus(
+                        AppUpdateStage.CheckError,
+                        Error: "Update checks are available in an installed copy of CodexWinBar."));
                     return;
                 }
 
                 var update = await manager.CheckForUpdatesAsync().ConfigureAwait(false);
                 if (update is null)
                 {
+                    var currentVersion = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3);
+                    this.SetUpdateStatus(new AppUpdateStatus(AppUpdateStage.UpToDate, currentVersion));
                     return;
                 }
 
@@ -229,14 +262,65 @@ internal sealed class AppShell : IDisposable
                 // clicking it (StartUpdateDownload), so they see the progress and control the restart.
                 this.updateManager = manager;
                 this.pendingUpdate = update;
-                this.flyout.SetUpdateAvailable();
+                this.SetUpdateStatus(new AppUpdateStatus(
+                    AppUpdateStage.Available,
+                    update.TargetFullRelease.Version.ToString()));
                 this.Log($"Update {update.TargetFullRelease.Version} available; download button shown.");
             }
             catch (Exception ex)
             {
                 this.Log($"Update check failed: {ex.GetType().Name}: {ex.Message}");
+                this.SetUpdateStatus(new AppUpdateStatus(
+                    AppUpdateStage.CheckError,
+                    Error: userInitiated ? FriendlyUpdateError(ex) : "Couldn’t check for updates. Try again."));
+            }
+            finally
+            {
+                Interlocked.Exchange(ref this.updateCheckRunning, 0);
             }
         });
+    }
+
+    private void HandleSettingsUpdateAction()
+    {
+        switch (Volatile.Read(ref this.updateStatus).Stage)
+        {
+            case AppUpdateStage.Available:
+            case AppUpdateStage.DownloadError:
+                this.StartUpdateDownload();
+                break;
+            case AppUpdateStage.Ready:
+                this.ApplyPendingUpdate();
+                break;
+            case AppUpdateStage.Checking:
+            case AppUpdateStage.Downloading:
+                break;
+            default:
+                this.CheckForUpdatesInBackground(userInitiated: true);
+                break;
+        }
+    }
+
+    private void SetUpdateStatus(AppUpdateStatus status)
+    {
+        Volatile.Write(ref this.updateStatus, status);
+        SettingsWindow.NotifyUpdateStatus(status);
+
+        switch (status.Stage)
+        {
+            case AppUpdateStage.Available:
+                this.flyout.SetUpdateAvailable();
+                break;
+            case AppUpdateStage.Downloading:
+                this.flyout.SetUpdateProgress(status.Progress);
+                break;
+            case AppUpdateStage.Ready:
+                this.flyout.SetUpdateReady();
+                break;
+            case AppUpdateStage.DownloadError:
+                this.flyout.SetUpdateError(status.Error ?? "Update failed — try again");
+                break;
+        }
     }
 
     // Downloads the staged update, reporting progress to the flyout's ring; on success the flyout shows
@@ -258,14 +342,22 @@ internal sealed class AppShell : IDisposable
         {
             try
             {
-                await manager.DownloadUpdatesAsync(update, progress => this.flyout.SetUpdateProgress(progress)).ConfigureAwait(false);
-                this.flyout.SetUpdateReady();
+                var version = update.TargetFullRelease.Version.ToString();
+                this.SetUpdateStatus(new AppUpdateStatus(AppUpdateStage.Downloading, version));
+                await manager.DownloadUpdatesAsync(
+                    update,
+                    progress => this.SetUpdateStatus(new AppUpdateStatus(AppUpdateStage.Downloading, version, progress)))
+                    .ConfigureAwait(false);
+                this.SetUpdateStatus(new AppUpdateStatus(AppUpdateStage.Ready, version, 100));
                 this.Log($"Update {update.TargetFullRelease.Version} downloaded and staged.");
             }
             catch (Exception ex)
             {
                 this.Log($"Update download failed: {ex.GetType().Name}: {ex.Message}");
-                this.flyout.SetUpdateError(FriendlyUpdateError(ex));
+                this.SetUpdateStatus(new AppUpdateStatus(
+                    AppUpdateStage.DownloadError,
+                    update.TargetFullRelease.Version.ToString(),
+                    Error: FriendlyUpdateError(ex)));
             }
         });
     }
@@ -286,17 +378,20 @@ internal sealed class AppShell : IDisposable
         {
             for (var p = 0; p <= 100; p += 6)
             {
-                this.flyout.SetUpdateProgress(p);
+                this.SetUpdateStatus(new AppUpdateStatus(AppUpdateStage.Downloading, "test", p));
                 await Task.Delay(160).ConfigureAwait(false);
             }
 
             if (string.Equals(this.fakeUpdate, "error", StringComparison.OrdinalIgnoreCase))
             {
-                this.flyout.SetUpdateError("No internet connection");
+                this.SetUpdateStatus(new AppUpdateStatus(
+                    AppUpdateStage.DownloadError,
+                    "test",
+                    Error: "No internet connection"));
             }
             else
             {
-                this.flyout.SetUpdateReady();
+                this.SetUpdateStatus(new AppUpdateStatus(AppUpdateStage.Ready, "test", 100));
             }
         });
     }
@@ -404,7 +499,13 @@ internal sealed class AppShell : IDisposable
 
     private void OpenSettings()
     {
-        SettingsWindow.ShowOrActivate(this.configStore, this.uiStore, this.usageStore, this.ApplySettings);
+        SettingsWindow.ShowOrActivate(
+            this.configStore,
+            this.uiStore,
+            this.usageStore,
+            this.ApplySettings,
+            () => Volatile.Read(ref this.updateStatus),
+            this.HandleSettingsUpdateAction);
     }
 
     // First launch (no onboarding recorded yet) opens the connect-your-providers welcome. It marks
@@ -597,7 +698,11 @@ internal sealed class AppShell : IDisposable
                     await pipe.WaitForConnectionAsync(this.pipeCancellation.Token).ConfigureAwait(false);
                     using var reader = new StreamReader(pipe);
                     var line = await reader.ReadLineAsync(this.pipeCancellation.Token).ConfigureAwait(false);
-                    if (!string.IsNullOrWhiteSpace(line) && line.StartsWith("show", StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(line, "settings", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _ = this.app.Dispatcher.BeginInvoke(this.OpenSettings);
+                    }
+                    else if (!string.IsNullOrWhiteSpace(line) && line.StartsWith("show", StringComparison.OrdinalIgnoreCase))
                     {
                         // "show" opens the all-providers view; "show:<configId>" focuses one provider,
                         // which also drives a live provider switch when the flyout is already open.

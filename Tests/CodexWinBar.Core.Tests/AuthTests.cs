@@ -105,6 +105,25 @@ public sealed class AppCredentialStoreTests : IDisposable
         Assert.DoesNotContain("super-secret-token-value", asText);
     }
 
+    [Fact]
+    public void Default_directory_migrates_credentials_out_of_legacy_install_root()
+    {
+        var localAppData = Path.Combine(this.directory, "local");
+        var legacy = Path.Combine(localAppData, "CodexWinBar", "credentials");
+        Directory.CreateDirectory(legacy);
+        File.WriteAllBytes(Path.Combine(legacy, "codex.dat"), [1, 2, 3]);
+        var store = new AppCredentialStore(name => name switch
+        {
+            "LOCALAPPDATA" => localAppData,
+            _ => null,
+        });
+
+        var resolved = store.ResolveDirectory();
+
+        Assert.Equal(Path.Combine(localAppData, "CodexWinBarData", "credentials"), resolved);
+        Assert.Equal([1, 2, 3], File.ReadAllBytes(Path.Combine(resolved, "codex.dat")));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(this.directory))

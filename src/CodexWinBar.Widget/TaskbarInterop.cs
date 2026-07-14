@@ -190,6 +190,12 @@ internal static class TaskbarInterop
         return null;
     }
 
+    /// <summary>Windows 11 hosts the modern taskbar UI in a XAML composition bridge. Some Explorer
+    /// builds transiently reject UI Automation requests against the outer secondary-taskbar HWND, so
+    /// the bridge is a more specific fallback automation root.</summary>
+    internal static IntPtr TryGetAutomationBridge(IntPtr taskbar) =>
+        FindDescendant(taskbar, "Windows.UI.Composition.DesktopWindowContentBridge");
+
     internal static Rectangle ToRectangle(NativeMethods.RECT rect) => Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom);
 
     private static IntPtr FindDescendant(IntPtr parent, string className)

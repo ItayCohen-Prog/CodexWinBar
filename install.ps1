@@ -94,4 +94,4 @@ $currentExe = Join-Path $env:LOCALAPPDATA 'CodexWinBar\current\CodexWinBar.exe'
 if (Test-Path -LiteralPath $currentExe) { Start-Process $currentExe }
 
 Write-Host "CodexWinBar $($release.tag_name) installed." -ForegroundColor Green
-Write-Host 'A setup window is opening — connect the providers you use and the widget appears on your taskbar.'
+Write-Host 'A setup window is opening - connect the providers you use and the widget appears on your taskbar.'

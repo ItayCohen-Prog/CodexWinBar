@@ -88,6 +88,11 @@ public sealed class FlyoutWindow : Window
     private Button? updateButton;
     private DateTimeOffset lastToggleAt;
     private int animationGeneration;
+
+    // Generation whose provider-switch animation currently owns root.Height; while it equals
+    // animationGeneration, EnsureSessionWindowFits must not measure (it would read the animated
+    // height) or clear the running animation. int.MinValue = no switch in flight.
+    private int switchAnimationGeneration = int.MinValue;
     private int measureNonce;
     private int currentEdge = AbeBottom;
     private ProviderId? currentFocusProvider;
@@ -410,6 +415,7 @@ public sealed class FlyoutWindow : Window
         if (this.IsOpen)
         {
             this.RebuildCards();
+            this.EnsureSessionWindowFits();
         }
     });
 
@@ -533,7 +539,26 @@ public sealed class FlyoutWindow : Window
     private async Task SwitchProviderAsync(ProviderId focusProvider)
     {
         var generation = ++this.animationGeneration;
+        this.switchAnimationGeneration = generation;
+        try
+        {
+            await this.SwitchProviderCoreAsync(focusProvider, generation).ConfigureAwait(true);
+        }
+        finally
+        {
+            // Only the still-current switch releases the guard (a superseding animation bumped the
+            // generation, so the stale value can never match again). Data may have refreshed while
+            // fit checks were suppressed — re-check now that root.Height is back to natural.
+            if (this.animationGeneration == generation)
+            {
+                this.switchAnimationGeneration = int.MinValue;
+                this.EnsureSessionWindowFits();
+            }
+        }
+    }
 
+    private async Task SwitchProviderCoreAsync(ProviderId focusProvider, int generation)
+    {
         // Any slide-open translate/opacity leftovers snap to their resting values so the switch
         // works from a clean state regardless of what was mid-flight.
         this.ApplySlideOffset(0);
@@ -598,6 +623,33 @@ public sealed class FlyoutWindow : Window
         this.root.BeginAnimation(FrameworkElement.HeightProperty, null);
         this.root.Height = overflow ? this.sessionWindowHeightDip - (2 * ShadowMarginDip) : double.NaN;
         this.scroll.VerticalScrollBarVisibility = overflow ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled;
+    }
+
+    /// <summary>
+    /// Re-runs session sizing when a data refresh grows the current content past the fixed session
+    /// window — e.g. a card gaining reset/credit rows once the first live fetch lands after open.
+    /// Without this the card bottom clips: the HWND was sized to heights measured before those rows
+    /// existed and a plain RebuildCards never resizes it. Skipped while a provider switch animates
+    /// the panel height (the measurement would read the animated height, not the content's), and on
+    /// no-growth refreshes so the common tick stays resize-free.
+    /// </summary>
+    private void EnsureSessionWindowFits()
+    {
+        if (!this.IsOpen || this.animationGeneration == this.switchAnimationGeneration)
+        {
+            return;
+        }
+
+        if (this.MeasureNaturalHeight() <= this.sessionWindowHeightDip + 0.5)
+        {
+            return;
+        }
+
+        this.PrepareSessionWindow(this.currentAnchorPhysicalPx);
+        this.ResizeHwndHeight(this.sessionWindowHeightDip);
+        this.UpdateLayout();
+        this.PlacePhysical(this.currentAnchorPhysicalPx);
+        this.log?.Invoke($"flyout resized to fit refreshed content: {this.sessionWindowHeightDip:F0} dip");
     }
 
     /// <summary>
@@ -895,10 +947,23 @@ public sealed class FlyoutWindow : Window
         Grid.SetColumn(subtitle, 2);
         header.Children.Add(subtitle);
 
-        // Clicking the header (logo + name) opens the provider's own web dashboard.
-        if (descriptor.Metadata.DashboardUrl is { } dashboard)
+        // Clicking the header (logo + name) opens the provider's own web dashboard — except when
+        // signed out: the subtitle says "open Settings", and sending that very click to the DASHBOARD
+        // site had users log in on the provider's website and wonder why the app never reconnected
+        // (a website login can't hand the app any tokens; only the in-app sign-in can).
+        header.Background = Brushes.Transparent; // make the whole row hit-testable, not just the glyph/text
+        if (state.NeedsAuthentication)
         {
-            header.Background = Brushes.Transparent; // make the whole row hit-testable, not just the glyph/text
+            header.Cursor = Cursors.Hand;
+            header.ToolTip = $"Open Settings to sign in to {descriptor.Metadata.DisplayName}";
+            header.MouseLeftButtonUp += (_, _) =>
+            {
+                this.HideFlyout("open settings: signed-out header");
+                this.openSettings();
+            };
+        }
+        else if (descriptor.Metadata.DashboardUrl is { } dashboard)
+        {
             header.Cursor = Cursors.Hand;
             header.ToolTip = $"Open {descriptor.Metadata.DisplayName} dashboard";
             header.MouseLeftButtonUp += (_, _) => OpenDashboard(dashboard);

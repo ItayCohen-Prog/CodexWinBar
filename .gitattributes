@@ -14,3 +14,12 @@ appcast.xml        linguist-vendored
 
 # Documentation should not count toward language stats either.
 docs/**            linguist-documentation
+
+# Keep generated and browser-facing web text deterministic across Windows and CI.
+docs/index.html    text eol=lf
+docs/site.css      text eol=lf
+docs/site.js       text eol=lf
+docs/social.html   text eol=lf
+docs/llms.txt      text eol=lf
+Scripts/check-site-locales.mjs text eol=lf
+Scripts/generate-llms.mjs      text eol=lf

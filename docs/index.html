@@ -1,773 +1,525 @@
 <!doctype html>
-<html lang="en" class="bg-black">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>CodexBar — every AI coding limit, in your menu bar</title>
+    <title>CodexWinBar — AI coding limits on your Windows 11 taskbar</title>
     <meta
       name="description"
-      content="A tiny macOS menu bar app that tracks AI coding-provider usage windows, credits, costs, and resets across 56 providers — Codex, OpenAI, Claude, Cursor, Gemini, Copilot, LiteLLM, and more."
+      content="Track supported AI coding quotas, reset times, balances, and status from a native Windows 11 taskbar overlay and flyout."
     />
-    <meta name="theme-color" content="#0a0a0c" />
-    <link rel="canonical" href="https://codexbar.app/" />
-    <link rel="alternate" hreflang="x-default" href="https://codexbar.app/" />
-    <link rel="alternate" hreflang="en" href="https://codexbar.app/?lang=en" />
-    <link rel="alternate" hreflang="zh-CN" href="https://codexbar.app/?lang=zh-CN" />
-    <link rel="alternate" hreflang="zh-TW" href="https://codexbar.app/?lang=zh-TW" />
-    <link rel="alternate" hreflang="ja" href="https://codexbar.app/?lang=ja-JP" />
-    <link rel="alternate" hreflang="es" href="https://codexbar.app/?lang=es" />
-    <link rel="alternate" hreflang="pt-BR" href="https://codexbar.app/?lang=pt-BR" />
-    <link rel="alternate" hreflang="ko" href="https://codexbar.app/?lang=ko" />
-    <link rel="alternate" hreflang="de" href="https://codexbar.app/?lang=de" />
-    <link rel="alternate" hreflang="fr" href="https://codexbar.app/?lang=fr" />
-    <link rel="alternate" hreflang="ar" href="https://codexbar.app/?lang=ar" />
-    <link rel="alternate" hreflang="it" href="https://codexbar.app/?lang=it" />
-    <link rel="alternate" hreflang="vi" href="https://codexbar.app/?lang=vi" />
-    <link rel="alternate" hreflang="nl" href="https://codexbar.app/?lang=nl" />
-    <link rel="alternate" hreflang="tr" href="https://codexbar.app/?lang=tr" />
-    <link rel="alternate" hreflang="uk" href="https://codexbar.app/?lang=uk" />
-    <link rel="alternate" hreflang="id" href="https://codexbar.app/?lang=id" />
-    <link rel="alternate" hreflang="pl" href="https://codexbar.app/?lang=pl" />
-    <link rel="alternate" hreflang="fa" href="https://codexbar.app/?lang=fa" />
-    <link rel="alternate" hreflang="th" href="https://codexbar.app/?lang=th" />
-    <link rel="alternate" hreflang="ca" href="https://codexbar.app/?lang=ca" />
-    <link rel="alternate" hreflang="sv" href="https://codexbar.app/?lang=sv" />
-    <meta property="og:title" content="CodexBar" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f5f7fa" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0b0f14" media="(prefers-color-scheme: dark)" />
+    <link rel="canonical" href="https://codexwinbar.webivize.com/" />
+    <link rel="icon" type="image/png" sizes="64x64" href="./icon-64.png" />
+
+    <meta property="og:title" content="CodexWinBar — AI coding limits on your Windows 11 taskbar" />
     <meta
       property="og:description"
-      content="Track usage windows, credits, and resets across 56 AI coding providers from your macOS menu bar."
+      content="A native taskbar overlay and flyout for the supported AI coding services you choose to connect."
     />
     <meta property="og:type" content="website" />
-    <meta property="og:url" content="https://codexbar.app/" />
-    <meta property="og:image" content="https://codexbar.app/social.png" />
+    <meta property="og:url" content="https://codexwinbar.webivize.com/" />
+    <meta property="og:image" content="https://codexwinbar.webivize.com/social.png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
-    <meta name="twitter:image" content="https://codexbar.app/social.png" />
+    <meta
+      property="og:image:alt"
+      content="CodexWinBar taskbar overlay and flyout on Windows 11, shown with demo data."
+    />
     <meta name="twitter:card" content="summary_large_image" />
-    <link rel="icon" type="image/png" href="./icon.png" />
-    <link rel="apple-touch-icon" href="./icon.png" />
-    <script>
-      (() => {
-        const queryTheme = new URLSearchParams(location.search).get('theme');
-        let storedTheme = 'system';
-        try {
-          storedTheme = localStorage.getItem('codexbar-theme') || 'system';
-        } catch (_) {}
-        const preference = queryTheme === 'light' || queryTheme === 'dark' ? queryTheme : storedTheme;
-        const resolvedTheme = preference === 'system'
-          ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-          : preference;
-        document.documentElement.dataset.theme = resolvedTheme;
-        document.documentElement.dataset.themePreference = preference;
-      })();
-    </script>
-    <link rel="stylesheet" href="./site-utilities.css?v=1" />
-    <link rel="stylesheet" href="./site.css?v=3" />
+    <meta name="twitter:title" content="CodexWinBar — AI coding limits on your Windows 11 taskbar" />
+    <meta
+      name="twitter:description"
+      content="A native taskbar overlay and flyout for the supported AI coding services you choose to connect."
+    />
+    <meta name="twitter:image" content="https://codexwinbar.webivize.com/social.png" />
+    <meta
+      name="twitter:image:alt"
+      content="CodexWinBar taskbar overlay and flyout on Windows 11, shown with demo data."
+    />
 
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "CodexWinBar",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Windows 11 x64",
+        "description": "A native Windows taskbar overlay and flyout for supported AI coding usage limits.",
+        "isAccessibleForFree": true,
+        "license": "https://github.com/ItayCohen-Prog/CodexWinBar/blob/main/LICENSE",
+        "codeRepository": "https://github.com/ItayCohen-Prog/CodexWinBar",
+        "downloadUrl": "https://github.com/ItayCohen-Prog/CodexWinBar/releases/latest/download/CodexWinBar-win-Setup.exe",
+        "author": {
+          "@type": "Person",
+          "name": "Itay Cohen"
+        }
+      }
+    </script>
+
+    <link rel="stylesheet" href="./site.css?v=1" />
+    <script src="./site.js?v=1" defer></script>
   </head>
 
-  <body class="min-h-screen overflow-x-hidden text-zinc-100">
-    <header class="absolute inset-x-0 top-0 z-20 flex h-[var(--header-height)] items-center justify-between bg-transparent px-5 sm:px-8 md:grid md:grid-cols-[1fr_auto_1fr] lg:px-12">
-      <a href="#top" class="button-press flex w-fit items-center gap-2.5 text-sm font-semibold tracking-[-0.03em] text-white sm:text-base" aria-label="CodexBar home" data-i18n-aria-label="nav.home">
-        <img src="./icon.png" alt="" class="h-7 w-7 rounded-[7px] sm:h-8 sm:w-8 sm:rounded-lg" />
-        <span>CodexBar</span>
-      </a>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
 
-      <nav class="hidden items-center justify-center gap-3 md:flex" aria-label="Project links" data-i18n-aria-label="nav.projectLinks">
-        <a
-          href="https://github.com/steipete/CodexBar/blob/main/docs/providers.md"
-          class="button-press hidden text-[14px] text-zinc-400 hover:text-white sm:block"
-         data-i18n="nav.docs">docs</a>
-        <span class="hidden text-sm text-zinc-700 sm:block" aria-hidden="true" data-project-separator>/</span>
-        <a
-          href="https://github.com/steipete/CodexBar"
-          class="button-press group flex items-center justify-center gap-2.5 text-[14px] text-zinc-400 hover:text-white"
-          aria-label="CodexBar source on GitHub" data-i18n-aria-label="nav.sourceGitHub"
-        >
-          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <path d="M12 .8a11.4 11.4 0 0 0-3.6 22.2c.6.1.8-.3.8-.6v-2.2c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.6-.3-5.4-1.3-5.4-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.1 1.2a10.8 10.8 0 0 1 5.7 0C16.9 4.7 18 5 18 5c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.4 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A11.4 11.4 0 0 0 12 .8Z" />
-          </svg>
-          <span class="hidden sm:inline" data-i18n-rich="nav.sourceStars">
-            source
-          </span>
+    <header class="site-header">
+      <div class="shell header-inner">
+        <a class="brand" href="#top" aria-label="CodexWinBar home">
+          <img src="./icon-64.png" width="64" height="64" alt="" />
+          <span>CodexWinBar</span>
         </a>
-      </nav>
 
-      <nav class="flex items-center justify-end gap-2 sm:gap-3" aria-label="Display and download" data-i18n-aria-label="nav.displayDownload">
-        <button class="theme-option grid" id="theme-toggle" type="button" data-theme-value="system" aria-label="Theme: system. Switch to light" title="System theme">
-              <svg data-theme-icon="system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <rect width="20" height="14" x="2" y="3" rx="2" />
-                <line x1="8" x2="16" y1="21" y2="21" />
-                <line x1="12" x2="12" y1="17" y2="21" />
-              </svg>
-              <svg data-theme-icon="light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <circle cx="12" cy="12" r="4" />
-                <path d="M12 2v2" /><path d="M12 20v2" /><path d="m4.93 4.93 1.41 1.41" /><path d="m17.66 17.66 1.41 1.41" /><path d="M2 12h2" /><path d="M20 12h2" /><path d="m6.34 17.66-1.41 1.41" /><path d="m19.07 4.93-1.41 1.41" />
-              </svg>
-              <svg data-theme-icon="dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401" />
-              </svg>
-        </button>
+        <nav class="primary-nav" aria-label="Primary navigation">
+          <a href="#product">Product</a>
+          <a href="#providers">Providers</a>
+          <a href="#privacy">Privacy</a>
+          <a href="#install">Install</a>
+          <a href="https://github.com/ItayCohen-Prog/CodexWinBar">GitHub</a>
+        </nav>
 
-        <div class="language-picker" id="language-picker">
-          <button
-            class="language-picker-trigger button-press"
-            id="language-picker-trigger"
-            type="button"
-            aria-haspopup="listbox"
-            aria-expanded="false"
-            aria-controls="language-picker-menu"
-            aria-label="Language" data-i18n-aria-label="nav.language"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <circle cx="12" cy="12" r="9" />
-              <path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" />
-            </svg>
-            <span data-lang-short>EN</span>
-          </button>
-          <div class="language-picker-menu" id="language-picker-menu" hidden>
-            <div class="language-picker-menu-scroll" id="language-picker-list" role="listbox" aria-label="Language" data-i18n-aria-label="nav.language"></div>
-          </div>
-        </div>
-
-        <span class="header-divider hidden sm:block" aria-hidden="true"></span>
-        <a
-          href="https://github.com/steipete/CodexBar/releases/latest"
-          class="download-button button-press inline-flex h-9 items-center gap-2 rounded-full px-4 text-sm font-medium sm:h-10 sm:px-5"
-        >
-          <span class="grid h-4 w-4 place-items-center" aria-hidden="true">
-            <img src="./images/apple.svg" alt="" class="apple-icon" />
-          </span>
-          <span data-i18n="nav.download">download</span>
-        </a>
-      </nav>
+        <a class="button button-small button-primary header-cta" href="#install">Get CodexWinBar</a>
+      </div>
     </header>
 
-    <main id="top">
-      <section class="hero-section relative overflow-hidden">
-          <div class="mockup-stage" id="mockup-stage" aria-hidden="true">
-          <div class="mockup-glow" aria-hidden="true"></div>
-          <div class="mockup-wrap" id="mockup-wrap">
-            <img
-              src="./hero-mockup.svg"
-              alt="MacBook menu bar"
-              data-i18n-alt="mockup.macbookAlt"
-              class="block h-full w-full select-none object-contain"
-              draggable="false"
-              width="6111"
-              height="3239"
-              fetchpriority="high"
-            />
+    <main id="main-content">
+      <section class="hero section" id="top" aria-labelledby="hero-title">
+        <div class="shell hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow"><span class="eyebrow-mark" aria-hidden="true"></span> Open-source Windows 11 taskbar companion</p>
+            <h1 id="hero-title">Know your AI coding limits <span>before they break your flow.</span></h1>
+            <p class="hero-lead">
+              CodexWinBar keeps the limits each connected service exposes—usage windows, reset times,
+              and credits or spend—in a compact Windows 11 taskbar overlay. Click for detail, pace
+              signals, account context, and service status.
+            </p>
+            <p class="provider-summary">
+              Connect Codex, Claude, GitHub Copilot, OpenRouter, OpenAI Admin, z.ai, or the
+              <strong>experimental Cursor integration</strong>.
+            </p>
+            <div class="button-row">
+              <a class="button button-primary" href="#install">Get CodexWinBar</a>
+              <a class="button button-secondary" href="https://github.com/ItayCohen-Prog/CodexWinBar">
+                View source
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 4h9v9M16 4 6 14" /></svg>
+              </a>
+            </div>
+            <ul class="trust-list" aria-label="Product requirements and licensing">
+              <li>Windows 11 x64</li>
+              <li>Per-user</li>
+              <li>No admin</li>
+              <li>MIT open source</li>
+            </ul>
           </div>
-          <div class="mockup-hud-layer">
-            <div class="mockup-artboard">
-            <div class="mockup-hud-anchor">
-            <div class="system-menubar" aria-label="macOS menu bar status items" data-i18n-aria-label="mockup.menuBarAria">
-              <img class="sf-symbol sf-symbol--openclaw" src="./images/menubar/openclaw-menubar.svg" alt="" aria-hidden="true" />
-              <div class="menu-bar-mark" aria-label="CodexBar menu bar icon" data-i18n-aria-label="mockup.menuIconAria">
-                <span></span>
-                <span></span>
+
+          <figure class="product-stage">
+            <div class="desktop-surface">
+              <div class="desktop-orb" aria-hidden="true"></div>
+              <div class="window-label" aria-hidden="true">
+                <span></span><span></span><span></span>
+                <b>CodexWinBar</b>
               </div>
-              <img class="sf-symbol" src="./images/menubar/wifi.png" alt="" aria-hidden="true" style="filter: brightness(0) invert(86%) drop-shadow(0 0.08em 0.18em rgba(0, 0, 0, 0.58))" />
-              <img class="sf-symbol" src="./images/menubar/personalhotspot.png" alt="" aria-hidden="true" style="filter: brightness(0) invert(86%) drop-shadow(0 0.08em 0.18em rgba(0, 0, 0, 0.58))" />
-              <img class="sf-symbol" src="./images/menubar/person-circle.png" alt="" aria-hidden="true" style="filter: brightness(0) invert(86%) drop-shadow(0 0.08em 0.18em rgba(0, 0, 0, 0.58))" />
-              <span class="time" id="menu-time">Sun Jun 28&nbsp;&nbsp;9:41 AM</span>
+              <img
+                class="hero-flyout"
+                src="./screenshots/flyout-light.png"
+                width="522"
+                height="404"
+                alt="CodexWinBar Codex flyout showing demo quota bars, reset times, credits, and provider status."
+                fetchpriority="high"
+              />
+              <div class="taskbar-chrome" aria-hidden="true">
+                <span class="start-mark"><i></i><i></i><i></i><i></i></span>
+                <span class="taskbar-app"></span><span class="taskbar-app"></span><span class="taskbar-app"></span>
+                <span class="taskbar-tray">⌃ &nbsp; Wi-Fi &nbsp; 11:24</span>
+              </div>
+              <img
+                class="hero-widget"
+                src="./screenshots/widget-embedded.png"
+                width="425"
+                height="72"
+                alt="CodexWinBar taskbar overlay showing Codex and Claude demo usage."
+                fetchpriority="high"
+              />
             </div>
-            <aside class="codex-popover" aria-label="Open CodexBar usage panel" data-i18n-aria-label="mockup.usagePanelAria">
-              <header class="popover-top">
-                <p><strong>Codex</strong><span data-i18n="mockup.updatedJustNow">Updated just now</span></p>
-                <p class="right"><strong>user@example.com</strong><span data-i18n="mockup.plus">Plus</span></p>
-              </header>
-
-              <section class="popover-section">
-                <h3 data-i18n="mockup.session">Session</h3>
-                <div class="usage-meter" style="--fill: 60%; --danger: 58%; --meter-delay: 420ms;"><i style="--tick: 20%;"></i><i style="--tick: 48%;"></i></div>
-                <p class="usage-row">
-                  <span><strong data-i18n="mockup.left60">60% left</strong><strong data-i18n="mockup.reserve2">2% in reserve</strong></span>
-                  <span class="right"><strong data-i18n="mockup.resets2h53m">Resets in 2h 53m</strong><strong data-i18n="mockup.lastsUntilReset">Lasts until reset</strong></span>
-                </p>
-              </section>
-
-              <section class="popover-section">
-                <h3 data-i18n="mockup.weekly">Weekly</h3>
-                <div class="usage-meter" style="--fill: 73%; --danger: 73%; --meter-delay: 520ms;"><i style="--tick: 20%;"></i><i style="--tick: 48%;"></i></div>
-                <p class="usage-row">
-                  <span><strong data-i18n="mockup.left73">73% left</strong><strong data-i18n="mockup.onPace">On pace</strong></span>
-                  <span class="right"><strong data-i18n="mockup.resets5d4h">Resets in 5d 4h</strong><strong data-i18n="mockup.runsOut4d21h">Runs out in 4d 21h</strong></span>
-                </p>
-              </section>
-
-              <section class="reset-credit">
-                <p><strong data-i18n="mockup.limitResetCredits">Limit Reset Credits</strong><span data-i18n="mockup.nextExpires28d2h">Next expires in 28d 2h</span></p>
-                <p><strong data-i18n="mockup.manualResetAvailable">1 reset available</strong></p>
-              </section>
-
-              <section class="number-grid" aria-label="Recent Codex usage" data-i18n-aria-label="mockup.recentUsageAria">
-                <p class="popover-number"><span data-i18n="mockup.today">Today</span><strong>$51.56</strong></p>
-                <p class="popover-number"><span data-i18n="mockup.last31DaysCost">Last 31 days Cost</span><strong>$5,251.23</strong></p>
-                <p class="popover-number"><span data-i18n="mockup.last31DaysTokens">Last 31 days tokens</span><strong>5.9B</strong></p>
-                <p class="popover-number"><span data-i18n="mockup.latestTokens">Latest tokens</span><strong>85M</strong></p>
-              </section>
-
-              <figure class="usage-chart" aria-label="31 day usage chart" data-i18n-aria-label="mockup.usageChartAria">
-                <i style="--h: 52%;"></i><i style="--h: 55%;"></i><i style="--h: 38%;"></i><i style="--h: 60%;"></i><i style="--h: 34%;"></i><i style="--h: 73%;"></i><i style="--h: 33%;"></i><i style="--h: 10%;"></i><i style="--h: 28%;"></i><i style="--h: 47%;"></i><i style="--h: 18%;"></i><i style="--h: 5%;"></i><i style="--h: 20%;"></i><i style="--h: 18%;"></i><i style="--h: 4%;"></i><i style="--h: 9%;"></i><i style="--h: 32%;"></i><i style="--h: 40%;"></i><i style="--h: 28%;"></i><i style="--h: 38%;"></i><i style="--h: 45%;"></i><i style="--h: 31%;"></i><i style="--h: 39%;"></i><i style="--h: 42%;"></i><i style="--h: 34%;"></i><i style="--h: 8%;"></i><i style="--h: 6%;"></i><i style="--h: 7%;"></i><i style="--h: 17%;"></i><i style="--h: 38%;"></i><i style="--h: 4%;"></i>
-              </figure>
-
-              <p class="popover-note"><strong data-i18n="mockup.topModel">Top model: Example-1</strong><br /><span data-i18n="mockup.estimatedLogs">Estimated from local Codex logs for the selected acco...</span></p>
-
-              <section class="popover-foot">
-                <strong data-i18n="mockup.credits">Credits</strong>
-                <div class="credit-meter"></div>
-                <p class="credit-row"><strong data-i18n="mockup.zeroLeft">0 left</strong><span>1K tokens</span></p>
-                <p class="buy-row">
-                  <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6.2" stroke="currentColor" stroke-width="1.8" /><path d="M8 5v6M5 8h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
-                  <span data-i18n="mockup.buyCredits">Buy credits...</span>
-                </p>
-              </section>
-            </aside>
-            </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="hero-content px-5 sm:px-8 lg:px-12">
-          <div class="section-inner">
-        <div class="hero-copy">
-          <div class="reveal flex items-center justify-center gap-2.5 text-[15px] tracking-[-0.025em] text-zinc-400 sm:justify-start sm:text-lg">
-            <span data-i18n="hero.badgeStart">AI usage limits</span>
-            <img src="./icon.png" alt="" class="h-6 w-6 rounded-md shadow-[0_0_1.5rem_rgba(14,165,233,0.24)]" />
-            <span data-i18n="hero.badgeEnd">for macOS</span>
-          </div>
-
-          <h1 class="reveal reveal-2 mt-5 text-[clamp(3rem,5.7vw,60px)] font-semibold leading-[0.98] tracking-[-0.06em] text-zinc-100">
-            <span class="hero-title-line" data-i18n="hero.prefix">Every AI coding limit,</span>
-            <span class="hero-title-line" data-i18n="hero.accent">in your menu bar.</span>
-          </h1>
-
-          <p class="reveal reveal-3 mt-6 max-w-[38rem] text-balance text-[clamp(1rem,1.25vw,1.28rem)] leading-[1.42] tracking-[-0.035em] text-zinc-400">
-            <span data-i18n="hero.descriptionShort">Track usage windows, credit balances, and reset countdowns across the AI tools you actually pay for.</span>
-          </p>
-
-          <div class="hero-cta-row reveal reveal-4 mt-8 sm:mt-10">
-            <a
-              href="https://github.com/steipete/CodexBar/releases/latest"
-              class="download-button hero-download button-press inline-flex h-11 items-center gap-2 rounded-full px-5 text-sm font-medium"
-            >
-              <span class="grid h-4 w-4 place-items-center" aria-hidden="true">
-                <img src="./images/apple.svg" alt="" class="apple-icon" />
-              </span>
-              <span data-i18n="hero.download">Download for macOS</span>
-            </a>
-            <button
-              id="brew-copy"
-              type="button"
-              class="button-press brew-pill inline-flex h-11 max-w-full items-center gap-3 rounded-full px-4 font-mono text-[13px] text-zinc-100 hover:bg-white/10"
-              aria-label="Copy Homebrew install command" data-i18n-aria-label="clipboard.copyBrew"
-            >
-              <span class="text-zinc-400" aria-hidden="true">$</span>
-              <span data-brew-label class="truncate text-zinc-100">brew install --cask steipete/tap/codexbar</span>
-              <span data-brew-icon class="grid h-5 w-5 shrink-0 place-items-center text-zinc-400" aria-hidden="true">
-                <svg data-icon="copy" class="h-3.5 w-3.5" viewBox="0 0 18 18" fill="none">
-                  <rect x="6.25" y="3.25" width="8.5" height="8.5" rx="1.4" stroke="currentColor" stroke-width="1.5" />
-                  <path d="M11.75 14.75H4.65c-.77 0-1.4-.63-1.4-1.4v-7.1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-                </svg>
-                <svg data-icon="check" class="h-3.5 w-3.5" viewBox="0 0 18 18" fill="none">
-                  <path d="M4.5 9.25 7.5 12.25 13.5 6.25" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-              </span>
-              <span class="sr-only" data-brew-status aria-live="polite"></span>
-            </button>
-          </div>
-
-          <p class="reveal reveal-5 mt-5 text-sm tracking-[-0.02em] text-zinc-600">
-            <span data-i18n="hero.fineprintShort">Free &amp; open source · macOS 14+</span>
-          </p>
-        </div>
-          </div>
+            <figcaption>Actual app UI with privacy-safe demo data.</figcaption>
+          </figure>
         </div>
       </section>
 
-      <section class="provider-section px-5 py-20 sm:px-8 lg:px-12 lg:py-28" data-provider-section>
-        <div class="section-inner">
-        <header class="relative z-10 grid gap-5 tablet:grid-cols-[1fr_0.86fr] tablet:items-center">
-          <h2 class="provider-reveal max-w-3xl text-balance text-[clamp(2.4rem,4.4vw,5rem)] font-semibold leading-[0.98] tracking-[-0.07em] text-zinc-100">
-            <span data-i18n-rich="providers.title">56 providers,{mobileBreak}one menu bar</span>
-          </h2>
-          <p class="provider-reveal max-w-2xl text-[clamp(1rem,1.35vw,1.28rem)] leading-[1.45] tracking-[-0.035em] text-zinc-400" style="--reveal-delay: 70ms">
-            <span data-i18n="providers.description">Popular providers become status items with their own usage windows, reset countdowns, charts, and provider menus.</span>
-          </p>
-        </header>
+      <section class="provider-section section" id="providers" aria-labelledby="providers-title">
+        <div class="shell">
+          <div class="section-heading split-heading">
+            <div>
+              <p class="eyebrow">Seven shipping integrations</p>
+              <h2 id="providers-title">Connect only what you use.</h2>
+            </div>
+            <p>
+              A fresh install connects nothing. Enable only the services you want CodexWinBar to check;
+              connection methods and available fields differ by provider.
+            </p>
+          </div>
 
-        <ul class="relative z-10 mt-12 grid list-none gap-3 p-0 tablet:grid-cols-3 xl:grid-cols-5">
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/codex.md"><span class="provider-logo" data-icon="◎" style="--brand:#49A3B0;--icon:url('./logos/codex-dark.svg')"><img src="./logos/codex-dark.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Codex</strong><span data-i18n="auth.oauth">OAuth</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/claude.md"><span class="provider-logo" data-icon="✳" style="--brand:#CC7C5E;--icon:url('./logos/claude.svg')"><img src="./logos/claude.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Claude</strong><span data-i18n="auth.oauth">OAuth</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/cursor.md"><span class="provider-logo" data-icon="◆" style="--brand:#1A1A1A;--icon:url('./logos/cursor.svg')"><img src="./logos/cursor.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Cursor</strong><span data-i18n="auth.cookies">Cookies</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/opencode.md"><span class="provider-logo" data-icon="OC" style="--brand:#3B82F6;--icon:url('./logos/opencode-dark.svg')"><img src="./logos/opencode-dark.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>OpenCode</strong><span data-i18n="auth.cookiesGo">Cookies + Go</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/alibaba-coding-plan.md"><span class="provider-logo" data-icon="a" style="--brand:#FF6A00;--icon:url('./logos/alibaba.svg')"><img src="./logos/alibaba.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Alibaba</strong><span data-i18n="auth.cookies">Cookies</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/alibaba-token-plan.md"><span class="provider-logo" style="--brand:#FF6A00;--icon:url('./logos/alibaba.svg')"><img src="./logos/alibaba.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Alibaba Token</strong><span data-i18n="auth.cookies">Cookies</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/gemini.md"><span class="provider-logo" data-icon="◇" style="--brand:#AB87EA;--icon:url('./logos/gemini.svg')"><img src="./logos/gemini.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Gemini</strong><span data-i18n="auth.oauth">OAuth</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/antigravity.md"><span class="provider-logo" data-icon="A" style="--brand:#60BA7E;--icon:url('./logos/antigravity.svg')"><img src="./logos/antigravity.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Antigravity</strong><span data-i18n="auth.local">Local</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/factory.md"><span class="provider-logo" data-icon="✺" style="--brand:#FF6B35;--icon:url('./logos/droid-dark.svg')"><img src="./logos/droid-dark.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Droid</strong><span data-i18n="auth.cookies">Cookies</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/copilot.md"><span class="provider-logo" data-icon="⌘" style="--brand:#A855F7;--icon:url('./logos/copilot.svg')"><img src="./logos/copilot.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Copilot</strong><span data-i18n="auth.deviceFlow">Device flow</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/devin.md"><span class="provider-logo" style="--brand:#0F172A;--icon:url('./logos/devin.svg')"><img src="./logos/devin.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Devin</strong><span data-i18n="auth.bearerLocal">Bearer / Local</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/zai.md"><span class="provider-logo" data-icon="Z" style="--brand:#E85A6A;--icon:url('./logos/zai-dark.svg')"><img src="./logos/zai-dark.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>z.ai</strong><span data-i18n="auth.apiKey">API key</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/minimax.md"><span class="provider-logo" data-icon="≋" style="--brand:#FE6060;--icon:url('./logos/minimax.svg')"><img src="./logos/minimax.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>MiniMax</strong><span data-i18n="auth.apiKey">API key</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/kimi.md"><span class="provider-logo" data-icon="K" style="--brand:#FE603C;--icon:url('./logos/kimi.svg')"><img src="./logos/kimi.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Kimi</strong><span data-i18n="auth.token">Token</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/kimi-k2.md"><span class="provider-logo" data-icon="K2" style="--brand:#4C00FF;--icon:url('./logos/kimi-k2.svg')"><img src="./logos/kimi-k2.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Kimi K2</strong><span data-i18n="auth.legacyApi">Legacy API</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/kilo.md"><span class="provider-logo" data-icon="kg" style="--brand:#f8f676;--icon:url('./logos/kilo.svg')"><img src="./logos/kilo.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Kilo</strong><span data-i18n="auth.apiKey">API key</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/kiro.md"><span class="provider-logo" data-icon="•" style="--brand:#FF9900;--icon:url('./logos/kiro-dark.svg')"><img src="./logos/kiro-dark.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Kiro</strong><span data-i18n="auth.cli">CLI</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/vertexai.md"><span class="provider-logo" data-icon="VA" style="--brand:#4285F4;--icon:url('./logos/vertex-ai.svg')"><img src="./logos/vertex-ai.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Vertex AI</strong><span data-i18n="auth.gcloud">gcloud</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/augment.md"><span class="provider-logo" data-icon="{ }" style="--brand:#6366F1;--icon:url('./logos/augment.svg')"><img src="./logos/augment.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Augment</strong><span data-i18n="auth.cli">CLI</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/amp.md"><span class="provider-logo" data-icon="amp" style="--brand:#DC2626;--icon:url('./logos/amp.svg')"><img src="./logos/amp.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Amp</strong><span data-i18n="auth.cookies">Cookies</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/ollama.md"><span class="provider-logo" data-icon="ll" style="--brand:#888888;--icon:url('./logos/ollama.svg')"><img src="./logos/ollama.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Ollama</strong><span data-i18n="auth.apiKeyCookies">API key + Cookies</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/providers.md#fetch-strategies-current"><span class="provider-logo" data-icon="✽" style="--brand:#141414;--icon:url('./logos/synthetic-dark.svg')"><img src="./logos/synthetic-dark.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Synthetic</strong><span data-i18n="auth.apiKey">API key</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/jetbrains.md"><span class="provider-logo" data-icon="JB" style="--brand:#FF3399;--icon:url('./logos/jetbrains-ai.svg')"><img src="./logos/jetbrains-ai.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>JetBrains AI</strong><span data-i18n="auth.local">Local</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/warp.md"><span class="provider-logo" data-icon="W" style="--brand:#7B68EE;--icon:url('./logos/warp.svg')"><img src="./logos/warp.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Warp</strong><span data-i18n="auth.apiKey">API key</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/elevenlabs.md"><span class="provider-logo" style="--brand:#EAEAE6;--icon:url('./logos/elevenlabs.svg')"><img src="./logos/elevenlabs.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>ElevenLabs</strong><span data-i18n="auth.apiKey">API key</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/openrouter.md"><span class="provider-logo" data-icon="OR" style="--brand:#6467F2;--icon:url('./logos/openrouter.svg')"><img src="./logos/openrouter.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>OpenRouter</strong><span data-i18n="auth.apiKey">API key</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/litellm.md"><span class="provider-logo" style="--brand:#4C89F0;--icon:url('./logos/litellm.svg')"><img src="./logos/litellm.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>LiteLLM</strong><span data-i18n="auth.virtualKey">Virtual key</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/providers.md#fetch-strategies-current"><span class="provider-logo" data-icon="∞" style="--brand:#20B2AA;--icon:url('./logos/perplexity.svg')"><img src="./logos/perplexity.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Perplexity</strong><span data-i18n="auth.cookies">Cookies</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/abacus.md"><span class="provider-logo" style="--brand:#38BDF8;--icon:url('./logos/abacus-ai-dark.svg')"><img src="./logos/abacus-ai-dark.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Abacus AI</strong><span data-i18n="auth.cookies">Cookies</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/providers.md#fetch-strategies-current"><span class="provider-logo" style="--brand:#FF500F;--icon:url('./logos/mistral.svg')"><img src="./logos/mistral.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Mistral</strong><span data-i18n="auth.cookies">Cookies</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/deepseek.md"><span class="provider-logo" style="--brand:#527DF0;--icon:url('./logos/deepseek.svg')"><img src="./logos/deepseek.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>DeepSeek</strong><span data-i18n="auth.apiKey">API key</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/t3chat.md"><span class="provider-logo" style="--brand:#2563EB;--icon:url('./logos/t3chat.svg')"><img src="./logos/t3chat.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>T3 Chat</strong><span data-i18n="auth.cookies">Cookies</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/codebuff.md"><span class="provider-logo" style="--brand:#44C800;--icon:url('./logos/codebuff-dark.svg')"><img src="./logos/codebuff-dark.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Codebuff</strong><span data-i18n="auth.apiKey">API key</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/poe.md"><span class="provider-logo" style="--brand:#26AD61;--icon:url('./logos/poe.svg')"><img src="./logos/poe.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Poe</strong><span data-i18n="auth.apiKey">API key</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/chutes.md"><span class="provider-logo" style="--brand:#3184FF;--icon:url('./logos/chutes.svg')"><img src="./logos/chutes.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Chutes</strong><span data-i18n="auth.apiKey">API key</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/zed.md"><span class="provider-logo" style="--brand:#084EFF;--icon:url('./logos/zed.svg')"><img src="./logos/zed.svg" alt="" loading="lazy" onerror="this.remove()" /></span><p><strong>Zed</strong><span data-i18n="auth.local">Local</span></p></a></li>
-          <li class="provider-card"><a class="provider-card-link" href="https://github.com/steipete/CodexBar/blob/main/docs/provider.md"><span class="provider-logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 .83.18 2 2 0 0 0 .83-.18l8.58-3.9a1 1 0 0 0 0-1.831z"/><path d="M16 17h6"/><path d="M19 14v6"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 .825.178"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l2.116-.962"/></svg></span><p><strong data-i18n="providers.yourProvider">Your provider</strong><span class="provider-authoring"><span data-i18n="providers.authoringGuide">Authoring guide</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg></span></p></a></li>
-        </ul>
+          <ul class="provider-grid">
+            <li class="provider-card">
+              <div class="provider-icon"><img src="./logos/codex.svg" width="48" height="48" alt="" loading="lazy" decoding="async" /></div>
+              <div>
+                <h3>Codex</h3>
+                <p class="provider-method">Browser OAuth in CodexWinBar</p>
+                <p>ChatGPT Codex usage, credits, and reset-credit availability when returned.</p>
+              </div>
+            </li>
+            <li class="provider-card">
+              <div class="provider-icon provider-icon-warm"><img src="./logos/claude.svg" width="48" height="48" alt="" loading="lazy" decoding="async" /></div>
+              <div>
+                <h3>Claude</h3>
+                <p class="provider-method">Browser OAuth in CodexWinBar</p>
+                <p>Session, weekly, model-specific, routines, and extra-usage fields when returned.</p>
+              </div>
+            </li>
+            <li class="provider-card">
+              <div class="provider-icon"><img src="./logos/copilot.svg" width="48" height="48" alt="" loading="lazy" decoding="async" /></div>
+              <div>
+                <h3>GitHub Copilot</h3>
+                <p class="provider-method">GitHub device flow</p>
+                <p>Copilot quota snapshots from the connected GitHub account.</p>
+              </div>
+            </li>
+            <li class="provider-card">
+              <div class="provider-icon"><img src="./logos/openrouter.svg" width="48" height="48" alt="" loading="lazy" decoding="async" /></div>
+              <div>
+                <h3>OpenRouter</h3>
+                <p class="provider-method">API key</p>
+                <p>Credit balance and per-key limits when available.</p>
+              </div>
+            </li>
+            <li class="provider-card">
+              <div class="provider-icon"><img src="./logos/codex.svg" width="48" height="48" alt="" loading="lazy" decoding="async" /></div>
+              <div>
+                <h3>OpenAI Admin</h3>
+                <p class="provider-method">Admin API key</p>
+                <p>Organization cost reporting for the last 30 days and today.</p>
+              </div>
+            </li>
+            <li class="provider-card">
+              <div class="provider-icon provider-icon-dark"><img src="./logos/zai-dark.svg" width="48" height="48" alt="" loading="lazy" decoding="async" /></div>
+              <div>
+                <h3>z.ai</h3>
+                <p class="provider-method">API key</p>
+                <p>Coding-plan quota data exposed by z.ai.</p>
+              </div>
+            </li>
+            <li class="provider-card">
+              <div class="provider-icon"><img src="./logos/cursor.svg" width="48" height="48" alt="" loading="lazy" decoding="async" /></div>
+              <div>
+                <h3>Cursor <span class="badge">Experimental</span></h3>
+                <p class="provider-method">Session cookie</p>
+                <p>Endpoint behavior has not yet been live-verified with a real Windows session.</p>
+              </div>
+            </li>
+          </ul>
+
+          <p class="provider-note">
+            Provider names and logos are trademarks of their respective owners. Integration does not imply endorsement or partnership.
+          </p>
         </div>
       </section>
 
-      <section class="features-section px-5 py-20 sm:px-8 lg:px-12 lg:py-28" data-scroll-section>
-        <div class="section-inner">
-          <h2 class="features-heading provider-reveal text-balance" data-i18n="features.title">Limits, spend, and status</h2>
+      <section class="product-section section" id="product" aria-labelledby="product-title">
+        <div class="shell">
+          <div class="section-heading centered-heading">
+            <p class="eyebrow">The workflow</p>
+            <h2 id="product-title">One glance. One click. One nudge.</h2>
+            <p>Stay aware without turning quota checking into another dashboard habit.</p>
+          </div>
 
-          <div class="features-grid relative z-10">
-            <article class="feature-card provider-reveal" style="--reveal-delay: 80ms">
-              <div class="feature-card-copy">
-                <h3 data-i18n="features.resetsTitle">Resets you can plan around</h3>
-                <p data-i18n="features.resetsBody">Per-provider session, weekly, and monthly windows with countdowns to the next reset — no more guessing whether to start a long task.</p>
+          <div class="proof-grid">
+            <article class="proof-card">
+              <div class="proof-copy">
+                <span class="proof-number" aria-hidden="true">01</span>
+                <h3>The glance</h3>
+                <p>
+                  See a compact provider signal, usage percentage, or reset information from your taskbar,
+                  depending on the data available and the space Windows provides.
+                </p>
               </div>
-              <div class="feature-card-visual" aria-hidden="true">
-                <img src="./features/feature-resets.webp" alt="" width="1620" height="1020" loading="lazy" />
-                <div class="feature-card-overlay is-usage-menu">
-                  <div class="feature-usage-panel">
-                    <header class="feature-usage-header">
-                      <p><strong>Codex</strong><span data-i18n="mockup.updatedJustNow">Updated just now</span></p>
-                      <p class="feature-usage-account"><strong>user@example.com</strong><span data-i18n="mockup.plus">Plus</span></p>
-                    </header>
-
-                    <section class="feature-usage-block">
-                      <h4 class="feature-usage-title" data-i18n="mockup.session">Session</h4>
-                      <div class="feature-usage-track" aria-hidden="true">
-                        <div class="feature-usage-fill" style="--amount: 100%">
-                          <i style="--flex: 89"></i>
-                          <i class="is-reserve" style="--flex: 5"></i>
-                          <i class="is-spent" style="--flex: 6"></i>
-                        </div>
-                      </div>
-                      <div class="feature-usage-meta">
-                        <div>
-                          <p><strong data-i18n="mockup.left89">89% left</strong><span class="is-subtle" data-i18n="mockup.reserve5">5% in reserve</span></p>
-                        </div>
-                        <div>
-                          <p><strong data-i18n="mockup.resets4h12m">Resets in 4h 12m</strong><span class="is-subtle" data-i18n="mockup.lastsUntilReset">Lasts until reset</span></p>
-                        </div>
-                      </div>
-                    </section>
-
-                    <section class="feature-usage-block">
-                      <h4 class="feature-usage-title" data-i18n="mockup.weekly">Weekly</h4>
-                      <div class="feature-usage-track" aria-hidden="true">
-                        <div class="feature-usage-fill" style="--amount: 100%">
-                          <i style="--flex: 98"></i>
-                          <i class="is-spent" style="--flex: 2"></i>
-                        </div>
-                      </div>
-                      <div class="feature-usage-meta">
-                        <div>
-                          <p><strong data-i18n="mockup.left98">98% left</strong></p>
-                        </div>
-                        <div>
-                          <p><strong data-i18n="mockup.resets6d23h">Resets in 6d 23h</strong></p>
-                        </div>
-                      </div>
-                    </section>
-                  </div>
-                </div>
+              <div class="proof-visual proof-visual-widget" aria-hidden="true">
+                <img src="./screenshots/widget-embedded.png" width="425" height="72" alt="" loading="lazy" decoding="async" />
               </div>
             </article>
-            <article class="feature-card provider-reveal" style="--reveal-delay: 140ms">
-              <div class="feature-card-copy">
-                <h3 data-i18n="features.spendTitle">Credits, spend, and cost scans</h3>
-                <p data-i18n="features.spendBody">Credit balances and monthly spend where the provider exposes them, plus configurable local cost scans for Codex and Claude.</p>
+
+            <article class="proof-card">
+              <div class="proof-copy">
+                <span class="proof-number" aria-hidden="true">02</span>
+                <h3>The click</h3>
+                <p>
+                  Open a native flyout for detailed usage windows, reset countdowns, credits or spend,
+                  account context, and service incidents when those fields are available.
+                </p>
               </div>
-              <div class="feature-card-visual" aria-hidden="true">
-                <img src="./features/feature-credits.webp" alt="" width="1620" height="1020" loading="lazy" />
-                <div class="feature-card-overlay">
-                  <div class="feature-cost-panel">
-                    <div class="feature-credit-head">
-                      <p><strong data-i18n="mockup.limitResetCredits">Limit Reset Credits</strong><span data-i18n="mockup.nextExpires27d21h">Next expires in 27d 21h</span></p>
-                      <p><strong data-i18n="mockup.manualResetAvailable">1 reset available</strong></p>
-                    </div>
-                    <dl class="feature-cost-stats">
-                      <div>
-                        <dt data-i18n="mockup.today">Today</dt>
-                        <dd>$86.62</dd>
-                      </div>
-                      <div>
-                        <dt data-i18n="mockup.last31DaysCost">Last 31 days Cost</dt>
-                        <dd>$5,286.29</dd>
-                      </div>
-                      <div>
-                        <dt data-i18n="mockup.last31DaysTokens">Last 31 days tokens</dt>
-                        <dd>5.9B</dd>
-                      </div>
-                      <div>
-                        <dt data-i18n="mockup.latestTokens">Latest tokens</dt>
-                        <dd>119M</dd>
-                      </div>
-                    </dl>
-                    <div class="feature-cost-chart" aria-hidden="true">
-                      <i style="--h: 72%"></i><i style="--h: 77%"></i><i style="--h: 53%"></i><i style="--h: 81%"></i><i style="--h: 46%"></i><i style="--h: 96%"></i><i style="--h: 47%"></i><i style="--h: 10%"></i><i style="--h: 29%"></i><i style="--h: 64%"></i><i style="--h: 21%"></i><i style="--h: 5%"></i><i style="--h: 23%"></i><i style="--h: 22%"></i><i style="--h: 4%"></i><i style="--h: 10%"></i><i style="--h: 37%"></i><i style="--h: 45%"></i><i style="--h: 33%"></i><i style="--h: 50%"></i><i style="--h: 58%"></i><i style="--h: 35%"></i><i style="--h: 48%"></i><i style="--h: 55%"></i><i style="--h: 40%"></i><i style="--h: 8%"></i><i style="--h: 7%"></i><i style="--h: 8%"></i><i style="--h: 20%"></i><i style="--h: 54%"></i><i style="--h: 22%"></i>
-                    </div>
-                  </div>
-                </div>
+              <div class="proof-visual proof-visual-flyout" aria-hidden="true">
+                <img src="./screenshots/flyout-light.png" width="522" height="404" alt="" loading="lazy" decoding="async" />
               </div>
             </article>
-            <article class="feature-card provider-reveal" style="--reveal-delay: 200ms">
-              <div class="feature-card-copy">
-                <h3 data-i18n="features.statusTitle">Status &amp; incidents</h3>
-                <p data-i18n="features.statusBody">Provider status polling surfaces incident badges in the menu and an indicator overlay on the bar icon.</p>
+
+            <article class="proof-card proof-card-nudge">
+              <div class="proof-copy">
+                <span class="proof-number" aria-hidden="true">03</span>
+                <h3>The nudge</h3>
+                <p>
+                  Turn on quota-threshold notifications and, optionally, pace projections to spot a limit
+                  you may exhaust before its next reset.
+                </p>
               </div>
-              <div class="feature-card-visual" aria-hidden="true">
-                <img src="./features/feature-status.webp" alt="" width="1620" height="1020" loading="lazy" />
-                <div class="feature-card-overlay is-status-menu">
-                  <div class="feature-status-panel">
-                    <p class="feature-status-summary"><span data-i18n="mockup.partialDegradation">Partial degradation</span> <span data-i18n="mockup.twoIncidents">2 incidents</span></p>
-                    <ul class="feature-status-list" aria-hidden="true">
-                      <li class="is-critical">
-                        <span class="feature-status-dot"></span>
-                        <span class="feature-status-name">Codex API</span>
-                        <span class="feature-status-label" data-i18n="mockup.majorOutage">Major outage</span>
-                      </li>
-                      <li class="is-minor">
-                        <span class="feature-status-dot"></span>
-                        <span class="feature-status-name">Chat Completions</span>
-                        <span class="feature-status-label" data-i18n="mockup.degraded">Degraded</span>
-                      </li>
-                      <li>
-                        <span class="feature-status-dot"></span>
-                        <span class="feature-status-name">CLI</span>
-                        <span class="feature-status-label" data-i18n="mockup.operational">Operational</span>
-                      </li>
-                      <li>
-                        <span class="feature-status-dot"></span>
-                        <span class="feature-status-name">Responses</span>
-                        <span class="feature-status-label" data-i18n="mockup.operational">Operational</span>
-                      </li>
-                    </ul>
-                  </div>
+              <div class="nudge-illustration" aria-label="Illustration of a Codex quota notification" role="img">
+                <span class="illustration-label">Illustration</span>
+                <div class="notification-card">
+                  <img src="./icon-64.png" width="64" height="64" alt="" loading="lazy" decoding="async" />
+                  <div><strong>Codex weekly limit</strong><span>Usage is running ahead of pace.</span></div>
+                  <span>now</span>
                 </div>
               </div>
             </article>
           </div>
+
+          <div class="native-proof">
+            <div class="native-proof-icon" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+            <div>
+              <h3>Built for the Windows taskbar.</h3>
+              <p>
+                WPF and Win32—not a browser shell. The tracked overlay positions itself opposite the clock,
+                adapts through Full, Medium, and Compact layouts, and hides for auto-hidden taskbars or fullscreen displays.
+              </p>
+            </div>
+            <ul class="layout-tiers" aria-label="Responsive widget layouts">
+              <li><b>Full</b><span>details</span></li>
+              <li><b>Medium</b><span>essentials</span></li>
+              <li><b>Compact</b><span>provider marks</span></li>
+            </ul>
+          </div>
         </div>
       </section>
 
-      <section class="cli-section px-5 py-20 sm:px-8 lg:px-12 lg:py-28" data-scroll-section>
-        <div class="section-inner relative z-10">
-          <div class="split-layout">
-            <div class="split-visual-wrap provider-reveal" role="img" aria-label="CodexBar CLI output preview" data-i18n-aria-label="cli.outputPreviewAria">
-              <div class="cli-terminal">
-                <div class="cli-terminal-chrome">
-                  <div class="cli-terminal-dots" aria-hidden="true">
-                    <span></span><span></span><span></span>
-                  </div>
-                  <p class="cli-terminal-title">codexbar · terminal</p>
-                  <div class="cli-terminal-chrome-spacer" aria-hidden="true"></div>
-                </div>
+      <section class="steps-section section" id="how-it-works" aria-labelledby="steps-title">
+        <div class="shell">
+          <div class="section-heading centered-heading compact-heading">
+            <p class="eyebrow">From install to glance</p>
+            <h2 id="steps-title">Set it up in three steps.</h2>
+          </div>
+          <ol class="steps-grid">
+            <li>
+              <span class="step-number">1</span>
+              <h3>Install for your Windows account</h3>
+              <p>The self-contained x64 release needs no separate .NET runtime and installs per-user without administrator access.</p>
+            </li>
+            <li>
+              <span class="step-number">2</span>
+              <h3>Connect only your providers</h3>
+              <p>Use browser sign-in, GitHub device flow, or enter the required API key or cookie for the provider you choose.</p>
+            </li>
+            <li>
+              <span class="step-number">3</span>
+              <h3>Glance, click, or get notified</h3>
+              <p>Choose a refresh interval, open the flyout for detail, and enable threshold alerts if you want an earlier warning.</p>
+            </li>
+          </ol>
+          <p class="disclosure">CodexWinBar can only display the fields each provider makes available, and provider endpoints can change.</p>
+        </div>
+      </section>
 
-                <div class="cli-terminal-body">
-                  <section class="cli-provider-block">
-                    <p class="cli-provider-label">== Codex (oauth) ==</p>
-                    <div class="cli-row">
-                      <span class="cli-row-label" data-i18n="mockup.session">Session</span>
-                      <span class="cli-row-value" data-i18n="cli.left99">99% left</span>
-                      <div class="cli-meter" aria-hidden="true"><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i></i></div>
-                      <span class="cli-row-note" data-i18n="cli.resets5h">Resets in 5h</span>
-                    </div>
-                    <div class="cli-row">
-                      <span class="cli-row-label" data-i18n="mockup.weekly">Weekly</span>
-                      <span class="cli-row-value" data-i18n="cli.left100">100% left</span>
-                      <div class="cli-meter" aria-hidden="true"><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i></div>
-                      <span class="cli-row-note" data-i18n="cli.resets7d">Resets in 7d</span>
-                    </div>
-                    <div class="cli-row is-meta"><span class="cli-row-label" data-i18n="mockup.credits">Credits</span><span class="cli-row-value" data-i18n="mockup.zeroLeft">0 left</span></div>
-                    <div class="cli-row is-meta"><span class="cli-row-label" data-i18n="mockup.limitResetCredits">Limit Reset Credits</span><span class="cli-row-value" data-i18n="cli.available1">1 available</span></div>
-                    <div class="cli-row is-meta"><span class="cli-row-label" data-i18n="cli.nextResetCredit">Next reset credit</span><span class="cli-row-value" data-i18n="cli.expires27d22h">expires in 27d 22h</span></div>
-                    <div class="cli-row is-meta"><span class="cli-row-label" data-i18n="cli.account">Account</span><span class="cli-row-value">user@example.com</span></div>
-                    <div class="cli-row is-meta"><span class="cli-row-label" data-i18n="cli.plan">Plan</span><span class="cli-row-value">Plus</span></div>
-                  </section>
-
-                  <section class="cli-provider-block">
-                    <p class="cli-provider-label">== elevenlabs ==</p>
-                    <div class="cli-row">
-                      <span class="cli-row-label" data-i18n="cli.total">Total</span>
-                      <span class="cli-row-value" data-i18n="cli.left79">79% left</span>
-                      <div class="cli-meter" aria-hidden="true"><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i></i><i></i><i></i></div>
-                      <span class="cli-row-note" data-i18n="cli.resets23d18h">Resets in 23d 18h</span>
-                    </div>
-                    <div class="cli-row">
-                      <span class="cli-row-label" data-i18n="cli.auto">Auto</span>
-                      <span class="cli-row-value" data-i18n="cli.left74">74% left</span>
-                      <div class="cli-meter" aria-hidden="true"><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i></i><i></i><i></i><i></i></div>
-                      <span class="cli-row-note" data-i18n="cli.resets23d18h">Resets in 23d 18h</span>
-                    </div>
-                    <div class="cli-row">
-                      <span class="cli-row-label">API</span>
-                      <span class="cli-row-value" data-i18n="cli.left99">99% left</span>
-                      <div class="cli-meter" aria-hidden="true"><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i class="is-filled"></i><i></i></div>
-                      <span class="cli-row-note" data-i18n="cli.resets23d18h">Resets in 23d 18h</span>
-                    </div>
-                    <div class="cli-row is-meta"><span class="cli-row-label" data-i18n="cli.account">Account</span><span class="cli-row-value">user@example.com</span></div>
-                    <div class="cli-row is-meta"><span class="cli-row-label" data-i18n="cli.plan">Plan</span><span class="cli-row-value">Elevenlabs Pro</span></div>
-                  </section>
-                </div>
-
-                <div class="cli-terminal-foot">
-                  <p><strong>&gt;</strong> codexbar<span class="cli-terminal-cursor" aria-hidden="true">▍</span></p>
-                </div>
-              </div>
-            </div>
-
-            <div class="split-copy">
-              <h2 class="split-copy-heading provider-reveal" style="--reveal-delay: 70ms">
-                <span class="section-title-line">CodexBar</span>
-                <span class="section-title-line" data-i18n="cli.titleLine2">on CLI</span>
-              </h2>
-              <p class="split-copy-lead provider-reveal" style="--reveal-delay: 110ms">
-                <span data-i18n-rich="cli.lead">A bundled {codexbar} binary with the same usage output as the menu bar — scripts, CI, and quick terminal checks.</span>
-              </p>
-              <p class="split-copy-note provider-reveal" style="--reveal-delay: 150ms">
-                <span data-i18n="cli.note">Standalone tarballs for macOS and Linux on every release.</span>
-              </p>
-              <p class="cli-footnote provider-reveal" style="--reveal-delay: 190ms">
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path fill="currentColor" d="M12 2.5 4.5 6.5v5.8c0 4.55 3.08 8.02 7.5 9.2 4.42-1.18 7.5-4.65 7.5-9.2V6.5L12 2.5Z" opacity="0.22" />
-                  <path d="M12 2.5 4.5 6.5v5.8c0 4.55 3.08 8.02 7.5 9.2 4.42-1.18 7.5-4.65 7.5-9.2V6.5L12 2.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
-                  <path d="m9.25 11.75 1.9 1.9 3.6-3.6" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-                <span data-i18n="cli.privacy">CodexBar reuses existing provider sessions — no passwords stored on disk.</span>
-              </p>
+      <section class="privacy-section section" id="privacy" aria-labelledby="privacy-title">
+        <div class="shell privacy-panel">
+          <div class="privacy-heading">
+            <p class="eyebrow">Privacy without vague absolutes</p>
+            <h2 id="privacy-title">Local by design, precise about network access.</h2>
+          </div>
+          <div class="privacy-copy">
+            <p class="privacy-lead">No CodexWinBar account. No CodexWinBar backend. No analytics or telemetry.</p>
+            <p>
+              A fresh install connects nothing. Codex and Claude OAuth credentials are protected for your Windows
+              account with DPAPI. API keys, the Copilot token, and Cursor cookies are stored in the CodexBar-compatible
+              local config file, which CodexWinBar restricts to the current Windows user when Windows permits it.
+            </p>
+            <p>
+              The app contacts the services you connect, optional provider status services, and GitHub Releases for
+              update checks. Fetched usage is rendered locally and is not forwarded to a CodexWinBar service.
+            </p>
+            <div class="text-links">
+              <a href="https://github.com/ItayCohen-Prog/CodexWinBar/blob/main/src/CodexWinBar.Core/Auth/AppCredentialStore.cs">View credential storage code</a>
+              <a href="https://github.com/ItayCohen-Prog/CodexWinBar/tree/main/src/CodexWinBar.Providers">View provider code</a>
+              <a href="https://github.com/ItayCohen-Prog/CodexWinBar/blob/main/LICENSE">Read the MIT license</a>
             </div>
           </div>
         </div>
       </section>
 
-      <section class="widgets-section px-5 py-20 sm:px-8 lg:px-12 lg:py-28" data-scroll-section>
-        <div class="section-inner relative z-10">
-          <div class="split-layout split-layout--copy-left">
-            <div class="split-copy">
-              <h2 class="split-copy-heading provider-reveal">
-                <span class="section-title-line">CodexBar</span>
-                <span class="section-title-line" data-i18n="widgets.titleLine2">widgets</span>
-              </h2>
-              <p class="split-copy-lead provider-reveal" style="--reveal-delay: 70ms">
-                <span data-i18n="widgets.lead">WidgetKit widgets for supported providers — usage windows, reset countdowns, and spend where available. Drop them on your Home Screen and desktop.</span>
-              </p>
-              <p class="split-copy-note provider-reveal" style="--reveal-delay: 120ms">
-                <span data-i18n="widgets.note">Small, medium, and large sizes. Switch providers without leaving the widget.</span>
-              </p>
+      <section class="install-section section" id="install" aria-labelledby="install-title">
+        <div class="shell">
+          <div class="section-heading split-heading install-heading">
+            <div>
+              <p class="eyebrow">Windows 11 x64</p>
+              <h2 id="install-title">Install CodexWinBar.</h2>
             </div>
+            <p>
+              The recommended installer is per-user and needs no administrator access. Review the short script before
+              running it if you prefer to verify every step.
+            </p>
+          </div>
 
-            <div class="split-visual-wrap provider-reveal" style="--reveal-delay: 80ms">
-              <div class="mac-widget-sheet" role="img" aria-label="macOS widget gallery preview" data-i18n-aria-label="widgets.galleryAria">
-                <div class="mac-widget-sheet__body">
-                  <aside class="mac-widget-sidebar" aria-label="Widget categories" data-i18n-aria-label="widgets.categoriesAria">
-                    <div class="mac-widget-search">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <circle cx="11" cy="11" r="7" />
-                        <path d="m20 20-3.2-3.2" />
-                      </svg>
-                      <span>codexb</span>
-                    </div>
-                    <ul class="mac-widget-nav">
-                      <li>
-                        <span class="mac-widget-nav-icon" aria-hidden="true">
-                          <svg viewBox="0 0 16 16" fill="currentColor" width="10" height="10">
-                            <rect x="1" y="1" width="6" height="6" rx="1.2" />
-                            <rect x="9" y="1" width="6" height="6" rx="1.2" />
-                            <rect x="1" y="9" width="6" height="6" rx="1.2" />
-                            <rect x="9" y="9" width="6" height="6" rx="1.2" />
-                          </svg>
-                        </span>
-                        <span data-i18n="widgets.allWidgets">All Widgets</span>
-                      </li>
-                      <li class="is-active">
-                        <span class="mac-widget-nav-icon is-app" aria-hidden="true">
-                          <img src="./icon.png" alt="" loading="lazy" />
-                        </span>
-                        CodexBar
-                      </li>
-                    </ul>
-                  </aside>
-
-                  <div class="mac-widget-main">
-                    <p class="mac-widget-main__title">CodexBar</p>
-                    <div class="mac-widget-gallery-wrap">
-                    <div class="mac-widget-gallery">
-                      <div class="mac-widget-row">
-                        <article class="widget-tile is-small">
-                          <div class="widget-preview">
-                            <img src="./widgets/03-codexbar-metric-compact.png" alt="" width="204" height="204" loading="lazy" />
-                          </div>
-                          <h4>CodexBar Metric</h4>
-                          <p data-i18n="widgets.metricCaption">Compact widget for credits or cost.</p>
-                        </article>
-                        <article class="widget-tile is-medium">
-                          <div class="widget-preview">
-                            <img src="./widgets/01-codexbar-history-small.png" alt="" width="428" height="204" loading="lazy" />
-                          </div>
-                          <h4>CodexBar History</h4>
-                          <p data-i18n="widgets.historyCaption">Usage history chart with recent totals.</p>
-                        </article>
-                        <article class="widget-tile is-large">
-                          <div class="widget-preview">
-                            <img src="./widgets/02-codexbar-history-large.png" alt="" width="388" height="370" loading="lazy" />
-                          </div>
-                          <h4>CodexBar History</h4>
-                          <p data-i18n="widgets.historyCaption">Usage history chart with recent totals.</p>
-                        </article>
-                      </div>
-
-                      <div class="mac-widget-row">
-                        <article class="widget-tile is-small">
-                          <div class="widget-preview">
-                            <img src="./widgets/06-codexbar-usage-compact.png" alt="" width="204" height="204" loading="lazy" />
-                          </div>
-                          <h4>CodexBar Usage</h4>
-                          <p data-i18n="widgets.usageCaption">Session and weekly usage with credits and costs.</p>
-                        </article>
-                        <article class="widget-tile is-medium">
-                          <div class="widget-preview">
-                            <img src="./widgets/07-codexbar-usage-wide.png" alt="" width="428" height="204" loading="lazy" />
-                          </div>
-                          <h4>CodexBar Usage</h4>
-                          <p data-i18n="widgets.usageCaption">Session and weekly usage with credits and costs.</p>
-                        </article>
-                        <article class="widget-tile is-large">
-                          <div class="widget-preview">
-                            <img src="./widgets/08-codexbar-usage-large.png" alt="" width="388" height="388" loading="lazy" />
-                          </div>
-                          <h4>CodexBar Usage</h4>
-                          <p data-i18n="widgets.usageCaption">Session and weekly usage with credits and costs.</p>
-                        </article>
-                      </div>
-
-                      <div class="mac-widget-row">
-                        <article class="widget-tile is-small">
-                          <div class="widget-preview">
-                            <img src="./widgets/09-codexbar-switcher-compact.png" alt="" width="204" height="204" loading="lazy" />
-                          </div>
-                          <h4>CodexBar Switcher</h4>
-                          <p data-i18n="widgets.switcherCaption">Usage widget with a provider switcher.</p>
-                        </article>
-                        <article class="widget-tile is-medium">
-                          <div class="widget-preview">
-                            <img src="./widgets/10-codexbar-switcher-wide.png" alt="" width="428" height="204" loading="lazy" />
-                          </div>
-                          <h4>CodexBar Switcher</h4>
-                          <p data-i18n="widgets.switcherCaption">Usage widget with a provider switcher.</p>
-                        </article>
-                        <article class="widget-tile is-large">
-                          <div class="widget-preview">
-                            <img src="./widgets/11-codexbar-switcher-large.png" alt="" width="388" height="388" loading="lazy" />
-                          </div>
-                          <h4>CodexBar Switcher</h4>
-                          <p data-i18n="widgets.switcherCaption">Usage widget with a provider switcher.</p>
-                        </article>
-                      </div>
-
-                      <div class="mac-widget-row">
-                        <article class="widget-tile is-medium">
-                          <div class="widget-preview">
-                            <img src="./widgets/04-codexbar-burndown.png" alt="" width="427" height="203" loading="lazy" />
-                          </div>
-                          <h4>CodexBar Burn Down</h4>
-                          <p data-i18n="widgets.burndownCaption">Remaining budget compared with an ideal steady burn rate.</p>
-                        </article>
-                        <article class="widget-tile is-medium">
-                          <div class="widget-preview">
-                            <img src="./widgets/05-codexbar-burndown-combined.png" alt="" width="427" height="203" loading="lazy" />
-                          </div>
-                          <h4>CodexBar Burn Down (Combined)</h4>
-                          <p data-i18n="widgets.burndownCombinedCaption">Session and weekly burn-down charts in one tile.</p>
-                        </article>
-                      </div>
-                    </div>
-                    </div>
-                  </div>
+          <div class="install-grid">
+            <article class="install-card install-recommended">
+              <div class="install-card-heading">
+                <div>
+                  <span class="recommendation">Recommended</span>
+                  <h3>PowerShell</h3>
                 </div>
-
-                <div class="mac-widget-sheet__foot">
-                  <p data-i18n="widgets.dragToDesktop">Drag a widget to the desktop…</p>
-                  <span class="mac-widget-ok">OK</span>
-                </div>
+                <span class="install-meta">PowerShell 5+</span>
               </div>
+              <div class="command-box">
+                <span aria-hidden="true">PS&gt;</span>
+                <code id="install-command">irm https://codexwinbar.webivize.com | iex</code>
+                <button class="copy-button" type="button" data-copy-target="install-command" hidden>
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="4" width="9" height="10" rx="2" /><path d="M13 16H6a2 2 0 0 1-2-2V7" /></svg>
+                  <span>Copy command</span>
+                </button>
+              </div>
+              <p>
+                The script resolves the latest release, refuses unexpected download hosts, and compares SHA-256 when
+                GitHub publishes a digest. It then installs for the current user.
+              </p>
+              <a class="inline-link" href="https://github.com/ItayCohen-Prog/CodexWinBar/blob/main/install.ps1">Inspect install.ps1 before running it</a>
+            </article>
+
+            <article class="install-card">
+              <div class="install-card-heading">
+                <div>
+                  <span class="option-label">Alternative</span>
+                  <h3>Direct Setup.exe</h3>
+                </div>
+                <span class="install-meta">Latest release</span>
+              </div>
+              <p class="warning">
+                <strong>Currently unsigned.</strong> A browser download can show an Unknown publisher warning. Review
+                the repository and release before choosing “More info → Run anyway.”
+              </p>
+              <a class="button button-secondary" href="https://github.com/ItayCohen-Prog/CodexWinBar/releases/latest/download/CodexWinBar-win-Setup.exe">Download latest Setup.exe</a>
+              <a class="inline-link" href="https://github.com/ItayCohen-Prog/CodexWinBar/releases/latest">View the latest release</a>
+            </article>
+
+            <article class="install-card">
+              <div class="install-card-heading">
+                <div>
+                  <span class="option-label">Developer path</span>
+                  <h3>Build from source</h3>
+                </div>
+                <span class="install-meta">.NET 9 SDK</span>
+              </div>
+              <p>Building requires the .NET 9 SDK. Published installers already include the required runtime.</p>
+              <a class="button button-secondary" href="https://github.com/ItayCohen-Prog/CodexWinBar#install">View build instructions</a>
+            </article>
+
+            <article class="install-card install-pending">
+              <div class="install-card-heading">
+                <div>
+                  <span class="pending-label">Pending review</span>
+                  <h3>Winget</h3>
+                </div>
+                <span class="install-meta">Not available yet</span>
+              </div>
+              <p>
+                The winget submission is awaiting Microsoft review. Do not use it as an installation path until the
+                public catalog resolves <code>ItayCohen.CodexWinBar</code>.
+              </p>
+              <a class="inline-link" href="https://github.com/microsoft/winget-pkgs/pull/398215">Follow the winget review</a>
+            </article>
+          </div>
+
+          <p class="update-note">
+            Installed copies check GitHub for updates at startup and every three hours. When an update is available,
+            the flyout lets you choose when to download and restart.
+          </p>
+          <div id="copy-status" class="live-status" aria-live="polite" aria-atomic="true"></div>
+        </div>
+      </section>
+
+      <section class="open-source-section section" id="open-source" aria-labelledby="open-source-title">
+        <div class="shell open-source-grid">
+          <div class="open-source-copy">
+            <p class="eyebrow">Open from installer to provider parser</p>
+            <h2 id="open-source-title">Inspectable by design.</h2>
+            <p>
+              CodexWinBar is a native C#/.NET 9 Windows application built with WPF and Win32. The source,
+              provider integrations, installer script, and tests are public under the MIT license.
+            </p>
+            <div class="button-row">
+              <a class="button button-primary" href="https://github.com/ItayCohen-Prog/CodexWinBar">View Windows source</a>
+              <a class="button button-secondary" href="https://github.com/ItayCohen-Prog/CodexWinBar/blob/main/LICENSE">Read the license</a>
+            </div>
+          </div>
+          <ul class="source-facts">
+            <li><span>C# / .NET 9</span><strong>Native Windows app</strong></li>
+            <li><span>WPF + Win32</span><strong>No browser runtime</strong></li>
+            <li><span>Windows CI</span><strong>Builds and tests changes</strong></li>
+            <li><span>MIT</span><strong>Open source</strong></li>
+          </ul>
+        </div>
+
+        <div class="shell lineage-panel">
+          <div class="lineage-icons" aria-hidden="true">
+            <img src="./icon-64.png" width="64" height="64" alt="" loading="lazy" decoding="async" />
+            <span>+</span>
+            <svg viewBox="0 0 48 48"><path d="M12 11h24a5 5 0 0 1 5 5v16a5 5 0 0 1-5 5H12a5 5 0 0 1-5-5V16a5 5 0 0 1 5-5Z" /><path d="M16 20h16M16 28h10" /></svg>
+          </div>
+          <div>
+            <h2>A Windows rebuild of CodexBar.</h2>
+            <p>
+              CodexWinBar builds on the product concept and provider-protocol research of CodexBar by Peter Steinberger.
+              The Windows port reimplements the experience in C#/.NET 9 with WPF and Win32 while retaining compatible
+              config paths and schema handling. OAuth sessions and unimplemented providers do not sync.
+            </p>
+            <p class="credit-line">Windows port by Itay Cohen. Both projects are MIT licensed.</p>
+            <div class="text-links">
+              <a href="https://github.com/steipete/CodexBar">Visit upstream CodexBar</a>
+              <a href="https://github.com/ItayCohen-Prog/CodexWinBar">View CodexWinBar</a>
+              <a href="https://github.com/ItayCohen-Prog/CodexWinBar/blob/main/LICENSE">Read the license</a>
             </div>
           </div>
         </div>
       </section>
 
-      <section class="technical-section px-5 py-16 sm:px-8 lg:px-12 lg:py-20" data-scroll-section>
-        <div class="section-inner">
-        <p class="section-eyebrow provider-reveal" data-i18n="detail.more">More</p>
-
-        <div class="technical-grid relative z-10">
-          <article class="technical-block provider-reveal" style="--reveal-delay: 60ms">
-            <h3 data-i18n="detail.installTitle">Install &amp; updates</h3>
-            <p>
-              <span data-i18n-rich="detail.installBody">Universal app via {releases} with Sparkle auto-updates, or via {cask} (updates via {upgrade}).</span>
-            </p>
-          </article>
-          <article class="technical-block provider-reveal" style="--reveal-delay: 110ms">
-            <h3 data-i18n="detail.cliTitle">CLI</h3>
-            <p>
-              <span data-i18n-rich="detail.cliBody">A bundled {codexbar} binary plus standalone tarballs for macOS and Linux on each release. On Linux: {linuxCommand}.</span>
-            </p>
-          </article>
-          <article class="technical-block provider-reveal" style="--reveal-delay: 160ms">
-            <h3 data-i18n="detail.privacyTitle">Privacy</h3>
-            <p>
-              <span data-i18n-rich="detail.privacyBody">Reuses existing provider sessions — OAuth, device flow, API keys, browser cookies, local files — so no passwords are stored. Audit notes in {issue}.</span>
-            </p>
-          </article>
-          <article class="technical-block provider-reveal" style="--reveal-delay: 210ms">
-            <h3 data-i18n="detail.permissionsTitle">macOS permissions</h3>
-            <p>
-              <span data-i18n="detail.permissionsBody">Full Disk Access for Safari cookies, Keychain access for cookie decryption and OAuth flows, and Files &amp; Folders prompts when provider helpers read project directories.</span>
-            </p>
-          </article>
-        </div>
+      <section class="final-cta section" aria-labelledby="final-title">
+        <div class="shell final-cta-inner">
+          <div>
+            <p class="eyebrow">Keep the next reset in sight</p>
+            <h2 id="final-title">Put supported AI coding limits one click from your taskbar.</h2>
+          </div>
+          <div class="button-row">
+            <a class="button button-primary" href="#install">Get CodexWinBar</a>
+            <a class="button button-secondary" href="https://github.com/ItayCohen-Prog/CodexWinBar">Inspect the source</a>
+          </div>
         </div>
       </section>
     </main>
 
-    <footer class="site-footer px-5 sm:px-8 lg:px-12">
-      <span data-i18n="footer.builtBy">Built by</span>
-      <a href="https://github.com/steipete">Peter Steinberger</a>
-      <span aria-hidden="true"> · </span>
-      <a href="https://github.com/steipete/CodexBar/blob/main/CHANGELOG.md" data-i18n="footer.changelog">Changelog</a>
-      <span aria-hidden="true"> · </span>
-      <a href="https://github.com/steipete/CodexBar/blob/main/LICENSE">MIT</a>
-      <span aria-hidden="true"> · </span>
-      <a href="https://trimmy.app">trimmy.app</a>
+    <footer class="site-footer">
+      <div class="shell footer-grid">
+        <div class="footer-brand">
+          <a class="brand" href="#top" aria-label="CodexWinBar home">
+            <img src="./icon-64.png" width="64" height="64" alt="" loading="lazy" decoding="async" />
+            <span>CodexWinBar</span>
+          </a>
+          <p>Supported AI coding limits on your Windows 11 taskbar.</p>
+        </div>
+        <nav aria-label="Footer navigation">
+          <a href="https://github.com/ItayCohen-Prog/CodexWinBar">Source</a>
+          <a href="https://github.com/ItayCohen-Prog/CodexWinBar/releases">Releases</a>
+          <a href="https://github.com/ItayCohen-Prog/CodexWinBar/blob/main/LICENSE">License</a>
+          <a href="https://github.com/steipete/CodexBar">Upstream</a>
+        </nav>
+        <p class="footer-credit">Windows port by Itay Cohen.<br />Based on CodexBar by Peter Steinberger.</p>
+      </div>
     </footer>
-
-    <script type="module" src="./site.js?v=4"></script>
-
   </body>
 </html>

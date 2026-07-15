@@ -1,12 +1,18 @@
-# CodexBar
+# CodexWinBar
 
-A tiny macOS menu bar app that tracks AI coding-provider usage windows, credits, costs, and resets across 56 providers — Codex, OpenAI, Claude, Cursor, Gemini, Copilot, LiteLLM, and more.
+Track supported AI coding quotas, reset times, balances, and status from a native Windows 11 taskbar overlay and flyout.
 
 Canonical documentation:
-- CodexBar — every AI coding limit, in your menu bar: https://codexbar.app/ - A tiny macOS menu bar app that tracks AI coding-provider usage windows, credits, costs, and resets across 56 providers — Codex, OpenAI, Claude, Cursor, Gemini, Copilot, LiteLLM, and more.
+- CodexWinBar — AI coding limits on your Windows 11 taskbar: https://itaycohen-prog.github.io/CodexWinBar/ - Track supported AI coding quotas, reset times, balances, and status from a native Windows 11 taskbar overlay and flyout.
 
-Source: https://github.com/steipete/CodexBar
+Source: https://github.com/ItayCohen-Prog/CodexWinBar
+
+Product scope:
+- Windows 11 x64 taskbar overlay with a native WPF flyout.
+- Seven shipping integrations: Codex, Claude, GitHub Copilot, OpenRouter, OpenAI Admin, z.ai, and experimental Cursor.
+- Fresh installs connect nothing; users explicitly connect each provider.
 
 Guidance for agents:
-- Prefer the canonical documentation URLs above over README excerpts or package metadata.
+- Prefer the canonical landing page and shipping Windows source over stale inherited macOS documentation.
+- Do not infer provider support from dormant source files or logo assets.
 - Fetch only the pages needed for the current task; this is an index, not a full-site corpus.

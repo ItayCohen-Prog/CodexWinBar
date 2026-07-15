@@ -66,6 +66,12 @@ internal sealed class ClaudeOAuthFetchStrategy : IFetchStrategy
             credentials = await RefreshAsync(ctx, credentials, ct).ConfigureAwait(false);
             usageJson = await GetUsageAsync(credentials, ct).ConfigureAwait(false);
         }
+
+        if (string.IsNullOrWhiteSpace(credentials.SubscriptionType) && string.IsNullOrWhiteSpace(credentials.RateLimitTier))
+        {
+            credentials = await BackfillPlanFromProfileAsync(ctx, credentials, ct).ConfigureAwait(false);
+        }
+
         var snapshot = ClaudeUsageParser.Parse(usageJson, ctx.Now(), credentials.SubscriptionType, credentials.RateLimitTier);
         if (snapshot.Primary is not null || snapshot.Secondary is not null || snapshot.Tertiary is not null ||
             snapshot.ExtraWindows.Count > 0 || snapshot.Credits is not null)
@@ -115,6 +121,68 @@ internal sealed class ClaudeOAuthFetchStrategy : IFetchStrategy
         ClaudeCredentialStore.Save(ctx, refreshed);
         return refreshed;
     }
+
+    /// <summary>
+    /// The in-app OAuth flow stores only tokens — unlike the CLI's credential file, the token
+    /// exchange rarely returns subscription_type/rate_limit_tier, so the card subtitle degraded to
+    /// the "OAuth" login-method fallback. Fetches the plan fields once from the OAuth profile
+    /// endpoint and persists them alongside the tokens; failures leave the credentials unchanged
+    /// (the plan label is cosmetic and must never break the usage fetch).
+    /// </summary>
+    private static async Task<ClaudeCredentials> BackfillPlanFromProfileAsync(
+        FetchContext ctx,
+        ClaudeCredentials credentials,
+        CancellationToken ct)
+    {
+        try
+        {
+            using var timeout = ProviderHttpClient.TimeoutCts(ct, RequestTimeout);
+            using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.anthropic.com/api/oauth/profile");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentials.AccessToken);
+            request.Headers.Accept.Clear();
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            request.Headers.TryAddWithoutValidation("anthropic-beta", "oauth-2025-04-20");
+            using var response = await ProviderHttpClient.Shared.SendAsync(request, timeout.Token).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return credentials;
+            }
+
+            var body = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
+            using var document = JsonDocument.Parse(body);
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("organization", out var organization) ||
+                organization.ValueKind != JsonValueKind.Object)
+            {
+                return credentials;
+            }
+
+            var subscriptionType = ReadNonEmptyString(organization, "organization_type");
+            var rateLimitTier = ReadNonEmptyString(organization, "rate_limit_tier");
+            if (subscriptionType is null && rateLimitTier is null)
+            {
+                return credentials;
+            }
+
+            var updated = credentials with { SubscriptionType = subscriptionType, RateLimitTier = rateLimitTier };
+            ClaudeCredentialStore.Save(ctx, updated);
+            return updated;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return credentials;
+        }
+    }
+
+    private static string? ReadNonEmptyString(JsonElement obj, string name) =>
+        obj.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String &&
+        !string.IsNullOrWhiteSpace(value.GetString())
+            ? value.GetString()!.Trim()
+            : null;
 
     private static async Task<string> GetUsageAsync(ClaudeCredentials credentials, CancellationToken ct)
     {
@@ -467,20 +535,57 @@ internal static class ClaudeUsageParser
 
     private static string? PlanLabel(string? subscriptionType, string? rateLimitTier)
     {
+        // Try each source for a known plan independently (upstream ClaudePlan.fromOAuthCredentials):
+        // an unrecognized subscriptionType must not shadow a recognizable rateLimitTier.
+        if (KnownPlan(subscriptionType) is { } fromSubscription)
+        {
+            return fromSubscription;
+        }
+
+        if (KnownPlan(rateLimitTier) is { } fromTier)
+        {
+            return fromTier;
+        }
+
         var source = FirstNonEmpty(subscriptionType, rateLimitTier);
-        if (source is null)
+        return source is null
+            ? null
+            : CultureInfo.InvariantCulture.TextInfo.ToTitleCase(source.Replace('_', ' ').Replace('-', ' '));
+    }
+
+    /// <summary>
+    /// Substring plan match, because the real values are decorated: subscriptionType "max_20x" or
+    /// "claude_max", rateLimitTier "default_claude_max_20x" (upstream ClaudePlan matches the same way).
+    /// </summary>
+    private static string? KnownPlan(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
         {
             return null;
         }
 
-        return source.ToLowerInvariant() switch
+        var normalized = value.ToLowerInvariant();
+        if (normalized.Contains("max"))
         {
-            "max" or "max5x" or "max_5x" or "max20x" or "max_20x" => "Max",
-            "pro" => "Pro",
-            "team" => "Team",
-            "enterprise" => "Enterprise",
-            _ => CultureInfo.InvariantCulture.TextInfo.ToTitleCase(source.Replace('_', ' ').Replace('-', ' ')),
-        };
+            return "Max";
+        }
+
+        if (normalized.Contains("pro"))
+        {
+            return "Pro";
+        }
+
+        if (normalized.Contains("team"))
+        {
+            return "Team";
+        }
+
+        if (normalized.Contains("enterprise"))
+        {
+            return "Enterprise";
+        }
+
+        return normalized.Contains("ultra") ? "Ultra" : null;
     }
 
     private static JsonElement? GetProperty(JsonElement element, string name) =>

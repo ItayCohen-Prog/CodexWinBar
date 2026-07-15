@@ -295,6 +295,10 @@ public sealed class UsageStore : IUsageStore
 
         if (changed)
         {
+            // Without this line a provider silently graying out ("signed out") leaves no trace in
+            // app.log, making auth regressions undiagnosable after the fact.
+            this.log($"fetch failed for {id}: {error.GetType().Name}: {error.Message}"
+                + (error is UnauthorizedProviderException ? " -> needs sign-in" : string.Empty));
             this.RaiseStateChanged();
         }
     }

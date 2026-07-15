@@ -65,6 +65,26 @@ public sealed class ClaudeParserTests
         Assert.Contains(snapshot.ExtraWindows, w => w.Id == "claude-routines" && w.Window.UsedPercent == 65);
     }
 
+    [Theory]
+    [InlineData(null, "default_claude_max_20x", "Max")] // OAuth profile tier, no subscription type
+    [InlineData("claude_max", null, "Max")]             // profile organization_type
+    [InlineData("pro", null, "Pro")]
+    [InlineData(null, "default_claude_pro", "Pro")]
+    [InlineData(null, null, null)]                      // nothing known -> LoginMethod fallback in UI
+    public void Parse_derives_plan_from_either_subscription_type_or_rate_limit_tier(
+        string? subscriptionType, string? rateLimitTier, string? expectedPlan)
+    {
+        var snapshot = (UsageSnapshot)ProviderParserReflection.Invoke(
+            "CodexWinBar.Providers.Claude.ClaudeUsageParser",
+            "Parse",
+            """{"five_hour": {"utilization": 10, "resets_at": 1782673200}}""",
+            Now,
+            subscriptionType,
+            rateLimitTier);
+
+        Assert.Equal(expectedPlan, snapshot.Identity?.Plan);
+    }
+
     [Fact]
     public void Parse_malformed_json_throws_clean_JsonException()
     {

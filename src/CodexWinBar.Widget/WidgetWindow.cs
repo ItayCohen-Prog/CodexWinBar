@@ -902,14 +902,15 @@ internal sealed class WidgetWindow : IDisposable
     }
 
     // Comprehensive per-instance diagnostics for the overlay show/hide decision. Logs on every change of
-    // the decision (so a flash between hidden/shown shows up as rapid transitions) and otherwise at most
-    // once every 2s (so a steady state — e.g. "always shown on one monitor" — still records its inputs).
+    // the decision (so a flash between hidden/shown shows up as rapid transitions) and otherwise a steady-
+    // state heartbeat at most once every 5 minutes. The heartbeat was 2s originally, but two widgets each
+    // logging every 2s rotated everything else (fetch/auth diagnostics) out of app.log within the hour.
     // Two widgets (one per taskbar) log independently; compare their lines to see why the monitors differ.
     private void LogOverlayDecision(bool hide, IntPtr liveMonitor, RetractInfo retract, FullscreenInfo full)
     {
         DateTime now = DateTime.UtcNow;
         bool changed = hide != _lastLoggedOverlayHide || !_overlayDecisionLogged;
-        if (!changed && (now - _lastOverlayLogUtc) < TimeSpan.FromSeconds(2))
+        if (!changed && (now - _lastOverlayLogUtc) < TimeSpan.FromMinutes(5))
         {
             return;
         }

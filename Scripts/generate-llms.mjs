@@ -7,10 +7,9 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const docsDir = path.join(repoRoot, "docs");
 const args = process.argv.slice(2);
 const mode = parseMode(args);
-const cname = fs.readFileSync(path.join(docsDir, "CNAME"), "utf8").trim();
-const origin = "https://" + cname;
-const productName = "CodexBar";
-const source = "https://github.com/steipete/CodexBar";
+const origin = "https://itaycohen-prog.github.io/CodexWinBar/";
+const productName = "CodexWinBar";
+const source = "https://github.com/ItayCohen-Prog/CodexWinBar";
 const outputPath = path.join(docsDir, "llms.txt");
 
 const pages = allHtml(docsDir)
@@ -28,7 +27,7 @@ const pages = allHtml(docsDir)
   .sort((a, b) => (a.rel === "index.html" ? -1 : b.rel === "index.html" ? 1 : a.rel.localeCompare(b.rel)));
 const productDescription =
   pages.find((page) => page.rel === "index.html")?.description ||
-  "CodexBar shows AI coding-provider usage limits in the macOS menu bar.";
+  "CodexWinBar shows supported AI coding usage limits from a Windows 11 taskbar overlay and flyout.";
 
 const lines = [
   "# " + productName,
@@ -40,15 +39,21 @@ const lines = [
   "",
   "Source: " + source,
   "",
+  "Product scope:",
+  "- Windows 11 x64 taskbar overlay with a native WPF flyout.",
+  "- Seven shipping integrations: Codex, Claude, GitHub Copilot, OpenRouter, OpenAI Admin, z.ai, and experimental Cursor.",
+  "- Fresh installs connect nothing; users explicitly connect each provider.",
+  "",
   "Guidance for agents:",
-  "- Prefer the canonical documentation URLs above over README excerpts or package metadata.",
+  "- Prefer the canonical landing page and shipping Windows source over stale inherited macOS documentation.",
+  "- Do not infer provider support from dormant source files or logo assets.",
   "- Fetch only the pages needed for the current task; this is an index, not a full-site corpus.",
   "",
 ];
 const output = lines.join("\n");
 
 if (mode === "check") {
-  const current = fs.existsSync(outputPath) ? fs.readFileSync(outputPath, "utf8") : null;
+  const current = fs.existsSync(outputPath) ? normalizeNewlines(fs.readFileSync(outputPath, "utf8")) : null;
   if (current !== output) {
     console.error(`${path.relative(repoRoot, outputPath)} is out of date; run node Scripts/generate-llms.mjs`);
     process.exit(1);
@@ -77,7 +82,7 @@ function allHtml(dir) {
 }
 
 function pageUrl(rel) {
-  return rel === "index.html" ? origin + "/" : origin + "/" + rel;
+  return rel === "index.html" ? origin : origin + rel;
 }
 
 function textContent(value) {
@@ -94,6 +99,10 @@ function attr(value) {
     .trim();
 }
 
+function normalizeNewlines(value) {
+  return value.replace(/\r\n?/g, "\n");
+}
+
 function titleize(input) {
-  return input.replaceAll("-", " ").replace(/\b\w/g, (m) => m.toUpperCase());
+  return input.replaceAll("-", " ").replace(/\b\w/g, (match) => match.toUpperCase());
 }

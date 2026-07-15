@@ -52,7 +52,10 @@ public sealed class FlyoutWindow : Window
     private static readonly Duration CloseSlideDuration = new(TimeSpan.FromMilliseconds(200));
     private static readonly Duration CloseFadeDuration = new(TimeSpan.FromMilliseconds(140));
     private static readonly Duration SwitchFadeOutDuration = new(TimeSpan.FromMilliseconds(110));
-    private static readonly Duration SwitchResizeDuration = new(TimeSpan.FromMilliseconds(200));
+
+    // The resize spans the whole cross-fade (fade-out + fade-in) so the box morphs continuously
+    // while the old text fades out and the new text fades in — keep it their sum.
+    private static readonly Duration SwitchResizeDuration = new(TimeSpan.FromMilliseconds(250));
     private static readonly Duration SwitchFadeInDuration = new(TimeSpan.FromMilliseconds(140));
 
     private static readonly IntPtr HwndTop = IntPtr.Zero;
@@ -565,30 +568,51 @@ public sealed class FlyoutWindow : Window
         this.root.BeginAnimation(UIElement.OpacityProperty, null);
         this.root.Opacity = 1;
 
+        // Panel border-box height currently shown, and the switch target's. The target is
+        // pre-measured by briefly rebuilding to the new provider and back — all synchronous within
+        // this dispatcher frame, so nothing renders mid-shuffle — because the resize must START
+        // TOGETHER with the fade-out. Sequencing it after (resize only alongside the fade-in) left
+        // the new card sitting in the old provider's box with a slack band above the footer, then a
+        // late catch-up shrink: two disjoint motions instead of one continuous morph.
+        var oldPanelBox = this.root.ActualHeight > 0
+            ? this.root.ActualHeight
+            : Math.Max(40, this.sessionWindowHeightDip - (2 * ShadowMarginDip));
+        this.root.BeginAnimation(FrameworkElement.HeightProperty, null);
+        this.root.Height = double.NaN;
+        var previousFocus = this.currentFocusProvider;
+        this.currentFocusProvider = focusProvider;
+        this.RebuildCards();
+        // A REAL layout pass, not MeasureNaturalHeight: its nonce trick only varies the constraint
+        // between consecutive manual measures, so a lone mid-switch measure can still hit the cached
+        // previous provider's DesiredSize (seen live: Claude measured at Codex's height, making the
+        // resize a From==To no-op that snapped at settle). UpdateLayout re-measures the rebuilt tree
+        // with the window's own constraints; nothing renders until this method first awaits.
+        this.root.UpdateLayout();
+        // Clamp to the fixed session window: a taller-than-window target scrolls (or the switch's
+        // finally regrows the window once settled) rather than animating past the HWND and clipping.
+        var newPanelBox = Math.Clamp(
+            this.root.ActualHeight,
+            40,
+            Math.Max(40, this.sessionWindowHeightDip - (2 * ShadowMarginDip)));
+        this.currentFocusProvider = previousFocus;
+        this.RebuildCards();
+        this.log?.Invoke($"switch panel {oldPanelBox:F1} -> {newPanelBox:F1} dip");
+
+        // The WINDOW is never touched here. Its HWND was fixed to the tallest provider at open, so
+        // the whole switch happens INSIDE the WPF sandbox: only the bottom-anchored panel's Height
+        // animates (top edge expands/contracts, bottom edge stationary) while the cards cross-fade.
+        // No SetWindowPos means no native-vs-WPF resize desync — the documented cause of the jitter.
+        this.root.Height = oldPanelBox;
+        var resizeTask = this.AnimateRootHeightAsync(oldPanelBox, newPanelBox, generation);
+
         await this.AnimateCardsOpacityAsync(this.stack.Opacity, 0, SwitchFadeOutDuration, EasingMode.EaseIn, generation).ConfigureAwait(true);
         if (!this.IsCurrentAnimation(generation))
         {
             return;
         }
 
-        // Panel border-box height currently shown, and the target after rebuilding the cards.
-        var oldPanelBox = this.root.ActualHeight > 0
-            ? this.root.ActualHeight
-            : Math.Max(40, this.sessionWindowHeightDip - (2 * ShadowMarginDip));
-
         this.currentFocusProvider = focusProvider;
         this.RebuildCards();
-        var newWindowHeightDip = this.MeasureNaturalHeight();                 // includes the shadow margins
-        var newPanelBox = Math.Max(40, newWindowHeightDip - (2 * ShadowMarginDip));
-
-        // The WINDOW is never touched here. Its HWND was fixed to the tallest provider at open, so
-        // the whole switch happens INSIDE the WPF sandbox: only the bottom-anchored panel's Height
-        // animates (top edge expands/contracts, bottom edge stationary) while the cards cross-fade.
-        // No SetWindowPos means no native-vs-WPF resize desync — the documented cause of the jitter.
-        this.root.BeginAnimation(FrameworkElement.HeightProperty, null);
-        this.root.Height = oldPanelBox;
-
-        var resizeTask = this.AnimateRootHeightAsync(oldPanelBox, newPanelBox, generation);
         var fadeInTask = this.AnimateCardsOpacityAsync(0, 1, SwitchFadeInDuration, EasingMode.EaseOut, generation);
         await Task.WhenAll(resizeTask, fadeInTask).ConfigureAwait(true);
         if (!this.IsCurrentAnimation(generation))

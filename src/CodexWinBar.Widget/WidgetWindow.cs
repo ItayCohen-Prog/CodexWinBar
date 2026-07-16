@@ -315,7 +315,7 @@ internal sealed class WidgetWindow : IDisposable
             // to Compact reveals exactly why (e.g. a negative/tiny budget or an over-measured cluster).
             if (!_fitLogged || _loggedBudget != budget || _loggedFitWidth != _width || _loggedAnchorStart != anchorStart)
             {
-                WidgetLog.Write($"Widget horizontal fit: anchorStart={anchorStart}; budget={budget}px; stripWidth={_width}px; hasRoom={_layoutHasRoom}; taskbar={info.TaskbarRect}; tray={info.TrayRect}; cluster={(_appClusterRect?.ToString() ?? "none")}");
+                WidgetLog.Write($"Widget horizontal fit: anchorStart={anchorStart}; budget={budget}px; stripWidth={_width}px; hasRoom={_layoutHasRoom}; startKnown={_horizontalLayoutKnown}; taskbar={info.TaskbarRect}; tray={info.TrayRect}; cluster={(_appClusterRect?.ToString() ?? "none")}");
                 _fitLogged = true;
                 _loggedBudget = budget;
                 _loggedFitWidth = _width;
@@ -889,6 +889,14 @@ internal sealed class WidgetWindow : IDisposable
         IntPtr liveMonitor = NativeMethods.MonitorFromWindow(_widget, NativeMethods.MONITOR_DEFAULTTONEAREST);
         RetractInfo retract = DescribeRetract(liveMonitor);
         FullscreenInfo full = FullscreenDetector.Describe(liveMonitor, _widget);
+        // A transient staging window holding foreground carries no information; acting on it flashed
+        // the widget over fullscreen apps for the ~1s handoff. Keep the current state until the next
+        // poll (400ms) sees a real foreground window.
+        if (full.IndeterminateForeground)
+        {
+            return;
+        }
+
         // The widget tracks the taskbar like a real part of it: it hides while an auto-hide bar is
         // retracted (slid away) and returns when it slides back up, and it hides for a genuine fullscreen
         // app. It does NOT hide merely because auto-hide is enabled — only while the bar is actually gone.

@@ -6,6 +6,7 @@ internal static partial class NativeMethods
 {
     internal const int GWL_STYLE = -16;
     internal const int GWL_EXSTYLE = -20;
+    internal const int GWLP_HWNDPARENT = -8;
     internal const int GW_OWNER = 4;
     internal const int GA_PARENT = 1;
     internal const int GA_ROOT = 2;

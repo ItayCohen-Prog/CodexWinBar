@@ -40,7 +40,9 @@ internal sealed class WidgetWindow : IDisposable
     private const nuint EmbedProbeRetryTimer = 12;
     private const nuint BobTimer = 13;
     private const nuint StartLayoutRefreshTimer = 14;
+    private const nuint ZOrderReassertTimer = 15;
     private const uint BobIntervalMs = 10;
+    private const int ZOrderReassertTicks = 5;
 
     private readonly WidgetHost _host;
     private readonly ThemeReader _theme = new();
@@ -79,6 +81,7 @@ internal sealed class WidgetWindow : IDisposable
     private int _lastBobOffset;
     private bool _trackingMouse;
     private bool _overlayHidden;
+    private int _zOrderReassertTicksLeft;
     private int _probeFailures;
     private DateTime _displayChangingUntilUtc;
     private Rectangle _placementRect;
@@ -499,6 +502,14 @@ internal sealed class WidgetWindow : IDisposable
         _tray = info.TrayHwnd;
         MeasureForTaskbar(info, overlay: true);
         _widget = NativeMethods.CreateWindowExW(NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_TOPMOST | NativeMethods.WS_EX_LAYERED, _widgetClassName, null, NativeMethods.WS_POPUP, 0, 0, _width, _height, IntPtr.Zero, IntPtr.Zero, _module, IntPtr.Zero);
+        // OWN the overlay to its taskbar (GWLP_HWNDPARENT sets the owner, not the parent): the window
+        // manager keeps owned windows above their owner ATOMICALLY, so when the shell raises the
+        // taskbar (any click on the bar, activation changes) the widget rides above it in the same
+        // operation instead of blinking out until a timer re-asserts topmost — that race was visible
+        // as a flash on every flyout dismiss. Explorer restarts destroy owned windows with the bar;
+        // the TaskbarCreated -> Recreate path already rebuilds the widget then. The timer-driven
+        // re-asserts stay as a backstop for taskbar hwnd swaps that keep the widget alive.
+        _ = NativeMethods.SetWindowLongPtrW(_widget, NativeMethods.GWLP_HWNDPARENT, _taskbar);
         PositionOverlay(info);
         uint visibility = _layoutHasRoom ? NativeMethods.SWP_SHOWWINDOW : NativeMethods.SWP_HIDEWINDOW;
         _ = NativeMethods.SetWindowPos(_widget, NativeMethods.HWND_TOPMOST, _screenRect.X, _screenRect.Y, _width, _height, NativeMethods.SWP_NOACTIVATE | visibility);
@@ -877,6 +888,26 @@ internal sealed class WidgetWindow : IDisposable
         return new RetractInfo(onScreenThickness <= Scale(6), autoHide, onScreenThickness, bar, mi.rcMonitor);
     }
 
+    /// <summary>
+    /// Puts the overlay back on top of the topmost band without moving, resizing, or re-rendering it.
+    /// The shell raises the taskbar above everything topmost whenever a window is activated; the widget
+    /// must ride back above the bar or it shows through the taskbar's pixels as a blink-out.
+    /// </summary>
+    private void ReassertOverlayTopmost()
+    {
+        if (_effectiveMode == WidgetMode.Overlay && _widget != IntPtr.Zero && !_overlayHidden)
+        {
+            _ = NativeMethods.SetWindowPos(
+                _widget,
+                NativeMethods.HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE);
+        }
+    }
+
     private void UpdateOverlayVisibility()
     {
         if (_effectiveMode != WidgetMode.Overlay || _widget == IntPtr.Zero)
@@ -1002,6 +1033,17 @@ internal sealed class WidgetWindow : IDisposable
                     else if ((nuint)wParam == OverlayPollTimer)
                     {
                         UpdateOverlayVisibility();
+                        // Standing backstop for taskbar raises with no foreground event (the burst
+                        // below handles the common activation-driven raise within ~60ms).
+                        ReassertOverlayTopmost();
+                    }
+                    else if ((nuint)wParam == ZOrderReassertTimer)
+                    {
+                        ReassertOverlayTopmost();
+                        if (--_zOrderReassertTicksLeft <= 0)
+                        {
+                            _ = NativeMethods.KillTimer(hwnd, ZOrderReassertTimer);
+                        }
                     }
                     else if ((nuint)wParam == EmbedProbeRetryTimer)
                     {
@@ -1177,6 +1219,14 @@ internal sealed class WidgetWindow : IDisposable
         if (eventType == NativeMethods.EVENT_SYSTEM_FOREGROUND)
         {
             _ = NativeMethods.PostMessageW(_controller, RepositionMessage, IntPtr.Zero, IntPtr.Zero);
+            // Activating a window makes the shell RAISE THE TASKBAR within the topmost band —
+            // often AFTER the reposition above has already re-asserted, so the taskbar lands over
+            // the widget and it visibly blinks out until the next reposition (~250ms+, seen when
+            // dismissing the flyout with a click). Beat the race with a short burst of cheap
+            // z-order-only re-asserts. (OUTOFCONTEXT hooks run on this thread's message loop, so
+            // touching the counter here is single-threaded.)
+            _zOrderReassertTicksLeft = ZOrderReassertTicks;
+            _ = NativeMethods.SetTimer(_controller, ZOrderReassertTimer, 60, IntPtr.Zero);
             return;
         }
 

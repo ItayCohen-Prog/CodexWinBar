@@ -1,13 +1,16 @@
 namespace CodexWinBar.Widget;
 
 /// <summary>Full breakdown of the fullscreen check on a monitor, so diagnostics can see WHY it fired.</summary>
+/// <remarks><see cref="IndeterminateForeground"/> flags a transient staging window holding foreground:
+/// the check learned NOTHING this poll and the caller should keep its previous show/hide state.</remarks>
 internal readonly record struct FullscreenInfo(
     bool IsFullscreen,
     IntPtr Foreground,
     bool SameMonitor,
     bool Zoomed,
     bool CoversMonitor,
-    NativeMethods.RECT ForegroundRect);
+    NativeMethods.RECT ForegroundRect,
+    bool IndeterminateForeground = false);
 
 internal static class FullscreenDetector
 {
@@ -27,6 +30,26 @@ internal static class FullscreenDetector
         if (foreground == IntPtr.Zero || foreground == ignoreWindow || monitor == IntPtr.Zero)
         {
             return new FullscreenInfo(false, foreground, false, false, false, default);
+        }
+
+        // Clicking the wallpaper (or Win+D) makes the DESKTOP itself the foreground window — 'Progman',
+        // or a 'WorkerW' wallpaper worker. That window spans the whole VIRTUAL screen, so the
+        // covers-monitor test below reads it as a fullscreen app and hides the widget on every desktop
+        // click (confirmed from a user's diagnostics: fg='Progman' fgRect=0,0,4480,1440 → HIDE). The
+        // desktop is never a fullscreen app; taskbar utilities conventionally exclude these classes.
+        string foregroundClass = NativeMethods.GetWindowClass(foreground);
+        if (foregroundClass is "Progman" or "WorkerW")
+        {
+            return new FullscreenInfo(false, foreground, false, false, false, default);
+        }
+
+        // Windows briefly focuses invisible staging windows during foreground handoffs (alt-tab, app
+        // launches): 'ForegroundStaging' and the shell's 'XamlExplorerHostIslandWindow'. They say
+        // nothing about what is actually on screen — reading them as "not fullscreen" popped the
+        // widget over fullscreen video for the ~1s they held foreground (seen in user diagnostics).
+        if (foregroundClass is "ForegroundStaging" or "XamlExplorerHostIslandWindow")
+        {
+            return new FullscreenInfo(false, foreground, false, false, false, default, IndeterminateForeground: true);
         }
 
         IntPtr foregroundMonitor = NativeMethods.MonitorFromWindow(foreground, NativeMethods.MONITOR_DEFAULTTONEAREST);

@@ -964,7 +964,7 @@ internal sealed class WidgetWindow : IDisposable
             $"Overlay decision [{role} tb=0x{_taskbar.ToInt64():X} assignedMon=0x{_monitor.ToInt64():X} liveMon=0x{liveMonitor.ToInt64():X} dpi={_dpi} vertical={_vertical}]: " +
             $"HIDE={hide} changed={changed} | layoutHasRoom={_layoutHasRoom} | " +
             $"retract{{enabled={retract.AutoHideEnabled} thickness={retract.OnScreenThickness} retracted={retract.Retracted} bar={Fmt(retract.BarRect)} mon={Fmt(retract.MonitorRect)}}} | " +
-            $"fullscreen{{fg=0x{full.Foreground.ToInt64():X} '{fgClass}' same={full.SameMonitor} zoomed={full.Zoomed} covers={full.CoversMonitor} isFull={full.IsFullscreen} fgRect={Fmt(full.ForegroundRect)}}} | " +
+            $"fullscreen{{fg=0x{full.Foreground.ToInt64():X} '{fgClass}' same={full.SameMonitor} zoomed={full.Zoomed} borderless={full.Borderless} style=0x{full.WindowStyle:X8} covers={full.CoversMonitor} isFull={full.IsFullscreen} fgRect={Fmt(full.ForegroundRect)}}} | " +
             $"placement={_placementRect.X},{_placementRect.Y},{_placementRect.Width}x{_placementRect.Height} overlayHidden={_overlayHidden}");
     }
 

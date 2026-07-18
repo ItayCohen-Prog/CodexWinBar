@@ -9,6 +9,8 @@ internal readonly record struct FullscreenInfo(
     bool SameMonitor,
     bool Zoomed,
     bool CoversMonitor,
+    bool Borderless,
+    uint WindowStyle,
     NativeMethods.RECT ForegroundRect,
     bool IndeterminateForeground = false);
 
@@ -29,7 +31,7 @@ internal static class FullscreenDetector
         IntPtr foreground = NativeMethods.GetForegroundWindow();
         if (foreground == IntPtr.Zero || foreground == ignoreWindow || monitor == IntPtr.Zero)
         {
-            return new FullscreenInfo(false, foreground, false, false, false, default);
+            return new FullscreenInfo(false, foreground, false, false, false, false, 0, default);
         }
 
         // Clicking the wallpaper (or Win+D) makes the DESKTOP itself the foreground window — 'Progman',
@@ -40,7 +42,7 @@ internal static class FullscreenDetector
         string foregroundClass = NativeMethods.GetWindowClass(foreground);
         if (foregroundClass is "Progman" or "WorkerW")
         {
-            return new FullscreenInfo(false, foreground, false, false, false, default);
+            return new FullscreenInfo(false, foreground, false, false, false, false, 0, default);
         }
 
         // Windows briefly focuses invisible staging windows during foreground handoffs (alt-tab, app
@@ -49,12 +51,14 @@ internal static class FullscreenDetector
         // widget over fullscreen video for the ~1s they held foreground (seen in user diagnostics).
         if (foregroundClass is "ForegroundStaging" or "XamlExplorerHostIslandWindow")
         {
-            return new FullscreenInfo(false, foreground, false, false, false, default, IndeterminateForeground: true);
+            return new FullscreenInfo(false, foreground, false, false, false, false, 0, default, IndeterminateForeground: true);
         }
 
         IntPtr foregroundMonitor = NativeMethods.MonitorFromWindow(foreground, NativeMethods.MONITOR_DEFAULTTONEAREST);
         bool sameMonitor = foregroundMonitor == monitor;
         bool zoomed = NativeMethods.IsZoomed(foreground);
+        uint windowStyle = unchecked((uint)NativeMethods.GetWindowLongPtrW(foreground, NativeMethods.GWL_STYLE).ToInt64());
+        bool borderless = IsBorderless(windowStyle);
 
         bool coversMonitor = false;
         NativeMethods.RECT rect = default;
@@ -73,10 +77,17 @@ internal static class FullscreenDetector
             }
         }
 
-        // A normal MAXIMIZED window is not fullscreen: it leaves the taskbar usable, so the widget must
-        // stay. Only a genuine borderless/exclusive fullscreen app (covers the monitor, not maximized)
-        // hides the widget.
-        bool isFullscreen = sameMonitor && !zoomed && coversMonitor;
-        return new FullscreenInfo(isFullscreen, foreground, sameMonitor, zoomed, coversMonitor, rect);
+        // IsZoomed alone cannot separate an ordinary maximized app from borderless fullscreen: Chrome
+        // video and games can deliberately combine WS_MAXIMIZE with a decoration-free window covering
+        // the monitor. Keep decorated maximized windows visible beside the taskbar, but suppress the
+        // widget for a monitor-covering window when it is either not maximized or genuinely borderless.
+        bool isFullscreen = IsFullscreenLayout(sameMonitor, zoomed, coversMonitor, windowStyle);
+        return new FullscreenInfo(isFullscreen, foreground, sameMonitor, zoomed, coversMonitor, borderless, windowStyle, rect);
     }
+
+    internal static bool IsFullscreenLayout(bool sameMonitor, bool zoomed, bool coversMonitor, uint windowStyle) =>
+        sameMonitor && coversMonitor && (!zoomed || IsBorderless(windowStyle));
+
+    internal static bool IsBorderless(uint windowStyle) =>
+        windowStyle != 0 && (windowStyle & (NativeMethods.WS_CAPTION | NativeMethods.WS_THICKFRAME)) == 0;
 }

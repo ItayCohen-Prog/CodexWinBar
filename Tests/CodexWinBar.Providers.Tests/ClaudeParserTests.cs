@@ -86,6 +86,55 @@ public sealed class ClaudeParserTests
     }
 
     [Fact]
+    public void Parse_maps_scoped_weekly_limits_to_extra_windows()
+    {
+        // 2026 response shape: legacy seven_day_<model> fields are null; per-model weekly caps
+        // live in the "limits" array as weekly_scoped entries with a model display name.
+        var snapshot = Parse("""
+            {
+              "five_hour": {"utilization": 23, "resets_at": 1782673200},
+              "seven_day": {"utilization": 41, "resets_at": 1783267200},
+              "seven_day_opus": null,
+              "limits": [
+                {"kind": "session", "group": "session", "percent": 23, "resets_at": "2026-07-21T00:30:00+03:00"},
+                {"kind": "weekly_all", "group": "weekly", "percent": 41, "resets_at": "2026-07-23T20:00:00+03:00"},
+                {"kind": "weekly_scoped", "group": "weekly", "percent": 74, "resets_at": "2026-07-23T20:00:00+03:00",
+                 "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null}}
+              ]
+            }
+            """);
+
+        var fable = Assert.Single(snapshot.ExtraWindows, w => w.Id == "claude-weekly-fable");
+        Assert.Equal("Fable 5", fable.Title);
+        Assert.Equal(74, fable.Window.UsedPercent);
+        Assert.Equal(10080, fable.Window.WindowMinutes);
+        Assert.Equal(new DateTimeOffset(2026, 7, 23, 17, 0, 0, TimeSpan.Zero), fable.Window.ResetsAt);
+        // session/weekly_all entries duplicate the top-level windows and must not become extras.
+        Assert.Single(snapshot.ExtraWindows);
+    }
+
+    [Fact]
+    public void Parse_skips_scoped_weekly_limits_already_served_by_legacy_fields()
+    {
+        var snapshot = Parse("""
+            {
+              "five_hour": {"utilization": 10, "resets_at": 1782673200},
+              "seven_day_sonnet": {"utilization": 55, "resets_at": 1783267200},
+              "seven_day_opus": {"utilization": 70, "resets_at": 1783267200},
+              "limits": [
+                {"kind": "weekly_scoped", "percent": 56, "scope": {"model": {"display_name": "Sonnet"}}},
+                {"kind": "weekly_scoped", "percent": 71, "scope": {"model": {"display_name": "Opus"}}}
+              ]
+            }
+            """);
+
+        var sonnet = Assert.Single(snapshot.ExtraWindows, w => w.Id == "claude-sonnet-weekly");
+        Assert.Equal(55, sonnet.Window.UsedPercent);   // legacy field wins
+        Assert.Equal(70, snapshot.Tertiary?.UsedPercent);
+        Assert.Single(snapshot.ExtraWindows);          // no scoped Sonnet/Opus duplicates
+    }
+
+    [Fact]
     public void Parse_malformed_json_throws_clean_JsonException()
     {
         Assert.IsAssignableFrom<System.Text.Json.JsonException>(

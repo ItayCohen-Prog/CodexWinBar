@@ -398,12 +398,15 @@ internal static class ClaudeUsageParser
             "Routines",
             ParseFirstWindow(root, 10080, "seven_day_routines", "seven_day_cowork"));
 
+        var tertiary = ParseWindow(GetProperty(root, "seven_day_opus"), 10080);
+        AddScopedWeeklyLimits(extras, root, tertiary);
+
         return new UsageSnapshot
         {
             Provider = ProviderId.Claude,
             Primary = primary,
             Secondary = secondary,
-            Tertiary = ParseWindow(GetProperty(root, "seven_day_opus"), 10080),
+            Tertiary = tertiary,
             ExtraWindows = extras,
             Credits = ParseExtraUsage(root, now),
             Identity = new ProviderIdentity
@@ -414,6 +417,70 @@ internal static class ClaudeUsageParser
             UpdatedAt = now.ToUniversalTime(),
             Confidence = DataConfidence.Exact,
         };
+    }
+
+    /// <summary>
+    /// Per-model weekly caps from the "limits" array — the 2026 response shape. The legacy
+    /// seven_day_&lt;model&gt; fields are null on current accounts; each weekly_scoped entry instead
+    /// carries the model's display name (e.g. "Fable") and its used percent. Legacy fields still win
+    /// when a response has both: a scoped entry for a model that already has a row is skipped.
+    /// </summary>
+    private static void AddScopedWeeklyLimits(List<NamedRateWindow> extras, JsonElement root, RateWindow? legacyOpus)
+    {
+        if (GetProperty(root, "limits") is not { ValueKind: JsonValueKind.Array } limits)
+        {
+            return;
+        }
+
+        foreach (var limit in limits.EnumerateArray())
+        {
+            if (limit.ValueKind != JsonValueKind.Object ||
+                ReadString(GetProperty(limit, "kind")) != "weekly_scoped")
+            {
+                continue;
+            }
+
+            var percent = ReadDouble(GetProperty(limit, "percent"));
+            if (percent is null)
+            {
+                continue;
+            }
+
+            string? model = null;
+            if (GetProperty(limit, "scope") is { ValueKind: JsonValueKind.Object } scope &&
+                GetProperty(scope, "model") is { ValueKind: JsonValueKind.Object } modelObject)
+            {
+                model = ReadString(GetProperty(modelObject, "display_name"))?.Trim();
+            }
+
+            if ((legacyOpus is not null && string.Equals(model, "Opus", StringComparison.OrdinalIgnoreCase)) ||
+                (string.Equals(model, "Sonnet", StringComparison.OrdinalIgnoreCase) &&
+                    extras.Any(extra => extra.Id == "claude-sonnet-weekly")))
+            {
+                continue;
+            }
+
+            // The row sits under the "Weekly" bar already, so the label is just the model. The API's
+            // display_name omits the family number ("Fable"); show the marketing name where known.
+            var title = model switch
+            {
+                null or "" => "Model weekly",
+                "Fable" => "Fable 5",
+                _ => model,
+            };
+            var id = $"claude-weekly-{(model ?? "model").ToLowerInvariant()}";
+            if (extras.Any(extra => extra.Id == id))
+            {
+                continue;
+            }
+
+            AddExtra(extras, id, title, new RateWindow
+            {
+                UsedPercent = ClampPercent(percent.Value),
+                WindowMinutes = 10080,
+                ResetsAt = ParseReset(GetProperty(limit, "resets_at")),
+            });
+        }
     }
 
     private static void AddExtra(List<NamedRateWindow> extras, string id, string title, RateWindow? window)

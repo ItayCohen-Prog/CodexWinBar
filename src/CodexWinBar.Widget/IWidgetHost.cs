@@ -1,6 +1,6 @@
 namespace CodexWinBar.Widget;
 
-/// <summary>Integration mode requested by settings; Auto probes embedded then falls back (amendment A13).</summary>
+/// <summary>Legacy serialized integration setting. Hidden disables the widget; all other values use overlay.</summary>
 public enum WidgetMode
 {
     Auto = 0,
@@ -50,15 +50,15 @@ public sealed record WidgetRenderState
 public interface IWidgetHost : IDisposable
 {
     /// <summary>
-    /// Creates the widget window per <paramref name="mode"/> and starts tracking the taskbar.
-    /// <paramref name="anchorLeft"/> pins the widget to the taskbar's left edge instead of left-of-tray.
+    /// Creates an overlay widget unless <paramref name="mode"/> is Hidden and starts tracking the taskbar.
+    /// <paramref name="anchorLeft"/> remains for API compatibility; overlay placement is auto-detected.
     /// </summary>
     void Start(WidgetMode mode, bool anchorLeft = false);
 
     /// <summary>Replaces the rendered state; cheap, coalesced on the widget thread.</summary>
     void Update(WidgetRenderState state);
 
-    /// <summary>The mode currently in effect after probing/fallback (never Auto).</summary>
+    /// <summary>The mode currently in effect (Overlay or Hidden).</summary>
     WidgetMode EffectiveMode { get; }
 
     /// <summary>Current widget rect in physical screen pixels, or null when not placed (starting/hidden).</summary>
@@ -70,7 +70,7 @@ public interface IWidgetHost : IDisposable
     /// <summary>Right-click on the widget (open context menu at cursor).</summary>
     event Action? RightClicked;
 
-    /// <summary>Raised when effective mode changes (e.g. embed fell back to overlay), with a reason.</summary>
+    /// <summary>Raised when the effective overlay/hidden mode changes, with a reason.</summary>
     event Action<WidgetMode, string>? ModeChanged;
 
     void Stop();

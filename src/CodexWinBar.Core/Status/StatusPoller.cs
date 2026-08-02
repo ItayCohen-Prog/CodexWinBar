@@ -5,14 +5,14 @@ using CodexWinBar.Core.Providers;
 
 namespace CodexWinBar.Core.Status;
 
-internal sealed class StatusPoller(Action<string> log)
+internal sealed class StatusPoller
 {
     private static readonly TimeSpan PollTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan MinimumPollInterval = TimeSpan.FromMinutes(5);
     private static readonly Uri GoogleWorkspaceIncidentsUrl = new("https://www.google.com/appsstatus/dashboard/incidents.json");
 
+    private readonly object sync = new();
     private readonly Dictionary<ProviderId, DateTimeOffset> lastPolls = [];
-    private readonly Dictionary<ProviderId, ProviderStatus> previous = [];
 
     public async Task<ProviderStatus?> PollAsync(
         ProviderDescriptor descriptor,
@@ -25,29 +25,27 @@ internal sealed class StatusPoller(Action<string> log)
             return current;
         }
 
-        if (this.lastPolls.TryGetValue(descriptor.Id, out var lastPoll) && now - lastPoll < MinimumPollInterval)
+        lock (this.sync)
         {
-            return current;
-        }
+            if (this.lastPolls.TryGetValue(descriptor.Id, out var lastPoll) && now - lastPoll < MinimumPollInterval)
+            {
+                return current;
+            }
 
-        this.lastPolls[descriptor.Id] = now;
-        if (current is not null)
-        {
-            this.previous[descriptor.Id] = current;
+            this.lastPolls[descriptor.Id] = now;
         }
-
         try
         {
             var status = descriptor.Metadata.StatusPageUrl is not null
                 ? await PollStatusPageAsync(descriptor.Metadata.StatusPageUrl, ct).ConfigureAwait(false)
                 : await PollGoogleWorkspaceAsync(descriptor.Metadata.StatusWorkspaceProductId!, ct).ConfigureAwait(false);
-            this.previous[descriptor.Id] = status;
             return status;
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException or OperationCanceledException)
         {
-            log($"Status poll failed for {descriptor.Id}; keeping previous status. {ex.GetType().Name}: {ex.Message}");
-            return current ?? (this.previous.TryGetValue(descriptor.Id, out var kept) ? kept : null);
+            // Status endpoints are advisory. Unsupported responses, transient HTTP failures, and
+            // malformed payloads are Unknown, and intentionally do not produce recurring log spam.
+            return UnknownStatus();
         }
     }
 
@@ -83,6 +81,13 @@ internal sealed class StatusPoller(Action<string> log)
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: timeout.Token).ConfigureAwait(false);
+
+        if (document.RootElement.ValueKind != JsonValueKind.Array
+            && (!document.RootElement.TryGetProperty("incidents", out var incidents)
+                || incidents.ValueKind != JsonValueKind.Array))
+        {
+            return UnknownStatus();
+        }
 
         GoogleIncident? best = null;
         foreach (var incident in EnumerateIncidents(document.RootElement))
@@ -244,6 +249,8 @@ internal sealed class StatusPoller(Action<string> log)
     {
         return DateTimeOffset.TryParse(value, out var parsed) ? parsed.ToUniversalTime() : null;
     }
+
+    private static ProviderStatus UnknownStatus() => new() { Indicator = StatusIndicator.Unknown };
 
     private sealed record GoogleIncident(
         IReadOnlyList<string> ProductIds,

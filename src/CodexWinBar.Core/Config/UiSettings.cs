@@ -95,13 +95,6 @@ public sealed class UiSettings
     public int? RefreshCadenceMinutes { get; set; } = 5;
 
     /// <summary>
-    /// Whether to merge provider icons in the taskbar widget.
-    /// TODO: not yet wired to any UI or widget behavior; kept so the setting round-trips.
-    /// </summary>
-    [JsonPropertyName("mergeIcons")]
-    public bool MergeIcons { get; set; } = true;
-
-    /// <summary>
     /// Text mode used for provider usage.
     /// </summary>
     [JsonPropertyName("displayTextMode")]
@@ -193,7 +186,7 @@ public sealed class UiSettings
     /// Widget hosting mode.
     /// </summary>
     [JsonPropertyName("widgetMode")]
-    public WidgetMode WidgetMode { get; set; } = WidgetMode.Auto;
+    public WidgetMode WidgetMode { get; set; } = WidgetMode.Overlay;
 
     /// <summary>
     /// Widget side preference.
@@ -229,9 +222,9 @@ public sealed class UiSettings
             this.DisplayTextMode = DisplayTextMode.Percent;
         }
 
-        if (!Enum.IsDefined(this.WidgetMode))
+        if (!Enum.IsDefined(this.WidgetMode) || this.WidgetMode is WidgetMode.Auto or WidgetMode.Embedded)
         {
-            this.WidgetMode = WidgetMode.Auto;
+            this.WidgetMode = WidgetMode.Overlay;
         }
 
         if (!Enum.IsDefined(this.WidgetSide))

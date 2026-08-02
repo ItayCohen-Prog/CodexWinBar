@@ -17,6 +17,8 @@ public sealed class ConfigStore(Func<string, string?> env, string userProfileDir
 {
     private const string ConfigDirectoryName = "codexbar";
     private const string ConfigFileName = "config.json";
+    private const string ConfigMutexName = @"Local\CodexWinBar.ConfigStore";
+    private static readonly TimeSpan ConfigMutexTimeout = TimeSpan.FromSeconds(2);
 
     /// <summary>
     /// Resolves the config path using upstream-compatible precedence.
@@ -57,21 +59,63 @@ public sealed class ConfigStore(Func<string, string?> env, string userProfileDir
     /// <returns>The loaded or default config.</returns>
     public CodexBarConfig Load()
     {
-        var path = ResolvePath();
-        if (!File.Exists(path))
+        return WithFileLock(LoadCore);
+    }
+
+    private CodexBarConfig LoadCore()
+    {
+        var snapshot = ReadSnapshotCore();
+        if (snapshot.Config is not null)
         {
-            return CreateDefaultConfig();
+            return snapshot.Config;
+        }
+
+        var error = snapshot.Error!;
+        log($"Failed to load config.json; using defaults without overwriting the file. {error.GetType().Name}: {error.Message}");
+        return CreateDefaultConfig();
+    }
+
+    /// <summary>
+    /// Reads a stamped config snapshot under the shared config mutex.
+    /// </summary>
+    /// <returns>The config, file stamp, and any recoverable read error.</returns>
+    internal ConfigFileSnapshot LoadSnapshot()
+    {
+        return WithFileLock(ReadSnapshotCore);
+    }
+
+    private ConfigFileSnapshot ReadSnapshotCore()
+    {
+        var path = ResolvePath();
+        var exists = File.Exists(path);
+        if (!exists)
+        {
+            return new ConfigFileSnapshot(path, exists, default, CreateDefaultConfig(), null);
         }
 
         try
         {
+            var lastWriteUtc = File.GetLastWriteTimeUtc(path);
             using var stream = File.OpenRead(path);
-            return JsonSerializer.Deserialize(stream, CoreJsonContext.Default.CodexBarConfig) ?? CreateDefaultConfig();
+            var config = JsonSerializer.Deserialize(stream, CoreJsonContext.Default.CodexBarConfig)
+                ?? throw new JsonException("config.json contained no configuration object.");
+            return new ConfigFileSnapshot(path, exists, lastWriteUtc, config, null);
         }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
-            log($"Failed to load config.json; using defaults without overwriting the file. {ex.GetType().Name}: {ex.Message}");
-            return CreateDefaultConfig();
+            return new ConfigFileSnapshot(path, exists, TryGetLastWriteTimeUtc(path), null, ex);
+        }
+    }
+
+    private static DateTime TryGetLastWriteTimeUtc(string path)
+    {
+        try
+        {
+            return File.GetLastWriteTimeUtc(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return default;
         }
     }
 
@@ -80,6 +124,11 @@ public sealed class ConfigStore(Func<string, string?> env, string userProfileDir
     /// </summary>
     /// <param name="config">The config to save.</param>
     public void Save(CodexBarConfig config)
+    {
+        WithFileLock(() => SaveCore(config));
+    }
+
+    private void SaveCore(CodexBarConfig config)
     {
         var path = ResolvePath();
         var directory = Path.GetDirectoryName(path);
@@ -118,6 +167,44 @@ public sealed class ConfigStore(Func<string, string?> env, string userProfileDir
             }
         }
     }
+
+    private T WithFileLock<T>(Func<T> operation)
+    {
+        using var mutex = new Mutex(initiallyOwned: false, ConfigMutexName);
+        var acquired = false;
+        try
+        {
+            try
+            {
+                acquired = mutex.WaitOne(ConfigMutexTimeout);
+            }
+            catch (AbandonedMutexException)
+            {
+                // The previous owner exited without releasing the mutex. Ownership transfers to this thread.
+                acquired = true;
+            }
+
+            if (!acquired)
+            {
+                log("Timed out waiting for the config.json mutex; proceeding without the lock.");
+            }
+
+            return operation();
+        }
+        finally
+        {
+            if (acquired)
+            {
+                mutex.ReleaseMutex();
+            }
+        }
+    }
+
+    private void WithFileLock(Action operation) => WithFileLock(() =>
+    {
+        operation();
+        return true;
+    });
 
     /// <summary>
     /// Finds a provider entry by upstream config id, or returns an absent default entry.
@@ -174,7 +261,7 @@ public sealed class ConfigStore(Func<string, string?> env, string userProfileDir
         return (window ?? new QuotaWarningWindow()) with { Thresholds = thresholds };
     }
 
-    private static CodexBarConfig CreateDefaultConfig() => new()
+    internal static CodexBarConfig CreateDefaultConfig() => new()
     {
         // Nothing is enabled by default: a provider turns on only when the user connects it
         // (via first-run onboarding or Settings). Fresh installs therefore start fully disconnected.
@@ -237,3 +324,10 @@ public sealed class ConfigStore(Func<string, string?> env, string userProfileDir
         uint securityInformation,
         byte[] pSecurityDescriptor);
 }
+
+internal sealed record ConfigFileSnapshot(
+    string Path,
+    bool Exists,
+    DateTime LastWriteUtc,
+    CodexBarConfig? Config,
+    Exception? Error);

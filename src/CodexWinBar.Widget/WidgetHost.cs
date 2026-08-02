@@ -43,7 +43,6 @@ public sealed class WidgetHost : IWidgetHost
     private Timer? _reconcileTimer;
     private bool _started;
     private WidgetMode _requestedMode;
-    private bool _anchorLeft;
     private WidgetRenderState _latestState = new() { Chips = [] };
     private WidgetMode _effectiveMode = WidgetMode.Hidden;
     private bool _disposed;
@@ -124,7 +123,7 @@ public sealed class WidgetHost : IWidgetHost
 
                 _started = true;
                 _requestedMode = mode;
-                _anchorLeft = anchorLeft;
+                _ = anchorLeft;
             }
 
             Reconcile();
@@ -280,13 +279,11 @@ public sealed class WidgetHost : IWidgetHost
         List<TaskbarInfo> secondaries = TaskbarInterop.EnumerateSecondaryTaskbars();
 
         WidgetMode mode;
-        bool anchorLeft;
         List<WidgetInstance>? toStop = null;
         List<(IntPtr Key, TaskbarInfo Info)>? toStart = null;
         lock (_gate)
         {
             mode = _requestedMode;
-            anchorLeft = _anchorLeft;
 
             // Desired instances keyed by stable identity: PrimaryKey for the (singleton) primary bar,
             // each secondary bar by its monitor. A Dictionary dedupes should two enumerations collide.
@@ -350,7 +347,7 @@ public sealed class WidgetHost : IWidgetHost
                     _instances[key] = instance;
                 }
 
-                instance.Start(mode, anchorLeft);
+                instance.Start(mode);
             }
         }
     }
@@ -362,7 +359,7 @@ public sealed class WidgetHost : IWidgetHost
 
     /// <summary>
     /// One widget: a dedicated STA thread running a <see cref="WidgetWindow"/> bound to the taskbar on
-    /// one monitor. Start/Stop replicate the single-widget handshake (ready event, ControllerReady,
+    /// one monitor. Start/Stop replicate the single-widget handshake (ready event, initialization result,
     /// QuitMessage, keep-state-on-failed-join) per instance. Lifecycle methods are serialized by the
     /// host's _lifecycle lock.
     /// </summary>
@@ -371,9 +368,8 @@ public sealed class WidgetHost : IWidgetHost
         private readonly WidgetHost _host;
         private Thread? _thread;
 
-        // Startup-ready handshake: set by the widget thread once its controller window exists (or, as
-        // a backstop, when the thread exits), so Stop never signals quit before there is a window to
-        // hear it.
+        // Startup-ready handshake: set by the widget thread once initialization succeeds or fails (or,
+        // as a backstop, when the thread exits), so Stop never waits on a failed CreateWindowEx call.
         private ManualResetEventSlim? _ready;
 
         internal WidgetInstance(WidgetHost host, IntPtr key, IntPtr monitor, bool isPrimary)
@@ -399,7 +395,7 @@ public sealed class WidgetHost : IWidgetHost
         /// <summary>The window, published by the widget thread under the host gate before Run.</summary>
         internal WidgetWindow? Window { get; private set; }
 
-        internal void Start(WidgetMode mode, bool anchorLeft)
+        internal void Start(WidgetMode mode)
         {
             ManualResetEventSlim ready = new(false);
             _ready = ready;
@@ -407,11 +403,11 @@ public sealed class WidgetHost : IWidgetHost
             {
                 try
                 {
-                    WidgetWindow window = new(_host, mode, anchorLeft, Monitor, IsPrimary)
+                    WidgetWindow window = new(_host, mode, Monitor, IsPrimary)
                     {
-                        // Signaled on the widget thread once the controller window is created (top of
-                        // the message loop), so Stop can safely post the quit request.
-                        ControllerReady = ready.Set,
+                        // Signaled on the widget thread for both successful and failed initialization.
+                        // On failure Controller remains zero; Stop skips PostMessage and joins safely.
+                        InitializationCompleted = _ => ready.Set(),
                     };
                     lock (_host._gate)
                     {

@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using CodexWinBar.Core.Config;
@@ -120,12 +122,14 @@ internal static class ConfigCommand
         var rows = runtime.Descriptors.Select(descriptor =>
         {
             var entry = runtime.Store.EntryFor(runtime.Config, descriptor.Id);
+            var auth = AuthConfiguration(runtime, descriptor, entry);
             return new ConfigProviderJson(
                 descriptor.Id.ConfigId(),
                 descriptor.Metadata.DisplayName,
                 runtime.IsEnabled(descriptor),
-                !string.IsNullOrWhiteSpace(entry.ApiKey) || !string.IsNullOrWhiteSpace(entry.Source),
-                AuthHint(descriptor, entry));
+                auth.Configured,
+                auth.Source,
+                AuthHint(descriptor, auth));
         }).ToArray();
 
         if (args.Has("json"))
@@ -136,7 +140,8 @@ internal static class ConfigCommand
 
         foreach (var row in rows)
         {
-            Console.WriteLine($"{row.Id,-12} {row.DisplayName,-16} enabled: {(row.Enabled ? "yes" : "no"),-3} configured: {(row.Configured ? "yes" : "no"),-3} auth: {row.AuthHint}");
+            var configured = row.Configured ? $"yes ({row.AuthSource})" : "no";
+            Console.WriteLine($"{row.Id,-12} {row.DisplayName,-16} enabled: {(row.Enabled ? "yes" : "no"),-3} configured: {configured,-19} auth: {row.AuthHint}");
         }
 
         return 0;
@@ -279,24 +284,54 @@ internal static class ConfigCommand
         return provider is null ? ProviderSelection.Failure($"unknown provider '{value}'") : ProviderSelection.Success(provider.Value);
     }
 
-    private static string AuthHint(ProviderDescriptor descriptor, ProviderConfigEntry entry)
+    private static AuthConfigurationState AuthConfiguration(
+        CliRuntime runtime,
+        ProviderDescriptor descriptor,
+        ProviderConfigEntry entry)
     {
-        if (!string.IsNullOrWhiteSpace(entry.ApiKey))
+        if (HasExplicitAuthentication(entry))
         {
-            return "api key";
+            return new AuthConfigurationState(true, "explicit");
         }
 
-        if (descriptor.Strategies.Any(strategy => strategy.Kind == FetchKind.ApiToken))
+        return runtime.HasAvailableStrategy(descriptor)
+            ? new AuthConfigurationState(true, "auto-detected")
+            : new AuthConfigurationState(false, "none");
+    }
+
+    private static bool HasExplicitAuthentication(ProviderConfigEntry entry) =>
+        !string.IsNullOrWhiteSpace(entry.ApiKey) ||
+        !string.IsNullOrWhiteSpace(entry.CookieHeader);
+
+    private static string AuthHint(ProviderDescriptor descriptor, AuthConfigurationState auth)
+    {
+        if (auth.Source == "explicit")
         {
-            return "set API key or env var";
+            return descriptor.Id switch
+            {
+                ProviderId.Copilot => "saved GitHub token",
+                ProviderId.Cursor => "saved session cookie",
+                _ => "saved API key",
+            };
         }
 
-        if (descriptor.Strategies.Any(strategy => strategy.Kind == FetchKind.Oauth))
+        if (auth.Source == "auto-detected")
         {
-            return "sign in with provider CLI/app";
+            return descriptor.Strategies.Any(strategy => strategy.Kind == FetchKind.Oauth)
+                ? "CodexWinBar sign-in detected"
+                : "environment credential detected";
         }
 
-        return descriptor.Strategies.Count == 0 ? "none" : string.Join("/", descriptor.Strategies.Select(strategy => strategy.Id));
+        return descriptor.Id switch
+        {
+            ProviderId.Codex or ProviderId.Claude or ProviderId.Gemini => "sign in in CodexWinBar Settings",
+            ProviderId.Copilot => "sign in with GitHub in CodexWinBar Settings",
+            ProviderId.OpenRouter => "save an API key or set OPENROUTER_API_KEY",
+            ProviderId.OpenAIAdmin => "save an API key or set OPENAI_ADMIN_KEY/OPENAI_API_KEY",
+            ProviderId.Zai => "save an API key or set Z_AI_API_KEY",
+            ProviderId.Cursor => "save a session cookie or set CURSOR_COOKIE/CURSOR_SESSION_TOKEN",
+            _ => descriptor.Strategies.Count == 0 ? "none" : string.Join("/", descriptor.Strategies.Select(strategy => strategy.Id)),
+        };
     }
 
     private static string Mask(string key) => key.Length <= 4 ? "****" : $"****{key[^4..]}";
@@ -306,6 +341,8 @@ internal static class ConfigCommand
         public static ProviderSelection Success(ProviderId value) => new(value, null);
         public static ProviderSelection Failure(string error) => new(default, error);
     }
+
+    private sealed record AuthConfigurationState(bool Configured, string Source);
 }
 
 internal static class ServeCommand
@@ -346,7 +383,6 @@ internal static class ServeCommand
         // Loopback binds stay token-free unless a token was explicitly supplied.
         var requiredToken = string.IsNullOrWhiteSpace(token) ? null : token;
 
-        var runtime = CliRuntime.Create(verbose: false);
         using var cts = ConsoleLifetime.CreateCancellationSource();
         using var listener = new HttpListener();
         var prefix = $"http://{host}:{port.Value}/";
@@ -355,6 +391,8 @@ internal static class ServeCommand
         Console.Error.WriteLine($"codexbar serve listening on {prefix}");
 
         var cache = new UsageCache(TimeSpan.FromSeconds(interval.Value));
+        var activeRequests = new ConcurrentDictionary<int, Task>();
+        var nextRequestId = 0;
         try
         {
             while (!cts.IsCancellationRequested)
@@ -366,7 +404,14 @@ internal static class ServeCommand
                     break;
                 }
 
-                await HandleAsync(runtime, cache, contextTask.Result, requiredToken, cts.Token).ConfigureAwait(false);
+                var requestId = Interlocked.Increment(ref nextRequestId);
+                var request = HandleSafelyAsync(cache, contextTask.Result, requiredToken, cts.Token);
+                activeRequests[requestId] = request;
+                _ = request.ContinueWith(
+                    completedRequest => activeRequests.TryRemove(requestId, out _),
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
             }
         }
         catch (OperationCanceledException)
@@ -375,14 +420,41 @@ internal static class ServeCommand
         finally
         {
             listener.Stop();
+            await Task.WhenAll(activeRequests.Values).ConfigureAwait(false);
         }
 
         return 0;
     }
 
-    private static async Task HandleAsync(CliRuntime runtime, UsageCache cache, HttpListenerContext context, string? requiredToken, CancellationToken ct)
+    private static async Task HandleSafelyAsync(UsageCache cache, HttpListenerContext context, string? requiredToken, CancellationToken ct)
     {
-        Console.Error.WriteLine($"{DateTimeOffset.UtcNow:O} {context.Request.HttpMethod} {context.Request.RawUrl}");
+        try
+        {
+            await HandleAsync(cache, context, requiredToken, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            CloseResponse(context);
+        }
+        catch (Exception ex)
+        {
+            var path = context.Request.Url?.AbsolutePath ?? "/";
+            Console.Error.WriteLine($"{DateTimeOffset.UtcNow:O} request failed {path}: {ex.GetType().Name}");
+            try
+            {
+                await WriteTextAsync(context, 500, "internal server error").ConfigureAwait(false);
+            }
+            catch (Exception writeError) when (writeError is HttpListenerException or IOException or ObjectDisposedException)
+            {
+                CloseResponse(context);
+            }
+        }
+    }
+
+    private static async Task HandleAsync(UsageCache cache, HttpListenerContext context, string? requiredToken, CancellationToken ct)
+    {
+        var absolutePath = context.Request.Url?.AbsolutePath ?? "/";
+        Console.Error.WriteLine($"{DateTimeOffset.UtcNow:O} {context.Request.HttpMethod} {absolutePath}");
         if (context.Request.HttpMethod != "GET")
         {
             await WriteTextAsync(context, 405, "method not allowed").ConfigureAwait(false);
@@ -396,7 +468,7 @@ internal static class ServeCommand
             return;
         }
 
-        var requestPath = context.Request.Url?.AbsolutePath.Trim('/') ?? string.Empty;
+        var requestPath = absolutePath.Trim('/');
         if (requestPath == "healthz")
         {
             await WriteJsonAsync(context, new HealthJson(true), CliJsonContext.Default.HealthJson).ConfigureAwait(false);
@@ -405,7 +477,10 @@ internal static class ServeCommand
 
         if (requestPath == "usage")
         {
-            var output = await cache.GetOrRefreshAsync("enabled", () => FetchUsageJsonAsync(runtime, null, ct)).ConfigureAwait(false);
+            var runtime = CliRuntime.Create(verbose: false);
+            var output = await cache.GetOrRefreshAsync(
+                $"enabled:{runtime.ConfigRevision}",
+                () => FetchUsageJsonAsync(runtime, null, ct)).ConfigureAwait(false);
             await WriteJsonAsync(context, output, CliJsonContext.Default.UsageJsonOutput).ConfigureAwait(false);
             return;
         }
@@ -415,13 +490,16 @@ internal static class ServeCommand
         {
             var id = requestPath[usagePrefix.Length..];
             var provider = ProviderIds.TryParse(id);
+            var runtime = CliRuntime.Create(verbose: false);
             if (provider is null || runtime.DescriptorFor(provider.Value) is null)
             {
                 await WriteTextAsync(context, 404, "unknown provider").ConfigureAwait(false);
                 return;
             }
 
-            var output = await cache.GetOrRefreshAsync($"provider:{provider.Value.ConfigId()}", () => FetchUsageJsonAsync(runtime, provider.Value, ct)).ConfigureAwait(false);
+            var output = await cache.GetOrRefreshAsync(
+                $"provider:{provider.Value.ConfigId()}:{runtime.ConfigRevision}",
+                () => FetchUsageJsonAsync(runtime, provider.Value, ct)).ConfigureAwait(false);
             await WriteJsonAsync(context, output, CliJsonContext.Default.UsageJsonOutput).ConfigureAwait(false);
             return;
         }
@@ -454,6 +532,17 @@ internal static class ServeCommand
         var bytes = Encoding.UTF8.GetBytes(text);
         await context.Response.OutputStream.WriteAsync(bytes).ConfigureAwait(false);
         context.Response.Close();
+    }
+
+    private static void CloseResponse(HttpListenerContext context)
+    {
+        try
+        {
+            context.Response.Close();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
     }
 
     private static bool IsAuthorized(HttpListenerRequest request, string requiredToken)
@@ -597,11 +686,15 @@ internal sealed class CliRuntime
         this.Config = config;
         this.Descriptors = descriptors;
         this.verbose = verbose;
+        this.ConfigRevision = Convert.ToHexString(SHA256.HashData(
+            JsonSerializer.SerializeToUtf8Bytes(config, CliJsonContext.Default.CodexBarConfig)));
     }
 
     public ConfigStore Store { get; }
     public CodexBarConfig Config { get; }
     public IReadOnlyList<ProviderDescriptor> Descriptors { get; }
+
+    public string ConfigRevision { get; }
 
     public static CliRuntime Create(bool verbose)
     {
@@ -621,9 +714,21 @@ internal sealed class CliRuntime
     public bool IsEnabled(ProviderDescriptor descriptor) =>
         this.Store.EntryFor(this.Config, descriptor.Id).Enabled ?? descriptor.Metadata.DefaultEnabled;
 
+    public bool HasAvailableStrategy(ProviderDescriptor descriptor)
+    {
+        var ctx = this.CreateFetchContext(descriptor);
+        return descriptor.Strategies.Any(strategy => strategy.IsAvailable(ctx));
+    }
+
     public async Task<ProviderFetchResult> FetchAsync(ProviderDescriptor descriptor, CancellationToken ct)
     {
-        var ctx = new FetchContext
+        var ctx = this.CreateFetchContext(descriptor);
+        var outcome = await FetchPipeline.RunAsync(descriptor, ctx, ct).ConfigureAwait(false);
+        return new ProviderFetchResult(descriptor, outcome);
+    }
+
+    private FetchContext CreateFetchContext(ProviderDescriptor descriptor) =>
+        new()
         {
             ProviderConfig = this.Store.EntryFor(this.Config, descriptor.Id),
             Http = ProviderHttpClient.Shared,
@@ -638,29 +743,82 @@ internal sealed class CliRuntime
                 }
             },
         };
-        var outcome = await FetchPipeline.RunAsync(descriptor, ctx, ct).ConfigureAwait(false);
-        return new ProviderFetchResult(descriptor, outcome);
-    }
 }
 
-internal sealed class UsageCache(TimeSpan ttl)
+internal sealed class UsageCache
 {
-    private readonly Dictionary<string, CacheEntry> entries = [];
+    private const int MaxEntries = 32;
+    private readonly ConcurrentDictionary<string, CacheSlot> entries = new(StringComparer.Ordinal);
+    private readonly ConcurrentQueue<string> insertionOrder = new();
+    private readonly TimeSpan ttl;
 
-    public async Task<UsageJsonOutput> GetOrRefreshAsync(string key, Func<Task<UsageJsonOutput>> refresh)
+    public UsageCache(TimeSpan ttl)
     {
-        var now = DateTimeOffset.UtcNow;
-        if (this.entries.TryGetValue(key, out var entry) && now - entry.FetchedAt < ttl)
-        {
-            return entry.Output;
-        }
-
-        var output = await refresh().ConfigureAwait(false);
-        this.entries[key] = new CacheEntry(now, output);
-        return output;
+        this.ttl = ttl;
     }
 
-    private sealed record CacheEntry(DateTimeOffset FetchedAt, UsageJsonOutput Output);
+    public Task<UsageJsonOutput> GetOrRefreshAsync(string key, Func<Task<UsageJsonOutput>> refresh)
+    {
+        if (!this.entries.TryGetValue(key, out var slot))
+        {
+            var candidate = new CacheSlot(this.ttl);
+            slot = this.entries.GetOrAdd(key, candidate);
+            if (ReferenceEquals(slot, candidate))
+            {
+                this.insertionOrder.Enqueue(key);
+                this.TrimOldEntries();
+            }
+        }
+
+        return slot.GetOrRefreshAsync(refresh);
+    }
+
+    private void TrimOldEntries()
+    {
+        while (this.entries.Count > MaxEntries && this.insertionOrder.TryDequeue(out var oldestKey))
+        {
+            _ = this.entries.TryRemove(oldestKey, out _);
+        }
+    }
+
+    private sealed class CacheSlot(TimeSpan ttl)
+    {
+        private readonly SemaphoreSlim refreshGate = new(1, 1);
+        private CacheEntry? entry;
+
+        public async Task<UsageJsonOutput> GetOrRefreshAsync(Func<Task<UsageJsonOutput>> refresh)
+        {
+            if (this.FreshEntry() is { } fresh)
+            {
+                return fresh.Output;
+            }
+
+            await this.refreshGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (this.FreshEntry() is { } refreshedByAnotherRequest)
+                {
+                    return refreshedByAnotherRequest.Output;
+                }
+
+                var output = await refresh().ConfigureAwait(false);
+                Volatile.Write(ref this.entry, new CacheEntry(DateTimeOffset.UtcNow, output));
+                return output;
+            }
+            finally
+            {
+                this.refreshGate.Release();
+            }
+        }
+
+        private CacheEntry? FreshEntry()
+        {
+            var current = Volatile.Read(ref this.entry);
+            return current is not null && DateTimeOffset.UtcNow - current.FetchedAt < ttl ? current : null;
+        }
+
+        private sealed record CacheEntry(DateTimeOffset FetchedAt, UsageJsonOutput Output);
+    }
 }
 
 internal static class UsageMapper
@@ -706,7 +864,8 @@ internal static class TextUsageWriter
                 if (snapshot.Credits is { } credits)
                 {
                     var limit = credits.Limit is null ? string.Empty : string.Create(CultureInfo.InvariantCulture, $" / {credits.Limit:0.##}");
-                    writer.WriteLine(string.Create(CultureInfo.InvariantCulture, $"  Credits {credits.Remaining:0.##}{limit} {credits.Unit}"));
+                    var label = credits.Kind == CreditsSnapshotKind.Spend ? "Spend (30d)" : "Credits";
+                    writer.WriteLine(string.Create(CultureInfo.InvariantCulture, $"  {label} {credits.Remaining:0.##}{limit} {credits.Unit}"));
                 }
             }
             else
@@ -902,7 +1061,14 @@ internal sealed record SnapshotJson(
             RateWindowJson.From(snapshot.Secondary),
             RateWindowJson.From(snapshot.Tertiary),
             snapshot.ExtraWindows.Select(window => new NamedRateWindowJson(window.Id, window.Title, RateWindowJson.From(window.Window)!, window.UsageKnown)).ToArray(),
-            snapshot.Credits is null ? null : new CreditsJson(snapshot.Credits.Remaining, snapshot.Credits.Limit, snapshot.Credits.Unit, snapshot.Credits.UpdatedAt),
+            snapshot.Credits is null
+                ? null
+                : new CreditsJson(
+                    snapshot.Credits.Remaining,
+                    snapshot.Credits.Limit,
+                    snapshot.Credits.Unit,
+                    snapshot.Credits.UpdatedAt,
+                    snapshot.Credits.Kind.ToString()),
             snapshot.Identity is null ? null : new IdentityJson(snapshot.Identity.AccountEmail, snapshot.Identity.AccountOrganization, snapshot.Identity.Plan, snapshot.Identity.LoginMethod),
             snapshot.UpdatedAt,
             snapshot.Confidence.ToString());
@@ -924,10 +1090,10 @@ internal sealed record RateWindowJson(
 }
 
 internal sealed record NamedRateWindowJson(string Id, string Title, RateWindowJson Window, bool UsageKnown);
-internal sealed record CreditsJson(double Remaining, double? Limit, string Unit, DateTimeOffset UpdatedAt);
+internal sealed record CreditsJson(double Remaining, double? Limit, string Unit, DateTimeOffset UpdatedAt, string Kind);
 internal sealed record IdentityJson(string? AccountEmail, string? AccountOrganization, string? Plan, string? LoginMethod);
 internal sealed record ConfigProvidersJsonOutput(IReadOnlyList<ConfigProviderJson> Providers);
-internal sealed record ConfigProviderJson(string Id, string DisplayName, bool Enabled, bool Configured, string AuthHint);
+internal sealed record ConfigProviderJson(string Id, string DisplayName, bool Enabled, bool Configured, string AuthSource, string AuthHint);
 internal sealed record DiagnoseJsonOutput(string ProviderId, string ConfigPath, IReadOnlyList<DiagnosticAttemptJson> Attempts, bool SnapshotProduced, DiagnosticSnapshotJson? Snapshot, string? TerminalError);
 internal sealed record DiagnosticAttemptJson(string StrategyId, string Kind, bool WasAvailable, string? Error);
 

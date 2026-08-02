@@ -1,6 +1,11 @@
 # Provider portability survey
 
 > Extracted from upstream steipete/CodexBar by gpt-5.5 research agents, 2026-07-04.
+>
+> **Current Windows implementation:** Gemini is registered but remains disabled until the user connects it;
+> OpenAI Admin displays trailing-30-day organization spend plus today's spend; Cursor is registered as an
+> experimental, best-effort integration over undocumented dashboard endpoints. Recommendations below are the
+> original portability assessment, not the current provider catalog.
 
 ## Key facts
 

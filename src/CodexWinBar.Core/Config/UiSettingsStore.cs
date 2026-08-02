@@ -86,6 +86,7 @@ public sealed class UiSettingsStore(Action<string> log, string? baseDirectory = 
     /// <param name="settings">The settings to save.</param>
     public void Save(UiSettings settings)
     {
+        settings.Normalize();
         var path = ResolvePath();
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(directory))

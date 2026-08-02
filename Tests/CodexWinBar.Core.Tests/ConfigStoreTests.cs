@@ -131,6 +131,34 @@ public sealed class ConfigStoreTests
         Assert.Equal(AccessControlType.Allow, rule.AccessControlType);
     }
 
+    [Fact]
+    public async Task Concurrent_saves_complete_and_leave_valid_json()
+    {
+        using var temp = TempDir.Create();
+        var path = Path.Combine(temp.Path, "config.json");
+        var stores = Enumerable.Range(0, 8)
+            .Select(_ => Store(temp.Path, name => name == "CODEXBAR_CONFIG" ? path : null))
+            .ToArray();
+        using var start = new ManualResetEventSlim();
+
+        var saves = stores.Select((store, index) => Task.Run(() =>
+        {
+            var config = new CodexBarConfig
+            {
+                Providers = [new ProviderConfigEntry { Id = $"provider-{index}", Enabled = true }],
+            };
+            start.Wait();
+            store.Save(config);
+        })).ToArray();
+
+        start.Set();
+        await Task.WhenAll(saves);
+
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        var provider = Assert.Single(document.RootElement.GetProperty("providers").EnumerateArray());
+        Assert.StartsWith("provider-", provider.GetProperty("id").GetString(), StringComparison.Ordinal);
+    }
+
     private static ConfigStore Store(string userProfile, Func<string, string?>? env = null) =>
         new(env ?? (_ => null), userProfile, _ => { });
 }

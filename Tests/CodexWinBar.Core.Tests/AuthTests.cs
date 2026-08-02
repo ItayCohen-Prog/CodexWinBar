@@ -136,6 +136,53 @@ public sealed class AppCredentialStoreTests : IDisposable
 public sealed class LoopbackHttpListenerTests
 {
     [Fact]
+    public async Task Valid_callback_query_is_decoded()
+    {
+        using var listener = new LoopbackHttpListener(0, "/cb");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var waitTask = listener.WaitForCallbackAsync(
+            _ => CallbackResult.Done(LoopbackResponse.Html(200, "ok")),
+            cts.Token);
+
+        var response = await SendGetAsync(listener.Port, "/cb?code=hello%20world&state=a+b");
+
+        Assert.Contains("200", response);
+        var result = await waitTask;
+        Assert.Equal("hello world", result["code"]);
+        Assert.Equal("a b", result["state"]);
+    }
+
+    [Theory]
+    [InlineData("/cb?code=%ZZ")]
+    [InlineData("/cb?code=trailing%")]
+    public async Task Malformed_percent_escape_is_answered_but_the_wait_continues(string target)
+    {
+        using var listener = new LoopbackHttpListener(0, "/cb");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var callbackCount = 0;
+        var waitTask = listener.WaitForCallbackAsync(
+            _ =>
+            {
+                callbackCount++;
+                return CallbackResult.Done(LoopbackResponse.Html(200, "ok"));
+            },
+            cts.Token);
+
+        var malformedResponse = await SendGetAsync(listener.Port, target);
+
+        Assert.Contains("400 Bad Request", malformedResponse);
+        Assert.EndsWith("Invalid callback request", malformedResponse);
+        Assert.Equal(0, callbackCount);
+        Assert.False(waitTask.IsCompleted);
+
+        var validResponse = await SendGetAsync(listener.Port, "/cb?code=the-code");
+        Assert.Contains("200 OK", validResponse);
+        var result = await waitTask;
+        Assert.Equal("the-code", result["code"]);
+        Assert.Equal(1, callbackCount);
+    }
+
+    [Fact]
     public async Task Invalid_callback_is_answered_but_the_wait_continues_until_a_valid_one()
     {
         using var listener = new LoopbackHttpListener(0, "/cb");

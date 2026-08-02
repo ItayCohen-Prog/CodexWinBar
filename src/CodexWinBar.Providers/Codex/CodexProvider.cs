@@ -105,7 +105,7 @@ internal sealed class CodexOAuthFetchStrategy : IFetchStrategy
             ["scope"] = "openid profile email",
         });
 
-        using var response = await ProviderHttpClient.Shared.SendAsync(request, timeout.Token).ConfigureAwait(false);
+        using var response = await ctx.Http.SendAsync(request, timeout.Token).ConfigureAwait(false);
         var body = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
         {
@@ -127,6 +127,7 @@ internal sealed class CodexOAuthFetchStrategy : IFetchStrategy
         try
         {
             return await SendJsonGetAsync(
+                ctx.Http,
                 credentials,
                 "https://chatgpt.com/backend-api/wham/usage",
                 UsageTimeout,
@@ -138,6 +139,7 @@ internal sealed class CodexOAuthFetchStrategy : IFetchStrategy
         {
             var refreshed = await RefreshAsync(ctx, credentials, ct).ConfigureAwait(false);
             return await SendJsonGetAsync(
+                ctx.Http,
                 refreshed,
                 "https://chatgpt.com/backend-api/wham/usage",
                 UsageTimeout,
@@ -152,6 +154,7 @@ internal sealed class CodexOAuthFetchStrategy : IFetchStrategy
         CodexCredentials credentials,
         CancellationToken ct) =>
         SendJsonGetAsync(
+            ctx.Http,
             credentials,
             "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
             ResetCreditsTimeout,
@@ -160,6 +163,7 @@ internal sealed class CodexOAuthFetchStrategy : IFetchStrategy
             ct);
 
     private static async Task<string> SendJsonGetAsync(
+        HttpClient http,
         CodexCredentials credentials,
         string url,
         TimeSpan timeoutValue,
@@ -187,7 +191,7 @@ internal sealed class CodexOAuthFetchStrategy : IFetchStrategy
             request.Headers.TryAddWithoutValidation("originator", "Codex Desktop");
         }
 
-        using var response = await ProviderHttpClient.Shared.SendAsync(request, timeout.Token).ConfigureAwait(false);
+        using var response = await http.SendAsync(request, timeout.Token).ConfigureAwait(false);
         var body = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
         {

@@ -38,11 +38,9 @@ public static class CursorProvider
 /// Fetches Cursor usage using a signed-in browser session cookie (upstream CodexBar reads the same
 /// cursor.com endpoints via the WorkosCursorSessionToken cookie).
 ///
-/// NOTE: The cursor.com endpoints below are modeled from upstream steipete/CodexBar's docs/cursor.md;
-/// their JSON field names are not published, so <see cref="CursorParser"/> probes a range of candidate
-/// keys defensively (same approach as the z.ai strategy). This path has NOT been live-verified against a
-/// real Cursor session on Windows yet — the display is currently exercised through the fake-data store.
-/// Re-verify field names once a real session cookie is available.
+/// NOTE: Cursor does not publish a stable schema contract for these dashboard endpoints. This strategy
+/// therefore treats their responses as best-effort data: it recognizes known field variants defensively,
+/// ignores fields it cannot verify, and fails clearly when no trustworthy usage value is present.
 /// </summary>
 internal sealed class CursorWebStrategy : IFetchStrategy
 {
@@ -60,12 +58,12 @@ internal sealed class CursorWebStrategy : IFetchStrategy
     {
         var cookie = ResolveCookieHeader(ctx) ?? throw new InvalidOperationException("Cursor session cookie is not configured.");
         using var timeout = ProviderHttpClient.TimeoutCts(ct, RequestTimeout);
-        var usageJson = await GetJsonAsync(UsageSummaryUri, cookie, timeout.Token).ConfigureAwait(false);
+        var usageJson = await GetJsonAsync(ctx.Http, UsageSummaryUri, cookie, timeout.Token).ConfigureAwait(false);
 
         string? meJson = null;
         try
         {
-            meJson = await GetJsonAsync(MeUri, cookie, timeout.Token).ConfigureAwait(false);
+            meJson = await GetJsonAsync(ctx.Http, MeUri, cookie, timeout.Token).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not UnauthorizedProviderException)
         {
@@ -95,13 +93,13 @@ internal sealed class CursorWebStrategy : IFetchStrategy
         return string.IsNullOrWhiteSpace(token) ? null : $"WorkosCursorSessionToken={token.Trim()}";
     }
 
-    private static async Task<string> GetJsonAsync(Uri uri, string cookieHeader, CancellationToken ct)
+    private static async Task<string> GetJsonAsync(HttpClient http, Uri uri, string cookieHeader, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
 
-        using var response = await ProviderHttpClient.Shared.SendAsync(request, ct).ConfigureAwait(false);
+        using var response = await http.SendAsync(request, ct).ConfigureAwait(false);
         var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
         {
@@ -124,7 +122,15 @@ internal static class CursorParser
     {
         using var usage = JsonDocument.Parse(usageJson);
         var root = usage.RootElement;
-        var data = root.TryGetProperty("data", out var dataElement) ? dataElement : root;
+        var data = root.ValueKind == JsonValueKind.Object &&
+            root.TryGetProperty("data", out var dataElement) &&
+            dataElement.ValueKind == JsonValueKind.Object
+                ? dataElement
+                : root;
+        if (data.ValueKind != JsonValueKind.Object)
+        {
+            throw new InvalidOperationException("Cursor usage response contained no recognizable usage data.");
+        }
 
         var reset = ReadBillingCycleEnd(data);
         var plan = ReadPercentWindow(data, reset, "plan", "included", "planUsage", "membership", "quota");
@@ -171,12 +177,17 @@ internal static class CursorParser
             ExtraWindows = extras,
             Identity = identity,
             UpdatedAt = now,
-            Confidence = DataConfidence.Exact,
+            Confidence = DataConfidence.Estimated,
         };
     }
 
     private static RateWindow? ReadPercentWindow(JsonElement data, DateTimeOffset? reset, params string[] candidateKeys)
     {
+        if (data.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
         foreach (var key in candidateKeys)
         {
             if (!data.TryGetProperty(key, out var node) || node.ValueKind != JsonValueKind.Object)
@@ -189,13 +200,13 @@ internal static class CursorParser
             {
                 var used = ReadFirstNumber(node, "used", "usage", "consumed", "current");
                 var limit = ReadFirstNumber(node, "limit", "quota", "total", "included", "max");
-                if (used is not null && limit is > 0)
+                if (used is >= 0 && limit is > 0)
                 {
                     percent = used.Value / limit.Value * 100;
                 }
             }
 
-            if (percent is not null)
+            if (percent is >= 0 && double.IsFinite(percent.Value))
             {
                 return new RateWindow
                 {
@@ -211,6 +222,11 @@ internal static class CursorParser
 
     private static double? ReadExtraUsageUsd(JsonElement data)
     {
+        if (data.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
         foreach (var key in new[] { "onDemand", "extraUsage", "usageBased", "additionalUsage", "overage" })
         {
             if (!data.TryGetProperty(key, out var node))
@@ -224,18 +240,18 @@ internal static class CursorParser
                 var cents = ReadFirstNumber(node, "cents", "amountCents");
                 if (cents is not null)
                 {
-                    return cents.Value / 100;
+                    return cents is >= 0 && double.IsFinite(cents.Value) ? cents.Value / 100 : null;
                 }
 
                 var dollars = ReadFirstNumber(node, "amount", "usd", "dollars", "cost");
                 if (dollars is not null)
                 {
-                    return dollars;
+                    return dollars is >= 0 && double.IsFinite(dollars.Value) ? dollars : null;
                 }
             }
             else if (ReadNumber(node) is { } bare)
             {
-                return bare;
+                return bare >= 0 && double.IsFinite(bare) ? bare : null;
             }
         }
 
@@ -244,6 +260,11 @@ internal static class CursorParser
 
     private static DateTimeOffset? ReadBillingCycleEnd(JsonElement data)
     {
+        if (data.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
         foreach (var key in new[] { "billingCycleEnd", "currentPeriodEnd", "periodEnd", "resetsAt", "renewalDate", "cycleEnd" })
         {
             if (!data.TryGetProperty(key, out var node))
@@ -253,9 +274,16 @@ internal static class CursorParser
 
             if (node.ValueKind == JsonValueKind.Number && node.TryGetInt64(out var epoch))
             {
-                return epoch > 10_000_000_000
-                    ? DateTimeOffset.FromUnixTimeMilliseconds(epoch).ToUniversalTime()
-                    : DateTimeOffset.FromUnixTimeSeconds(epoch).ToUniversalTime();
+                try
+                {
+                    return epoch > 10_000_000_000
+                        ? DateTimeOffset.FromUnixTimeMilliseconds(epoch).ToUniversalTime()
+                        : DateTimeOffset.FromUnixTimeSeconds(epoch).ToUniversalTime();
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                    // Unverified or corrupt reset values do not invalidate otherwise usable usage.
+                }
             }
 
             if (node.ValueKind == JsonValueKind.String &&
@@ -276,8 +304,15 @@ internal static class CursorParser
             try
             {
                 using var me = JsonDocument.Parse(meJson);
-                var meData = me.RootElement.TryGetProperty("data", out var d) ? d : me.RootElement;
-                email = ReadString(meData, "email", "userEmail");
+                var meRoot = me.RootElement;
+                var meData = meRoot.ValueKind == JsonValueKind.Object &&
+                    meRoot.TryGetProperty("data", out var d) &&
+                    d.ValueKind == JsonValueKind.Object
+                        ? d
+                        : meRoot;
+                email = meData.ValueKind == JsonValueKind.Object
+                    ? ReadString(meData, "email", "userEmail")
+                    : null;
             }
             catch (JsonException)
             {
@@ -302,13 +337,13 @@ internal static class CursorParser
     {
         if (element.ValueKind == JsonValueKind.Number && element.TryGetDouble(out var value))
         {
-            return value;
+            return double.IsFinite(value) ? value : null;
         }
 
         if (element.ValueKind == JsonValueKind.String &&
             double.TryParse(element.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
         {
-            return parsed;
+            return double.IsFinite(parsed) ? parsed : null;
         }
 
         return null;
@@ -316,6 +351,11 @@ internal static class CursorParser
 
     private static double? ReadFirstNumber(JsonElement element, params string[] names)
     {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
         foreach (var name in names)
         {
             if (element.TryGetProperty(name, out var property))
@@ -333,6 +373,11 @@ internal static class CursorParser
 
     private static string? ReadString(JsonElement element, params string[] names)
     {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
         foreach (var name in names)
         {
             if (element.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.String)

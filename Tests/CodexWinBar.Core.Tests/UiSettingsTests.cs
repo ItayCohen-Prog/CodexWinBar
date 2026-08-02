@@ -11,7 +11,6 @@ public sealed class UiSettingsTests
         var settings = new UiSettings();
 
         Assert.Equal(5, settings.RefreshCadenceMinutes);
-        Assert.True(settings.MergeIcons);
         Assert.Equal(DisplayTextMode.Percent, settings.DisplayTextMode);
         Assert.False(settings.UsageBarsShowUsed);
         Assert.False(settings.ResetTimesShowAbsolute);
@@ -22,7 +21,7 @@ public sealed class UiSettingsTests
         Assert.True(settings.QuotaSessionEnabled);
         Assert.Equal([20], settings.QuotaWeeklyThresholds);
         Assert.True(settings.QuotaWeeklyEnabled);
-        Assert.Equal(WidgetMode.Auto, settings.WidgetMode);
+        Assert.Equal(WidgetMode.Overlay, settings.WidgetMode);
         Assert.Equal(WidgetSide.Left, settings.WidgetSide);
     }
 
@@ -131,11 +130,49 @@ public sealed class UiSettingsTests
         Assert.Equal(1, settings.SettingsVersion);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void UiSettingsStore_loads_legacy_mergeIcons_and_omits_it_on_save(bool legacyValue)
+    {
+        using var temp = TempDir.Create();
+        var settingsPath = Path.Combine(temp.Path, "CodexWinBar", "ui-settings.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
+        File.WriteAllText(settingsPath, $$"""{"settingsVersion":1,"mergeIcons":{{legacyValue.ToString().ToLowerInvariant()}},"launchAtLogin":true}""");
+        var store = new UiSettingsStore(_ => { }, temp.Path);
+
+        var settings = store.Load();
+        store.Save(settings);
+
+        Assert.True(settings.LaunchAtLogin);
+        Assert.DoesNotContain("mergeIcons", File.ReadAllText(settingsPath), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(WidgetMode.Auto)]
+    [InlineData(WidgetMode.Embedded)]
+    public void UiSettingsStore_coerces_legacy_widget_modes_to_overlay(WidgetMode legacyMode)
+    {
+        using var temp = TempDir.Create();
+        var settingsPath = Path.Combine(temp.Path, "CodexWinBar", "ui-settings.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
+        File.WriteAllText(settingsPath, $$"""{"settingsVersion":1,"widgetMode":"{{legacyMode.ToString().ToLowerInvariant()}}"}""");
+        var store = new UiSettingsStore(_ => { }, temp.Path);
+
+        var settings = store.Load();
+        Assert.Equal(WidgetMode.Overlay, settings.WidgetMode);
+
+        var settingsToSave = new UiSettings { SettingsVersion = 1, WidgetMode = legacyMode };
+        store.Save(settingsToSave);
+
+        Assert.Equal(WidgetMode.Overlay, settingsToSave.WidgetMode);
+        Assert.Contains("\"widgetMode\": \"overlay\"", File.ReadAllText(settingsPath), StringComparison.Ordinal);
+    }
+
     private static void AssertDefaults(UiSettings settings, WidgetSide expectedWidgetSide = WidgetSide.Left)
     {
         Assert.Equal(5, settings.RefreshCadenceMinutes);
         Assert.True(settings.ShowPaceIndicator);
-        Assert.True(settings.MergeIcons);
         Assert.Equal(DisplayTextMode.Percent, settings.DisplayTextMode);
         Assert.False(settings.UsageBarsShowUsed);
         Assert.False(settings.ResetTimesShowAbsolute);
@@ -146,7 +183,7 @@ public sealed class UiSettingsTests
         Assert.True(settings.QuotaSessionEnabled);
         Assert.Equal([20], settings.QuotaWeeklyThresholds);
         Assert.True(settings.QuotaWeeklyEnabled);
-        Assert.Equal(WidgetMode.Auto, settings.WidgetMode);
+        Assert.Equal(WidgetMode.Overlay, settings.WidgetMode);
         Assert.Equal(expectedWidgetSide, settings.WidgetSide);
     }
 }

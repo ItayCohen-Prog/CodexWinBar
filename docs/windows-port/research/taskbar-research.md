@@ -1,14 +1,17 @@
 # Windows taskbar embedding research
 
 > Extracted from upstream steipete/CodexBar by gpt-5.5 research agents, 2026-07-04.
+>
+> **Current product decision:** CodexWinBar ships only the tracked top-level overlay. The `SetParent` sections
+> below preserve evaluation of a rejected alternative; they do not describe a supported mode or fallback.
 
 ## Recommendation
 
-Primary technique: top-level overlay window positioned over the taskbar (WS_POPUP with WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST, optionally WS_EX_LAYERED), tracked via SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE) on Shell_TrayWnd/Shell_SecondaryTrayWnd plus APPBARDATA/ABM_GETTASKBARPOS, with explicit fullscreen suppression via GetForegroundWindow + MonitorInfo comparison. Fallback / optional "deep integration" mode: SetParent child window reparented into Shell_TrayWnd (TrafficMonitor-style), gated behind runtime compatibility checks and easy user disablement, re-anchored to TrayNotifyWnd's screen rect converted via ScreenToClient.
+Use a top-level overlay window positioned over the taskbar (`WS_POPUP` with `WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_LAYERED`), tracked via `SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE)` on `Shell_TrayWnd`/`Shell_SecondaryTrayWnd` plus taskbar geometry, with explicit per-monitor fullscreen suppression. Do not use the `SetParent` alternative described later in this research.
 
-Reasoning (from Codex/gpt-5.5): SetParent gives the most convincing "always part of the taskbar" look, but it is undocumented, relies on unstable internal child-window hierarchy (Shell_TrayWnd → TrayNotifyWnd, etc.), and is vulnerable to Explorer/taskbar implementation changes across OS updates. A top-level overlay is visually slightly less "native" but is safer, easier to recover cleanly after Explorer restarts (own HWND survives; just re-find taskbar rect and reposition), composes correctly with DWM (Mica/Acrylic/rounded corners work normally, unlike embedded children), and is lower risk for production/compatibility-tool scrutiny. If the product absolutely requires the embedded look, ship SetParent as the default "premium" path after explicit live testing on build 26200, with the overlay kept as an automatic fallback if reparenting/positioning fails or Explorer's structure changes.
+Reasoning (from Codex/gpt-5.5): `SetParent` gives the most convincing "always part of the taskbar" look, but it is undocumented, relies on unstable internal child-window hierarchy (`Shell_TrayWnd` → `TrayNotifyWnd`, etc.), and is vulnerable to Explorer/taskbar implementation changes across OS updates. A top-level overlay is visually slightly less native but avoids cross-process reparenting, supports per-pixel alpha reliably, and can be recreated against Explorer's new taskbar windows after a restart.
 
-Exact call sequence for both paths (embed, position, render, click, flyout, and re-embed-on-TaskbarCreated) is detailed in the report below, including the controller-window pattern for handling TaskbarCreated, WM_DISPLAYCHANGE, WM_THEMECHANGED, WM_SETTINGCHANGE, and WM_DPICHANGED.
+The report below retains call sequences for both evaluated paths as research context. Only the overlay sequence is the current product contract; see `../ARCHITECTURE.md`.
 
 ## Risks
 

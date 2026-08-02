@@ -9,7 +9,7 @@ public sealed class CursorParserTests
     private const string ParserType = "CodexWinBar.Providers.Cursor.CursorParser";
 
     [Fact]
-    public void Parse_maps_plan_composer_api_windows_extra_usage_and_identity()
+    public void Parse_full_fixture_maps_verified_windows_extra_usage_and_identity()
     {
         var now = new DateTimeOffset(2026, 7, 5, 10, 0, 0, TimeSpan.Zero);
         var snapshot = (UsageSnapshot)ProviderParserReflection.Invoke(
@@ -53,11 +53,11 @@ public sealed class CursorParserTests
         Assert.Equal("me@example.com", snapshot.Identity?.AccountEmail);
         Assert.Equal("Pro", snapshot.Identity?.Plan);
         Assert.Equal("Session cookie", snapshot.Identity?.LoginMethod);
-        Assert.Equal(DataConfidence.Exact, snapshot.Confidence);
+        Assert.Equal(DataConfidence.Estimated, snapshot.Confidence);
     }
 
     [Fact]
-    public void Parse_tolerates_missing_identity_and_wraps_data_envelope()
+    public void Parse_missing_fixture_tolerates_absent_optional_fields_and_wraps_data_envelope()
     {
         var now = new DateTimeOffset(2026, 7, 5, 10, 0, 0, TimeSpan.Zero);
         var snapshot = (UsageSnapshot)ProviderParserReflection.Invoke(
@@ -72,11 +72,37 @@ public sealed class CursorParserTests
         Assert.Equal(20, snapshot.Primary?.UsedPercent);
         Assert.Null(snapshot.Secondary);
         Assert.Null(snapshot.Identity);
-        Assert.Equal(DataConfidence.Exact, snapshot.Confidence);
+        Assert.Equal(DataConfidence.Estimated, snapshot.Confidence);
     }
 
     [Fact]
-    public void Parse_malformed_usage_json_throws_JsonException()
+    public void Parse_malformed_fixture_ignores_unverified_field_values_when_verified_usage_remains()
+    {
+        var snapshot = (UsageSnapshot)ProviderParserReflection.Invoke(
+            ParserType,
+            "Parse",
+            """
+            {
+              "billingCycleEnd": 9223372036854775807,
+              "plan": { "used": "NaN", "limit": "not-a-limit" },
+              "composer": { "usedPercent": 38 },
+              "api": "unverified-shape",
+              "onDemand": { "cents": -1 }
+            }
+            """,
+            """["not-an-identity-object"]""",
+            DateTimeOffset.UnixEpoch);
+
+        Assert.Null(snapshot.Primary);
+        Assert.Equal(38, snapshot.Secondary?.UsedPercent);
+        Assert.Null(snapshot.Secondary?.ResetsAt);
+        Assert.Empty(snapshot.ExtraWindows);
+        Assert.Null(snapshot.Identity);
+        Assert.Equal(DataConfidence.Estimated, snapshot.Confidence);
+    }
+
+    [Fact]
+    public void Parse_invalid_json_throws_JsonException()
     {
         Assert.IsAssignableFrom<System.Text.Json.JsonException>(Assert.ThrowsAny<Exception>(() =>
             ProviderParserReflection.Invoke(ParserType, "Parse", "{broken", null, DateTimeOffset.UnixEpoch)));

@@ -108,7 +108,6 @@ internal sealed class AppShell : IDisposable
     // at-risk band and re-enter it (so it nudges once per episode rather than nagging every refresh).
     private readonly HashSet<string> acknowledgedRisk = new(StringComparer.OrdinalIgnoreCase);
     private WidgetHostMode? lastWidgetModeRequest;
-    private WidgetSide? lastWidgetSide;
     private WidgetRenderState lastWidgetState = new() { Chips = [] };
     private bool modeBalloonShown;
     private bool disposed;
@@ -117,6 +116,7 @@ internal sealed class AppShell : IDisposable
     private UpdateInfo? pendingUpdate;
     private AppUpdateStatus updateStatus = new(AppUpdateStage.Idle);
     private int updateCheckRunning;
+    private int updateDownloadRunning;
     private System.Windows.Threading.DispatcherTimer? updateCheckTimer;
     // Test hook: CODEXWINBAR_FAKE_UPDATE=1 shows the update button and simulates the download flow;
     // =error drives it to the red error state instead. Inert (null) in normal use.
@@ -329,6 +329,11 @@ internal sealed class AppShell : IDisposable
     {
         if (this.fakeUpdate is not null)
         {
+            if (Interlocked.Exchange(ref this.updateDownloadRunning, 1) != 0)
+            {
+                return;
+            }
+
             this.SimulateUpdateDownload();
             return;
         }
@@ -338,12 +343,17 @@ internal sealed class AppShell : IDisposable
             return;
         }
 
+        if (Interlocked.Exchange(ref this.updateDownloadRunning, 1) != 0)
+        {
+            return;
+        }
+
+        var version = update.TargetFullRelease.Version.ToString();
+        this.SetUpdateStatus(new AppUpdateStatus(AppUpdateStage.Downloading, version));
         _ = Task.Run(async () =>
         {
             try
             {
-                var version = update.TargetFullRelease.Version.ToString();
-                this.SetUpdateStatus(new AppUpdateStatus(AppUpdateStage.Downloading, version));
                 await manager.DownloadUpdatesAsync(
                     update,
                     progress => this.SetUpdateStatus(new AppUpdateStatus(AppUpdateStage.Downloading, version, progress)))
@@ -358,6 +368,10 @@ internal sealed class AppShell : IDisposable
                     AppUpdateStage.DownloadError,
                     update.TargetFullRelease.Version.ToString(),
                     Error: FriendlyUpdateError(ex)));
+            }
+            finally
+            {
+                Interlocked.Exchange(ref this.updateDownloadRunning, 0);
             }
         });
     }
@@ -374,24 +388,32 @@ internal sealed class AppShell : IDisposable
     // then lands on the green restart state (or the red error state when the hook is "error").
     private void SimulateUpdateDownload()
     {
+        this.SetUpdateStatus(new AppUpdateStatus(AppUpdateStage.Downloading, "test"));
         _ = Task.Run(async () =>
         {
-            for (var p = 0; p <= 100; p += 6)
+            try
             {
-                this.SetUpdateStatus(new AppUpdateStatus(AppUpdateStage.Downloading, "test", p));
-                await Task.Delay(160).ConfigureAwait(false);
-            }
+                for (var p = 0; p <= 100; p += 6)
+                {
+                    this.SetUpdateStatus(new AppUpdateStatus(AppUpdateStage.Downloading, "test", p));
+                    await Task.Delay(160).ConfigureAwait(false);
+                }
 
-            if (string.Equals(this.fakeUpdate, "error", StringComparison.OrdinalIgnoreCase))
-            {
-                this.SetUpdateStatus(new AppUpdateStatus(
-                    AppUpdateStage.DownloadError,
-                    "test",
-                    Error: "No internet connection"));
+                if (string.Equals(this.fakeUpdate, "error", StringComparison.OrdinalIgnoreCase))
+                {
+                    this.SetUpdateStatus(new AppUpdateStatus(
+                        AppUpdateStage.DownloadError,
+                        "test",
+                        Error: "No internet connection"));
+                }
+                else
+                {
+                    this.SetUpdateStatus(new AppUpdateStatus(AppUpdateStage.Ready, "test", 100));
+                }
             }
-            else
+            finally
             {
-                this.SetUpdateStatus(new AppUpdateStatus(AppUpdateStage.Ready, "test", 100));
+                Interlocked.Exchange(ref this.updateDownloadRunning, 0);
             }
         });
     }
@@ -466,10 +488,8 @@ internal sealed class AppShell : IDisposable
     {
         var settings = this.uiStore.Load();
         var mode = ResolveWidgetMode(settings);
-        var anchorLeft = settings.WidgetSide == WidgetSide.Left;
         this.lastWidgetModeRequest = mode;
-        this.lastWidgetSide = settings.WidgetSide;
-        this.widgetHost.Start(mode, anchorLeft);
+        this.widgetHost.Start(mode);
     }
 
     /// <summary>Best flyout anchor available right now: the live widget rect, else bottom-left fallback.</summary>
@@ -529,12 +549,11 @@ internal sealed class AppShell : IDisposable
     {
         var settings = this.uiStore.Load();
         var mode = ResolveWidgetMode(settings);
-        if (this.lastWidgetModeRequest != mode || this.lastWidgetSide != settings.WidgetSide)
+        if (this.lastWidgetModeRequest != mode)
         {
             this.widgetHost.Stop();
-            this.widgetHost.Start(mode, settings.WidgetSide == WidgetSide.Left);
+            this.widgetHost.Start(mode);
             this.lastWidgetModeRequest = mode;
-            this.lastWidgetSide = settings.WidgetSide;
             this.widgetHost.Update(this.lastWidgetState);
         }
 
@@ -735,7 +754,7 @@ internal sealed class AppShell : IDisposable
         this.app.DispatcherUnhandledException += (_, args) =>
         {
             this.Log($"Dispatcher exception: {args.Exception}");
-            args.Handled = true;
+            args.Handled = !AppExceptionPolicy.IsFatal(args.Exception);
         };
     }
 
@@ -743,14 +762,6 @@ internal sealed class AppShell : IDisposable
     {
         this.log.Write(message);
     }
-
-    private static WidgetHostMode ToWidgetMode(CoreWidgetMode mode) => mode switch
-    {
-        CoreWidgetMode.Embedded => WidgetHostMode.Embedded,
-        CoreWidgetMode.Overlay => WidgetHostMode.Overlay,
-        CoreWidgetMode.Hidden => WidgetHostMode.Hidden,
-        _ => WidgetHostMode.Auto,
-    };
 
     // One placement, no choices: the widget always floats as an overlay on the taskbar, auto-positioned
     // on the side opposite the clock (WidgetWindow.AnchorOppositeTray). WidgetMode is only used to turn
@@ -854,39 +865,80 @@ internal sealed class AppShell : IDisposable
     private static string Tooltip(ProviderDescriptor descriptor, ProviderState state, UiSettings settings)
     {
         var text = WidgetText(state.Snapshot?.Primary, state.Snapshot?.Secondary, settings);
+        var providerName = descriptor.Id == ProviderId.Cursor
+            ? $"{descriptor.Metadata.DisplayName} (experimental, best effort)"
+            : descriptor.Metadata.DisplayName;
         if (!string.IsNullOrWhiteSpace(state.Error))
         {
-            return $"{descriptor.Metadata.DisplayName}: {state.Error}";
+            return $"{providerName}: {state.Error}";
         }
 
         return string.IsNullOrWhiteSpace(text)
-            ? descriptor.Metadata.DisplayName
-            : $"{descriptor.Metadata.DisplayName}: {text}";
+            ? providerName
+            : $"{providerName}: {text}";
+    }
+}
+
+internal static class AppExceptionPolicy
+{
+    internal static bool IsFatal(Exception exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is OutOfMemoryException or StackOverflowException or AccessViolationException)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
 
 internal sealed class RollingLog : IDisposable
 {
     private const long MaxBytes = 1_000_000;
-    private readonly string path;
+    private readonly string? path;
     private readonly object gate = new();
 
     public RollingLog()
+        : this(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CodexWinBar", "logs"))
     {
-        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var directory = Path.Combine(local, "CodexWinBar", "logs");
-        Directory.CreateDirectory(directory);
-        this.path = Path.Combine(directory, "app.log");
+    }
+
+    internal RollingLog(string directory)
+    {
+        try
+        {
+            Directory.CreateDirectory(directory);
+            this.path = Path.Combine(directory, "app.log");
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"CodexWinBar log unavailable: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     public void Write(string message)
     {
         var line = $"{DateTimeOffset.Now:O} {message}";
         Debug.WriteLine(line);
+        if (this.path is null)
+        {
+            return;
+        }
+
         lock (this.gate)
         {
-            this.TrimIfNeeded();
-            File.AppendAllText(this.path, line + Environment.NewLine);
+            try
+            {
+                this.TrimIfNeeded();
+                File.AppendAllText(this.path, line + Environment.NewLine);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"CodexWinBar log write failed: {ex.GetType().Name}: {ex.Message}");
+            }
         }
     }
 
@@ -896,18 +948,24 @@ internal sealed class RollingLog : IDisposable
 
     private void TrimIfNeeded()
     {
-        var file = new FileInfo(this.path);
+        var path = this.path;
+        if (path is null)
+        {
+            return;
+        }
+
+        var file = new FileInfo(path);
         if (!file.Exists || file.Length < MaxBytes)
         {
             return;
         }
 
-        var oldPath = this.path + ".old";
+        var oldPath = path + ".old";
         if (File.Exists(oldPath))
         {
             File.Delete(oldPath);
         }
 
-        File.Move(this.path, oldPath);
+        File.Move(path, oldPath);
     }
 }

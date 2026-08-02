@@ -4,11 +4,11 @@
 
 **CodexWinBar** is a native Windows 11 rebuild of [steipete/CodexBar](https://github.com/steipete/CodexBar)
 (the macOS menu-bar app, MIT). It puts your AI coding-provider usage limits **directly on the taskbar** —
-embedded next to the system tray so it looks like it was always part of Windows — with per-provider session
+positioned next to the system tray so it looks like it was always part of Windows — with per-provider session
 and weekly windows, reset countdowns, credits, and live provider-status incidents.
 
 <p align="center">
-  <img src="docs/screenshots/widget-embedded.png" alt="CodexWinBar embedded in the Windows 11 taskbar" width="440" />
+  <img src="docs/screenshots/widget-overlay.png" alt="CodexWinBar overlay positioned on the Windows 11 taskbar" width="440" />
 </p>
 <p align="center">
   <img src="docs/screenshots/flyout-light.png" alt="CodexWinBar provider flyout" width="360" />
@@ -16,12 +16,12 @@ and weekly windows, reset countdowns, credits, and live provider-status incident
 
 ## What it does
 
-- **Taskbar-embedded widget** — a compact chip rendered *inside* `Shell_TrayWnd` (true `SetParent`
-  embedding with per-pixel alpha, validated by a runtime capability probe) showing tiny session/weekly
-  gauges and percent text per provider. It sizes itself to the free space beside your taskbar apps,
+- **Taskbar overlay widget** — a compact, non-activating layered window positioned over the taskbar on the
+  side opposite the clock, showing tiny session/weekly gauges and percent text per provider. It sizes itself
+  to the free space beside your taskbar apps,
   collapsing from full gauges → single gauge → compact icons as you add providers (never a scrollbar), and
-  gently bounces the provider you're on pace to run out of first. If embedding isn't possible on your build,
-  it automatically falls back to a tracked overlay; Explorer restarts re-embed automatically.
+  gently bounces the provider you're on pace to run out of first. A widget is tracked per taskbar, recreated
+  after Explorer restarts, and hidden when that taskbar retracts or a fullscreen app occupies its monitor.
 - **Fluent flyout** — click the widget for provider cards: usage bars, "resets in 2h 13m" countdowns,
   model-specific windows, reset credits, credit balances, plan/account identity, and live status incidents
   (Statuspage/Google Workspace feeds). Optional **pace** indicator projects whether you're on track to run
@@ -40,14 +40,18 @@ and weekly windows, reset countdowns, credits, and live provider-status incident
 | **Codex** | ChatGPT backend usage + reset credits | Browser OAuth built into CodexWinBar (auto-refresh) |
 | **Claude** | `api.anthropic.com` OAuth usage | Browser OAuth built into CodexWinBar (auto-refresh) |
 | **Copilot** | `copilot_internal/user` quota snapshots | GitHub device flow (built into Settings) |
+| **Gemini** | Pro/Flash model quota (registered, off until connected) | Browser OAuth built into CodexWinBar; Gemini CLI required |
 | **OpenRouter** | credits + key limits | API key |
-| **OpenAI Admin** | org cost dashboards | Admin API key |
+| **OpenAI Admin** | organization spend for the trailing 30 days + today | Admin API key |
 | **z.ai** | coding-plan quota | API key |
-| **Cursor** | plan + Auto/Composer + on-demand usage | Browser session cookie |
+| **Cursor** *(experimental)* | best-effort plan + Auto/Composer + on-demand usage | Browser session cookie |
 
 CodexWinBar does not require Codex CLI, Claude Code, or Codex Desktop to be installed. Connect Codex,
-Claude, and Copilot from **Settings → Providers** using their built-in browser sign-ins. The rest are
-enabled there with the credential type shown above. Upstream's 50+ provider catalog is on the roadmap — the remaining
+Claude, Gemini, and Copilot from **Settings → Providers** using their built-in sign-in flows. Gemini setup
+requires Gemini CLI because CodexWinBar reads its OAuth client configuration. The rest are enabled there
+with the credential type shown above. Every provider, including Gemini, starts disabled until you connect it.
+Cursor uses undocumented dashboard endpoints whose response shape can change, so its integration is
+experimental and intentionally best-effort. Upstream's 50+ provider catalog is on the roadmap — the remaining
 browser-cookie and WebView2 seams (Windsurf, Ollama quota, …) are deferred to a later release.
 
 ## Install
@@ -87,8 +91,8 @@ winget install ItayCohen.CodexWinBar
 
 Either way it installs per-user (no admin), adds Start-Menu and desktop shortcuts, launches automatically,
 and self-updates. After installing, connect the providers you use in **Settings → Providers** — Codex,
-Claude and Copilot sign in through your browser; OpenRouter, OpenAI Admin, z.ai and Cursor take an API key
-or cookie. Nothing is connected until you sign in.
+Claude and Gemini sign in through your browser, Copilot uses GitHub's device flow, and OpenRouter, OpenAI
+Admin, z.ai and Cursor take an API key or cookie. Nothing is connected until you sign in.
 
 <details>
 <summary>Direct download / build from source</summary>
@@ -128,8 +132,8 @@ auto-update; the app itself otherwise has zero external NuGet dependencies (test
 - `CodexWinBar.Core` — provider abstraction (descriptor + ordered fetch strategies), CodexBar-compatible
   config store, refresh scheduler, status poller.
 - `CodexWinBar.Providers` — one folder per provider; contributions need only a descriptor + strategy + parser.
-- `CodexWinBar.Widget` — pure Win32: taskbar interop, embed/overlay state machine on a dedicated STA
-  thread, GDI+ → `UpdateLayeredWindow` renderer.
+- `CodexWinBar.Widget` — pure Win32: per-taskbar overlay lifecycle and positioning on dedicated STA
+  threads, with a GDI+ → `UpdateLayeredWindow` renderer.
 - `CodexWinBar.App` — WPF shell: flyout, settings, tray icon, quota notifications, single instance.
 
 Design docs and the upstream protocol research live in [`docs/windows-port/`](docs/windows-port/).

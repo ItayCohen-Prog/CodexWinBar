@@ -171,7 +171,9 @@ public sealed class OnboardingWindow : Window
         var text = new StackPanel { Margin = new Thickness(12, 0, 12, 0), VerticalAlignment = VerticalAlignment.Center };
         text.Children.Add(new TextBlock
         {
-            Text = descriptor.Metadata.DisplayName,
+            Text = descriptor.Id == ProviderId.Cursor
+                ? $"{descriptor.Metadata.DisplayName} (experimental)"
+                : descriptor.Metadata.DisplayName,
             FontSize = 14,
             FontWeight = FontWeights.SemiBold,
             Foreground = this.Fg(),
@@ -237,11 +239,12 @@ public sealed class OnboardingWindow : Window
         if (descriptor.Id == ProviderId.Cursor)
         {
             var connected = !string.IsNullOrWhiteSpace(entry.CookieHeader);
-            status.Text = connected ? "Connected" : "Add your session cookie";
+            status.Text = connected ? "Connected (best effort)" : "Experimental/best effort — add your session cookie";
             this.BuildSecretEditor(
                 detail,
                 status,
-                "Paste the WorkosCursorSessionToken cookie value (or the full Cookie header) from a signed-in cursor.com session.",
+                "Cursor's private usage API may change without notice. Paste the WorkosCursorSessionToken cookie value "
+                    + "(or the full Cookie header) from a signed-in cursor.com session.",
                 value => this.ConnectWithEntry(descriptor.Id, e => e with { CookieHeader = NormalizeCursorCookie(value) }));
             return this.MakeDrawerToggle(connected ? "Change" : "Add cookie", detail, !connected);
         }
@@ -434,6 +437,7 @@ public sealed class OnboardingWindow : Window
         if (!settings.OnboardingCompleted)
         {
             settings.OnboardingCompleted = true;
+            settings.WidgetMode = settings.WidgetMode == WidgetMode.Hidden ? WidgetMode.Hidden : WidgetMode.Overlay;
             this.uiStore.Save(settings);
         }
     }

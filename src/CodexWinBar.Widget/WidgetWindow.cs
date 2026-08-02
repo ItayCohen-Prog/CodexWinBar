@@ -37,7 +37,6 @@ internal sealed class WidgetWindow : IDisposable
     internal const uint QuitMessage = NativeMethods.WM_APP + 4;
     private const nuint RepositionTimer = 10;
     private const nuint OverlayPollTimer = 11;
-    private const nuint EmbedProbeRetryTimer = 12;
     private const nuint BobTimer = 13;
     private const nuint StartLayoutRefreshTimer = 14;
     private const nuint ZOrderReassertTimer = 15;
@@ -51,7 +50,6 @@ internal sealed class WidgetWindow : IDisposable
     private readonly NativeMethods.WndProc _widgetProc;
     private readonly NativeMethods.WinEventDelegate _eventProc;
     private readonly IntPtr _module;
-    private readonly bool _anchorLeft;
 
     // The monitor (HMONITOR) whose taskbar this instance targets — its stable identity. The taskbar
     // hwnd is re-resolved from it (see ResolveTaskbar) so Explorer restarts, which recreate every
@@ -60,7 +58,6 @@ internal sealed class WidgetWindow : IDisposable
     private readonly bool _isPrimary;
     private WidgetMode _requestedMode;
     private WidgetMode _effectiveMode = WidgetMode.Hidden;
-    private WidgetMode? _attemptedMode;
     private WidgetRenderState _state = new() { Chips = [] };
     private IntPtr _controller;
     private IntPtr _widget;
@@ -82,9 +79,8 @@ internal sealed class WidgetWindow : IDisposable
     private bool _trackingMouse;
     private bool _overlayHidden;
     private int _zOrderReassertTicksLeft;
-    private int _probeFailures;
-    private DateTime _displayChangingUntilUtc;
     private Rectangle _placementRect;
+    private readonly Lock _screenRectGate = new();
     private Rectangle _screenRect;
     private IntPtr _startLayoutTaskbar;
     private uint _startLayoutDpi;
@@ -103,14 +99,15 @@ internal sealed class WidgetWindow : IDisposable
     private bool _loggedAnchorStart;
     private bool _overlayDecisionLogged;
     private bool _lastLoggedOverlayHide;
-    private DateTime _lastOverlayLogUtc = DateTime.MinValue;
+    private bool _controllerClassRegistered;
+    private bool _widgetClassRegistered;
+    private bool _initializationSignaled;
     private readonly List<Rectangle> _chipBounds = [];
 
-    internal WidgetWindow(WidgetHost host, WidgetMode requestedMode, bool anchorLeft, IntPtr monitor, bool isPrimary)
+    internal WidgetWindow(WidgetHost host, WidgetMode requestedMode, IntPtr monitor, bool isPrimary)
     {
         _host = host;
         _requestedMode = requestedMode;
-        _anchorLeft = anchorLeft;
         _monitor = monitor;
         _isPrimary = isPrimary;
         int instanceId = Interlocked.Increment(ref _instanceCounter);
@@ -133,28 +130,61 @@ internal sealed class WidgetWindow : IDisposable
 
     internal IntPtr Controller => _controller;
 
-    /// <summary>Invoked on the widget thread once the controller window exists (so a posted
-    /// <see cref="QuitMessage"/> can reach it). Set by <see cref="WidgetHost.Start"/> before Run.</summary>
-    internal Action? ControllerReady { get; set; }
+    /// <summary>Invoked once on the widget thread after initialization succeeds or fails. Set by
+    /// <see cref="WidgetHost.Start"/> before Run so Stop can safely distinguish startup from a live pump.</summary>
+    internal Action<bool>? InitializationCompleted { get; set; }
 
     internal WidgetMode EffectiveMode => _effectiveMode;
 
-    /// <summary>Last placed widget rect in physical screen pixels; Empty before first placement.
-    /// Read cross-thread for flyout anchoring — a torn read is benign there.</summary>
-    internal Rectangle CurrentScreenRect => _screenRect;
+    /// <summary>Last placed widget rect in physical screen pixels; Empty before first placement.</summary>
+    internal Rectangle CurrentScreenRect => ReadScreenRect();
+
+    private Rectangle ReadScreenRect()
+    {
+        lock (_screenRectGate)
+        {
+            return _screenRect;
+        }
+    }
+
+    private void WriteScreenRect(Rectangle rect)
+    {
+        lock (_screenRectGate)
+        {
+            _screenRect = rect;
+        }
+    }
 
     internal void Run()
     {
         try
         {
-            RegisterClasses();
+            if (!RegisterClasses())
+            {
+                SignalInitialization(false);
+                return;
+            }
+
             _taskbarCreatedMessage = NativeMethods.RegisterWindowMessageW("TaskbarCreated");
             _controller = NativeMethods.CreateWindowExW(0, _controllerClassName, null, NativeMethods.WS_OVERLAPPED, 0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, _module, IntPtr.Zero);
+            if (_controller == IntPtr.Zero)
+            {
+                int error = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+                WidgetLog.Write($"CreateWindowExW failed for controller window (Win32 error {error}).");
+                SignalInitialization(false);
+                return;
+            }
+
+            InstallHooks();
+            if (!Recreate())
+            {
+                SignalInitialization(false);
+                return;
+            }
+
             // Startup-ready handshake: the controller now exists, so a QuitMessage posted by Stop
             // will be delivered (posted messages queue even before the pump starts).
-            ControllerReady?.Invoke();
-            InstallHooks();
-            Recreate();
+            SignalInitialization(true);
             Pump();
         }
         catch (Exception ex)
@@ -163,6 +193,7 @@ internal sealed class WidgetWindow : IDisposable
         }
         finally
         {
+            SignalInitialization(false);
             Dispose();
         }
     }
@@ -204,8 +235,17 @@ internal sealed class WidgetWindow : IDisposable
         // teardown — a later message into a stale delegate hard-crashes the whole process via
         // Environment.FailFast. Class names are unique per instance (see _instanceCounter), so this
         // never races another live widget's registration.
-        _ = NativeMethods.UnregisterClassW(_widgetClassName, _module);
-        _ = NativeMethods.UnregisterClassW(_controllerClassName, _module);
+        if (_widgetClassRegistered)
+        {
+            _ = NativeMethods.UnregisterClassW(_widgetClassName, _module);
+            _widgetClassRegistered = false;
+        }
+
+        if (_controllerClassRegistered)
+        {
+            _ = NativeMethods.UnregisterClassW(_controllerClassName, _module);
+            _controllerClassRegistered = false;
+        }
 
         _renderer.Dispose();
     }
@@ -226,7 +266,7 @@ internal sealed class WidgetWindow : IDisposable
         }
     }
 
-    private void RegisterClasses()
+    private bool RegisterClasses()
     {
         // Without a class cursor the widget inherits Explorer's tray cursor state, which shows the
         // app-starting/busy cursor over our window; give the class the standard arrow.
@@ -240,7 +280,10 @@ internal sealed class WidgetWindow : IDisposable
             hCursor = _arrowCursor,
             lpszClassName = _controllerClassName,
         };
-        _ = NativeMethods.RegisterClassExW(ref controller);
+        if (!RegisterClass(ref controller, _controllerClassName, out _controllerClassRegistered))
+        {
+            return false;
+        }
 
         NativeMethods.WNDCLASSEXW widget = new()
         {
@@ -250,7 +293,40 @@ internal sealed class WidgetWindow : IDisposable
             hCursor = _arrowCursor,
             lpszClassName = _widgetClassName,
         };
-        _ = NativeMethods.RegisterClassExW(ref widget);
+        return RegisterClass(ref widget, _widgetClassName, out _widgetClassRegistered);
+    }
+
+    private static bool RegisterClass(ref NativeMethods.WNDCLASSEXW windowClass, string className, out bool registered)
+    {
+        ushort atom = NativeMethods.RegisterClassExW(ref windowClass);
+        registered = atom != 0;
+        if (registered)
+        {
+            return true;
+        }
+
+        int error = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+        if (IsClassRegistrationAccepted(atom, error))
+        {
+            return true;
+        }
+
+        WidgetLog.Write($"RegisterClassExW failed for '{className}' (Win32 error {error}).");
+        return false;
+    }
+
+    internal static bool IsClassRegistrationAccepted(ushort atom, int error) =>
+        atom != 0 || error == NativeMethods.ERROR_CLASS_ALREADY_EXISTS;
+
+    private void SignalInitialization(bool succeeded)
+    {
+        if (_initializationSignaled)
+        {
+            return;
+        }
+
+        _initializationSignaled = true;
+        InitializationCompleted?.Invoke(succeeded);
     }
 
     private void InstallHooks()
@@ -259,14 +335,14 @@ internal sealed class WidgetWindow : IDisposable
         _foregroundHook = NativeMethods.SetWinEventHook(NativeMethods.EVENT_SYSTEM_FOREGROUND, NativeMethods.EVENT_SYSTEM_FOREGROUND, IntPtr.Zero, _eventProc, 0, 0, NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
     }
 
-    private void Recreate()
+    private bool Recreate()
     {
         _hoveredIndex = -1;
         TaskbarInfo? info = ResolveTaskbar();
         if (info is null)
         {
             SetEffectiveMode(WidgetMode.Hidden, "taskbar not found");
-            return;
+            return true;
         }
 
         _taskbar = info.TaskbarHwnd;
@@ -281,14 +357,14 @@ internal sealed class WidgetWindow : IDisposable
         {
             DestroyWidget();
             SetEffectiveMode(WidgetMode.Hidden, "hidden requested");
-            return;
+            return true;
         }
 
         // One rendering mode: a topmost overlay pinned to the taskbar. It is the only approach that
         // behaves identically on every Windows 11 build — embedding into the XAML taskbar was fragile and
         // fell back to this anyway — and it stays visible even when the taskbar auto-hides. "Hidden" above
         // (the user turning the widget off) is the only other state.
-        CreateOverlayOrHidden("overlay");
+        return CreateOverlayOrHidden("overlay");
     }
 
     private static bool IsVerticalEdge(int edge) => edge == NativeMethods.ABE_LEFT || edge == NativeMethods.ABE_RIGHT;
@@ -296,7 +372,7 @@ internal sealed class WidgetWindow : IDisposable
     /// <summary>Sets orientation and computes _width/_height: the strip fills the taskbar's thickness on
     /// the cross-axis (client height when horizontal, client width when vertical) and the measured
     /// content length on the along-axis.</summary>
-    private void MeasureForTaskbar(TaskbarInfo info, bool overlay)
+    private void MeasureForTaskbar(TaskbarInfo info)
     {
         _vertical = IsVerticalEdge(info.Edge);
         if (_vertical)
@@ -309,7 +385,7 @@ internal sealed class WidgetWindow : IDisposable
         {
             RefreshHorizontalLayout(info);
             _height = Math.Max(1, info.ClientRect.Height);
-            bool anchorStart = overlay ? AnchorOppositeTray(info) : _anchorLeft;
+            bool anchorStart = AnchorOppositeTray(info);
             int budget = HorizontalBudget(info, anchorStart);
             _width = _renderer.Measure(_state, _dpi, vertical: false, budget, _chipBounds);
             _layoutHasRoom = HasHorizontalRoom(budget, _width, _horizontalLayoutKnown, anchorStart);
@@ -444,50 +520,14 @@ internal sealed class WidgetWindow : IDisposable
         Rectangle taskbarRect) =>
         cachedTaskbar == taskbar && cachedDpi == dpi && cachedTaskbarRect == taskbarRect;
 
-    private void CreateEmbedded(TaskbarInfo info)
-    {
-        DestroyWidget();
-        _attemptedMode = WidgetMode.Embedded;
-        MeasureForTaskbar(info, overlay: false);
-        _widget = NativeMethods.CreateWindowExW(NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_LAYERED, _widgetClassName, null, NativeMethods.WS_POPUP, 0, 0, _width, _height, IntPtr.Zero, IntPtr.Zero, _module, IntPtr.Zero);
-        // The SetParent return value (previous parent) is ignored: NULL is a legitimate success for a
-        // top-level WS_POPUP window, so ProbeEmbedded validates the reparent by inspection instead.
-        _ = NativeMethods.SetParent(_widget, info.TaskbarHwnd);
-
-        long style = NativeMethods.GetWindowLongPtrW(_widget, NativeMethods.GWL_STYLE).ToInt64();
-        style &= ~(NativeMethods.WS_POPUP | NativeMethods.WS_CAPTION | NativeMethods.WS_THICKFRAME | NativeMethods.WS_SYSMENU);
-        style |= NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_CLIPSIBLINGS | NativeMethods.WS_CLIPCHILDREN;
-        _ = NativeMethods.SetWindowLongPtrW(_widget, NativeMethods.GWL_STYLE, new IntPtr(style));
-        long exStyle = NativeMethods.GetWindowLongPtrW(_widget, NativeMethods.GWL_EXSTYLE).ToInt64();
-        exStyle &= ~NativeMethods.WS_EX_APPWINDOW;
-        exStyle |= NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_LAYERED;
-        _ = NativeMethods.SetWindowLongPtrW(_widget, NativeMethods.GWL_EXSTYLE, new IntPtr(exStyle));
-        PositionEmbedded(info);
-        uint visibility = _layoutHasRoom ? NativeMethods.SWP_SHOWWINDOW : NativeMethods.SWP_HIDEWINDOW;
-        _ = NativeMethods.SetWindowPos(_widget, NativeMethods.HWND_TOP, _placementRect.X, _placementRect.Y, _width, _height, NativeMethods.SWP_FRAMECHANGED | NativeMethods.SWP_NOACTIVATE | visibility);
-        bool rendered = Render();
-        UpdateBobTimer();
-        bool valid = ProbeEmbedded(rendered);
-        if (valid)
-        {
-            _probeFailures = 0;
-            _attemptedMode = null;
-            SetEffectiveMode(WidgetMode.Embedded, "embedded");
-            _ = NativeMethods.SetTimer(_controller, StartLayoutRefreshTimer, 5000, IntPtr.Zero);
-            return;
-        }
-
-        CountProbeFailure("initial embedded probe failed");
-    }
-
-    private void CreateOverlayOrHidden(string reason)
+    private bool CreateOverlayOrHidden(string reason)
     {
         DestroyWidget();
         TaskbarInfo? info = ResolveTaskbar();
         if (info is null)
         {
             SetEffectiveMode(WidgetMode.Hidden, reason + "; taskbar unavailable");
-            return;
+            return true;
         }
 
         // Secondary taskbars never have a tray; only treat a missing tray as fatal on the primary,
@@ -495,13 +535,21 @@ internal sealed class WidgetWindow : IDisposable
         if (info.IsPrimary && info.TrayHwnd == IntPtr.Zero)
         {
             SetEffectiveMode(WidgetMode.Hidden, reason + "; tray unavailable");
-            return;
+            return true;
         }
 
         _taskbar = info.TaskbarHwnd;
         _tray = info.TrayHwnd;
-        MeasureForTaskbar(info, overlay: true);
+        MeasureForTaskbar(info);
         _widget = NativeMethods.CreateWindowExW(NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_TOPMOST | NativeMethods.WS_EX_LAYERED, _widgetClassName, null, NativeMethods.WS_POPUP, 0, 0, _width, _height, IntPtr.Zero, IntPtr.Zero, _module, IntPtr.Zero);
+        if (_widget == IntPtr.Zero)
+        {
+            int error = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+            WidgetLog.Write($"CreateWindowExW failed for overlay window (Win32 error {error}).");
+            SetEffectiveMode(WidgetMode.Hidden, "overlay window creation failed");
+            return false;
+        }
+
         // OWN the overlay to its taskbar (GWLP_HWNDPARENT sets the owner, not the parent): the window
         // manager keeps owned windows above their owner ATOMICALLY, so when the shell raises the
         // taskbar (any click on the bar, activation changes) the widget rides above it in the same
@@ -511,8 +559,9 @@ internal sealed class WidgetWindow : IDisposable
         // re-asserts stay as a backstop for taskbar hwnd swaps that keep the widget alive.
         _ = NativeMethods.SetWindowLongPtrW(_widget, NativeMethods.GWLP_HWNDPARENT, _taskbar);
         PositionOverlay(info);
+        Rectangle screenRect = ReadScreenRect();
         uint visibility = _layoutHasRoom ? NativeMethods.SWP_SHOWWINDOW : NativeMethods.SWP_HIDEWINDOW;
-        _ = NativeMethods.SetWindowPos(_widget, NativeMethods.HWND_TOPMOST, _screenRect.X, _screenRect.Y, _width, _height, NativeMethods.SWP_NOACTIVATE | visibility);
+        _ = NativeMethods.SetWindowPos(_widget, NativeMethods.HWND_TOPMOST, screenRect.X, screenRect.Y, _width, _height, NativeMethods.SWP_NOACTIVATE | visibility);
         _ = Render();
         UpdateBobTimer();
         SetEffectiveMode(WidgetMode.Overlay, reason);
@@ -520,13 +569,13 @@ internal sealed class WidgetWindow : IDisposable
         // goes fullscreen (a topmost overlay would otherwise stay drawn over borderless-fullscreen apps).
         _ = NativeMethods.SetTimer(_controller, OverlayPollTimer, 400, IntPtr.Zero);
         _ = NativeMethods.SetTimer(_controller, StartLayoutRefreshTimer, 5000, IntPtr.Zero);
+        return true;
     }
 
     private void DestroyWidget()
     {
         if (_controller != IntPtr.Zero)
         {
-            _ = NativeMethods.KillTimer(_controller, EmbedProbeRetryTimer);
             _ = NativeMethods.KillTimer(_controller, BobTimer);
             _ = NativeMethods.KillTimer(_controller, StartLayoutRefreshTimer);
         }
@@ -534,65 +583,11 @@ internal sealed class WidgetWindow : IDisposable
         _bobActive = false;
         _bobWatch.Reset();
         RestoreTimerResolution();
-        _attemptedMode = null;
         if (_widget != IntPtr.Zero)
         {
             _ = NativeMethods.DestroyWindow(_widget);
             _widget = IntPtr.Zero;
         }
-    }
-
-    private void PositionEmbedded(TaskbarInfo info)
-    {
-        int gap = Scale(6);
-        int x;
-        int y;
-        if (_vertical)
-        {
-            // Center across the strip width; anchor to the top of the taskbar (the "start" end) or,
-            // when not left-anchored, just above the tray/clock at the bottom of a vertical taskbar.
-            x = Math.Max(0, (info.ClientRect.Width - _width) / 2);
-            if (_anchorLeft)
-            {
-                y = Scale(8);
-            }
-            else if (info.TrayRect.IsEmpty)
-            {
-                // No tray (secondary taskbar): anchor to the far (bottom) end of the bar instead.
-                y = Math.Max(Scale(8), info.ClientRect.Height - _height - Scale(8));
-            }
-            else
-            {
-                NativeMethods.RECT trayClient = new() { Left = info.TrayRect.Left, Top = info.TrayRect.Top, Right = info.TrayRect.Right, Bottom = info.TrayRect.Bottom };
-                _ = NativeMethods.MapWindowPoints(IntPtr.Zero, info.TaskbarHwnd, ref trayClient, 2);
-                y = Math.Max(Scale(8), trayClient.Top - _height - gap);
-            }
-        }
-        else
-        {
-            if (_anchorLeft)
-            {
-                x = Math.Max(Scale(8), _startInset);
-            }
-            else if (info.TrayRect.IsEmpty)
-            {
-                // No tray (secondary taskbar): anchor to the right edge of the taskbar client area.
-                x = Math.Max(0, info.ClientRect.Width - _width - Scale(8));
-            }
-            else
-            {
-                NativeMethods.RECT trayClient = new() { Left = info.TrayRect.Left, Top = info.TrayRect.Top, Right = info.TrayRect.Right, Bottom = info.TrayRect.Bottom };
-                _ = NativeMethods.MapWindowPoints(IntPtr.Zero, info.TaskbarHwnd, ref trayClient, 2);
-                x = trayClient.Left - _width - gap;
-            }
-
-            y = Math.Max(0, (info.ClientRect.Height - _height) / 2);
-        }
-
-        _placementRect = new Rectangle(x, y, _width, _height);
-        NativeMethods.RECT screen = new() { Left = x, Top = y, Right = x + _width, Bottom = y + _height };
-        _ = NativeMethods.MapWindowPoints(info.TaskbarHwnd, IntPtr.Zero, ref screen, 2);
-        _screenRect = TaskbarInterop.ToRectangle(screen);
     }
 
     private void PositionOverlay(TaskbarInfo info)
@@ -618,7 +613,7 @@ internal sealed class WidgetWindow : IDisposable
         }
 
         _placementRect = new Rectangle(x, y, _width, _height);
-        _screenRect = _placementRect;
+        WriteScreenRect(_placementRect);
     }
 
     /// <summary>True when the widget should anchor to the taskbar's "start" side (left on a horizontal
@@ -655,9 +650,7 @@ internal sealed class WidgetWindow : IDisposable
             return false;
         }
 
-        long style = NativeMethods.GetWindowLongPtrW(_widget, NativeMethods.GWL_STYLE).ToInt64();
-        bool embeddedChild = (style & NativeMethods.WS_CHILD) != 0;
-        Point? location = embeddedChild ? null : _screenRect.Location;
+        Point location = ReadScreenRect().Location;
         int bobMs = _bobActive ? (int)_bobWatch.ElapsedMilliseconds : 0;
         return _renderer.RenderToWindow(_widget, _state, _width, _height, _dpi, _vertical, _hoveredIndex, bobMs, location);
     }
@@ -716,98 +709,6 @@ internal sealed class WidgetWindow : IDisposable
         }
     }
 
-    // Note: the SetParent return value (previous parent) is deliberately NOT part of this probe —
-    // per the SetParent docs a successful reparent of a top-level WS_POPUP window can legitimately
-    // return NULL, so it can't distinguish success from failure. The ancestry/style/rect/anchor
-    // checks below are the real validation.
-    private bool ProbeEmbedded(bool rendered)
-    {
-        if (Suspended())
-        {
-            return true;
-        }
-
-        if (!_layoutHasRoom)
-        {
-            return true;
-        }
-
-        if (_widget == IntPtr.Zero || _taskbar == IntPtr.Zero || !rendered)
-        {
-            return false;
-        }
-
-        bool ancestorMatches = false;
-        IntPtr current = _widget;
-        for (int i = 0; i < 8 && current != IntPtr.Zero; i++)
-        {
-            current = NativeMethods.GetAncestor(current, NativeMethods.GA_PARENT);
-            if (current == _taskbar)
-            {
-                ancestorMatches = true;
-                break;
-            }
-        }
-
-        long style = NativeMethods.GetWindowLongPtrW(_widget, NativeMethods.GWL_STYLE).ToInt64();
-        bool styleOk = (style & NativeMethods.WS_CHILD) != 0 && (style & NativeMethods.WS_POPUP) == 0;
-        bool rectOk = NativeMethods.GetWindowRect(_widget, out NativeMethods.RECT rect) && !rect.IsEmpty;
-        Rectangle widgetScreen = TaskbarInterop.ToRectangle(rect);
-        bool intersects = TaskbarInterop.RectIntersectsTaskbarClient(_taskbar, widgetScreen);
-        bool anchorOk = _anchorLeft ? LeftEdgeWithinTaskbarClient(widgetScreen) : _tray == IntPtr.Zero || widgetScreen.Right <= TaskbarInterop.ToRectangle(GetWindowRectOrEmpty(_tray)).Left + Scale(2);
-        return ancestorMatches && TaskbarInterop.IsExplorerProcess(_taskbar) && styleOk && rectOk && intersects && anchorOk;
-    }
-
-    private bool LeftEdgeWithinTaskbarClient(Rectangle widgetScreen)
-    {
-        if (_taskbar == IntPtr.Zero)
-        {
-            return false;
-        }
-
-        NativeMethods.RECT client = new() { Left = 0, Top = 0, Right = 0, Bottom = 0 };
-        if (!NativeMethods.GetClientRect(_taskbar, out client))
-        {
-            return false;
-        }
-
-        _ = NativeMethods.MapWindowPoints(_taskbar, IntPtr.Zero, ref client, 2);
-        Rectangle taskbarClient = TaskbarInterop.ToRectangle(client);
-        return widgetScreen.Left >= taskbarClient.Left && widgetScreen.Left <= taskbarClient.Right;
-    }
-
-    private static NativeMethods.RECT GetWindowRectOrEmpty(IntPtr hwnd)
-    {
-        return NativeMethods.GetWindowRect(hwnd, out NativeMethods.RECT rect) ? rect : default;
-    }
-
-    private void CountProbeFailure(string reason)
-    {
-        if (Suspended())
-        {
-            return;
-        }
-
-        _probeFailures++;
-        WidgetLog.Write(reason + " (" + _probeFailures + ")");
-        if (_probeFailures >= 2)
-        {
-            _attemptedMode = null;
-            CreateOverlayOrHidden(reason);
-            return;
-        }
-
-        if (_controller != IntPtr.Zero && _attemptedMode == WidgetMode.Embedded && _widget != IntPtr.Zero)
-        {
-            _ = NativeMethods.SetTimer(_controller, EmbedProbeRetryTimer, 500, IntPtr.Zero);
-        }
-    }
-
-    private bool Suspended()
-    {
-        return DateTime.UtcNow < _displayChangingUntilUtc || (_effectiveMode == WidgetMode.Overlay && _overlayHidden);
-    }
-
     private void Reposition()
     {
         TaskbarInfo? info = ResolveTaskbar();
@@ -824,26 +725,8 @@ internal sealed class WidgetWindow : IDisposable
             _dpi = 96;
         }
 
-        bool overlay = _effectiveMode == WidgetMode.Overlay;
-        MeasureForTaskbar(info, overlay);
-        if (_effectiveMode == WidgetMode.Embedded || _attemptedMode == WidgetMode.Embedded)
-        {
-            PositionEmbedded(info);
-            uint visibility = _layoutHasRoom ? NativeMethods.SWP_SHOWWINDOW : NativeMethods.SWP_HIDEWINDOW;
-            _ = NativeMethods.SetWindowPos(_widget, NativeMethods.HWND_TOP, _placementRect.X, _placementRect.Y, _width, _height, NativeMethods.SWP_NOACTIVATE | visibility);
-            bool rendered = Render();
-            if (ProbeEmbedded(rendered))
-            {
-                _probeFailures = 0;
-                _attemptedMode = null;
-                SetEffectiveMode(WidgetMode.Embedded, "embedded");
-            }
-            else
-            {
-                CountProbeFailure("embedded reprobe failed");
-            }
-        }
-        else if (_effectiveMode == WidgetMode.Overlay)
+        MeasureForTaskbar(info);
+        if (_effectiveMode == WidgetMode.Overlay)
         {
             PositionOverlay(info);
             UpdateOverlayVisibility();
@@ -940,22 +823,18 @@ internal sealed class WidgetWindow : IDisposable
         }
     }
 
-    // Comprehensive per-instance diagnostics for the overlay show/hide decision. Logs on every change of
-    // the decision (so a flash between hidden/shown shows up as rapid transitions) and otherwise a steady-
-    // state heartbeat at most once every 5 minutes. The heartbeat was 2s originally, but two widgets each
-    // logging every 2s rotated everything else (fetch/auth diagnostics) out of app.log within the hour.
+    // Comprehensive per-instance diagnostics for the overlay show/hide decision. Log the first healthy
+    // decision and every change after it, so transitions remain visible without steady-state log noise.
     // Two widgets (one per taskbar) log independently; compare their lines to see why the monitors differ.
     private void LogOverlayDecision(bool hide, IntPtr liveMonitor, RetractInfo retract, FullscreenInfo full)
     {
-        DateTime now = DateTime.UtcNow;
-        bool changed = hide != _lastLoggedOverlayHide || !_overlayDecisionLogged;
-        if (!changed && (now - _lastOverlayLogUtc) < TimeSpan.FromMinutes(5))
+        bool changed = ShouldLogOverlayDecision(_overlayDecisionLogged, _lastLoggedOverlayHide, hide);
+        if (!changed)
         {
             return;
         }
 
         _overlayDecisionLogged = true;
-        _lastOverlayLogUtc = now;
         _lastLoggedOverlayHide = hide;
 
         string role = _isPrimary ? "primary" : "secondary";
@@ -968,6 +847,9 @@ internal sealed class WidgetWindow : IDisposable
             $"placement={_placementRect.X},{_placementRect.Y},{_placementRect.Width}x{_placementRect.Height} overlayHidden={_overlayHidden}");
     }
 
+    internal static bool ShouldLogOverlayDecision(bool alreadyLogged, bool previousHide, bool hide) =>
+        !alreadyLogged || previousHide != hide;
+
     private static string Fmt(NativeMethods.RECT r) => $"{r.Left},{r.Top},{r.Right},{r.Bottom}";
 
     private void SetEffectiveMode(WidgetMode mode, string reason)
@@ -978,11 +860,6 @@ internal sealed class WidgetWindow : IDisposable
         }
 
         _effectiveMode = mode;
-        if (mode != WidgetMode.Hidden)
-        {
-            _attemptedMode = null;
-        }
-
         _host.SetEffectiveModeFromThread(_isPrimary, mode, reason);
     }
 
@@ -1011,11 +888,10 @@ internal sealed class WidgetWindow : IDisposable
                         Thread.Sleep(1000);
                     }
 
-                    Recreate();
+                    _ = Recreate();
                     return IntPtr.Zero;
                 case NativeMethods.WM_DISPLAYCHANGE:
                 case NativeMethods.WM_DPICHANGED:
-                    _displayChangingUntilUtc = DateTime.UtcNow.AddSeconds(2);
                     InvalidateHorizontalLayout();
                     _ = NativeMethods.PostMessageW(hwnd, RepositionMessage, IntPtr.Zero, IntPtr.Zero);
                     return IntPtr.Zero;
@@ -1044,11 +920,6 @@ internal sealed class WidgetWindow : IDisposable
                         {
                             _ = NativeMethods.KillTimer(hwnd, ZOrderReassertTimer);
                         }
-                    }
-                    else if ((nuint)wParam == EmbedProbeRetryTimer)
-                    {
-                        _ = NativeMethods.KillTimer(hwnd, EmbedProbeRetryTimer);
-                        Reposition();
                     }
                     else if ((nuint)wParam == BobTimer)
                     {
@@ -1091,8 +962,7 @@ internal sealed class WidgetWindow : IDisposable
             switch (msg)
             {
                 case NativeMethods.WM_SETCURSOR:
-                    // Force the arrow over the whole widget; as a SetParent child of Explorer's tray
-                    // the inherited cursor is otherwise the busy/app-starting spinner.
+                    // Force the arrow over the whole overlay instead of inheriting transient shell state.
                     _ = NativeMethods.SetCursor(_arrowCursor);
                     return new IntPtr(1);
                 case NativeMethods.WM_MOUSEMOVE:
@@ -1108,19 +978,20 @@ internal sealed class WidgetWindow : IDisposable
                 case NativeMethods.WM_LBUTTONUP:
                     WidgetLog.Write("widget clicked");
                     var clickedIndex = HitTest(ClientPointFromLParam(lParam));
+                    Rectangle screenRect = ReadScreenRect();
                     if (clickedIndex >= 0 && clickedIndex < _state.Chips.Count && clickedIndex < _chipBounds.Count)
                     {
                         Rectangle bounds = ChipHitRect(clickedIndex);
                         var chipRect = new Rectangle(
-                            _screenRect.Left + bounds.Left,
-                            _screenRect.Top + bounds.Top,
+                            screenRect.Left + bounds.Left,
+                            screenRect.Top + bounds.Top,
                             bounds.Width,
                             bounds.Height);
                         _host.RaiseClicked(chipRect, _state.Chips[clickedIndex].ProviderKey);
                     }
                     else
                     {
-                        _host.RaiseClicked(_screenRect, null);
+                        _host.RaiseClicked(screenRect, null);
                     }
 
                     return IntPtr.Zero;

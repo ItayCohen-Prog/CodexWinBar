@@ -64,10 +64,9 @@ internal static class TaskbarStartOccupancy
             }
         }
 
-        // UI Automation calls run off the widget's window-owning thread. In embedded mode our own
-        // child HWND is part of the taskbar subtree, and Microsoft explicitly warns against querying
-        // a client's own UI on its UI thread. A stuck Explorer provider remains the sole pending
-        // request for this taskbar instead of leaking another blocked worker on every refresh.
+        // UI Automation calls run off the widget's window-owning thread so a stuck Explorer provider
+        // cannot block the overlay message pump. The sole pending request is reused instead of leaking
+        // another blocked worker on every refresh.
         if (!measurement.IsCompleted && !measurement.Wait(TimeSpan.FromMilliseconds(300)))
         {
             return TaskbarStartLayout.Failed(fallbackAppCluster);

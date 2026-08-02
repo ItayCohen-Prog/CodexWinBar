@@ -44,8 +44,8 @@ internal sealed class OpenRouterApiStrategy : IFetchStrategy
     {
         var apiKey = ResolveApiKey(ctx) ?? throw new InvalidOperationException("OpenRouter API key is not configured.");
         using var timeout = ProviderHttpClient.TimeoutCts(ct, RequestTimeout);
-        var creditsJson = await GetJsonAsync(CreditsUri, apiKey, timeout.Token).ConfigureAwait(false);
-        var keyJson = await GetJsonAsync(KeyUri, apiKey, timeout.Token).ConfigureAwait(false);
+        var creditsJson = await GetJsonAsync(ctx.Http, CreditsUri, apiKey, timeout.Token).ConfigureAwait(false);
+        var keyJson = await GetJsonAsync(ctx.Http, KeyUri, apiKey, timeout.Token).ConfigureAwait(false);
         return OpenRouterParser.Parse(creditsJson, keyJson, ctx.Now().ToUniversalTime());
     }
 
@@ -61,7 +61,7 @@ internal sealed class OpenRouterApiStrategy : IFetchStrategy
         return ctx.Environment("OPENROUTER_API_KEY");
     }
 
-    private static async Task<string> GetJsonAsync(Uri uri, string apiKey, CancellationToken ct)
+    private static async Task<string> GetJsonAsync(HttpClient http, Uri uri, string apiKey, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
@@ -71,7 +71,7 @@ internal sealed class OpenRouterApiStrategy : IFetchStrategy
         request.Headers.TryAddWithoutValidation("HTTP-Referer", "https://github.com/ItayCohen-Prog/CodexWinBar");
         request.Headers.TryAddWithoutValidation("X-Title", "CodexWinBar");
 
-        using var response = await ProviderHttpClient.Shared.SendAsync(request, ct).ConfigureAwait(false);
+        using var response = await http.SendAsync(request, ct).ConfigureAwait(false);
         var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
         {

@@ -624,6 +624,7 @@ public sealed class SettingsWindow : Window
     private void AddCursorCookieEditor(ProviderDescriptor descriptor, Panel detail)
     {
         var entry = this.configStore.EntryFor(this.configStore.Load(), descriptor.Id);
+        detail.Children.Add(Text("Experimental/best-effort integration: Cursor may change its private usage API without notice."));
         detail.Children.Add(Text(string.IsNullOrWhiteSpace(entry.CookieHeader) ? "No session cookie saved." : "Session cookie saved: ..."));
         detail.Children.Add(Text("Paste the WorkosCursorSessionToken cookie value (or the full Cookie header) from a signed-in "
             + "cursor.com browser session. The CURSOR_COOKIE / CURSOR_SESSION_TOKEN environment variables also work."));
@@ -785,6 +786,7 @@ public sealed class SettingsWindow : Window
     {
         var settings = this.uiStore.Load();
         update(settings);
+        settings.WidgetMode = settings.WidgetMode == WidgetMode.Hidden ? WidgetMode.Hidden : WidgetMode.Overlay;
         this.uiStore.Save(settings);
         this.applySettings();
     }
@@ -2111,7 +2113,9 @@ public sealed class SettingsWindow : Window
             var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
             text.Children.Add(new TextBlock
             {
-                Text = descriptor.Metadata.DisplayName,
+                Text = descriptor.Id == ProviderId.Cursor
+                    ? $"{descriptor.Metadata.DisplayName} (experimental)"
+                    : descriptor.Metadata.DisplayName,
                 FontSize = 14,
                 TextWrapping = TextWrapping.Wrap,
             });

@@ -11,14 +11,10 @@ built-in part of the OS:
 
 - **Taskbar widget**: a compact chip near the system tray rendering per-provider usage (tiny gauge bars +
   optional percent text, e.g. `◐ 43% · W 12%`), Segoe UI Variable, theme-aware, transparent background so the
-  taskbar material shows through. Two integration modes:
-  - **Embedded (primary)**: `WS_CHILD` window `SetParent`-ed into `Shell_TrayWnd`, anchored left of
-    `TrayNotifyWnd`. Per-pixel-alpha rendering via `UpdateLayeredWindow` (layered child windows are supported
-    since Windows 8).
-  - **Overlay (automatic fallback)**: top-level `WS_POPUP` + `WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TOPMOST`
-    positioned over the same spot, tracking the taskbar rect via `SetWinEventHook`, hiding on fullscreen.
-  - Runtime health checks decide: if embed fails validation (wrong ancestry, zero visibility, missing tray
-    anchor), tear down and switch to overlay. `TaskbarCreated` → full re-embed.
+  taskbar material shows through. The product intentionally has one integration mode: a top-level `WS_POPUP`
+  overlay with `WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TOPMOST|WS_EX_LAYERED`. It is positioned on the side
+  opposite the clock, tracks each taskbar via shell geometry/events, and hides when its taskbar retracts or a
+  fullscreen app occupies that monitor. It does not call `SetParent` or embed into Explorer.
 - **Flyout**: WPF borderless popup above the widget — provider cards (header, usage bars, reset countdowns,
   credits, status incidents, errors), Refresh / Settings / Quit actions. Acrylic backdrop
   (`DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_TRANSIENTWINDOW`), `DWMWCP_ROUND` corners, dark-mode aware,
@@ -26,7 +22,8 @@ built-in part of the OS:
 - **Settings window**: WPF, panes General / Display / Providers / About.
 - **Tray icon**: always present (`Shell_NotifyIcon`) — opens the same flyout; context menu with
   Refresh / Settings / Widget toggle / Quit; balloon (`NIF_INFO`) quota notifications (render as toasts on Win11).
-- **Providers v1** (7): Codex, Claude, OpenRouter, OpenAI Admin, Copilot, Gemini, z.ai.
+- **Providers v1** (8): Codex, Claude, OpenRouter, OpenAI Admin, Copilot, Gemini, z.ai, Cursor. All are
+  disabled until the user connects them; Cursor is experimental and best-effort.
 - Launch at login (HKCU Run key), single instance (named mutex + named pipe activation).
 
 Non-goals for v1: browser-cookie import, WebView2 probes, CLI PTY probes, multi-account token switching,
@@ -61,14 +58,14 @@ src/
     Auth/                        OAuthTokenRefresher helpers, CredentialFile readers
     Json/                        CoreJsonContext (source-generated)
   CodexWinBar.Providers/         class lib; one folder per provider, each exposing a ProviderDescriptor
-    Codex/  Claude/  OpenRouter/ OpenAIAdmin/  Copilot/  Gemini/  Zai/
+    Codex/  Claude/  OpenRouter/ OpenAIAdmin/  Copilot/  Gemini/  Zai/  Cursor/
   CodexWinBar.Widget/            class lib; Win32 only, NO WPF
     NativeMethods.cs             all P/Invoke in one place
     TaskbarInterop.cs            find taskbar/tray, rects, appbar state, alignment
     ThemeReader.cs               AppsUseLightTheme/SystemUsesLightTheme/EnableTransparency/accent, change events
-    WidgetWindow.cs              HWND lifecycle, embed/overlay state machine, TaskbarCreated handling
+    WidgetWindow.cs              overlay HWND lifecycle, taskbar positioning, TaskbarCreated handling
     WidgetRenderer.cs            GDI+ → premultiplied ARGB DIB → UpdateLayeredWindow; DPI-aware layout
-    FullscreenDetector.cs        foreground-window monitor coverage checks (overlay mode)
+    FullscreenDetector.cs        foreground-window monitor coverage checks
   CodexWinBar.App/               WPF exe (OutputType WinExe), entry point
     Program.cs / App.xaml        single instance, composition root, DI-free wiring
     Tray/TrayIcon.cs             Shell_NotifyIcon wrapper + balloons + context menu
@@ -85,7 +82,7 @@ tests/
 ## 4. Core contracts (binding)
 
 ```csharp
-public enum ProviderId { Codex, Claude, OpenRouter, OpenAIAdmin, Copilot, Gemini, Zai }
+public enum ProviderId { Codex, Claude, OpenRouter, OpenAIAdmin, Copilot, Gemini, Zai, Cursor }
 
 public sealed record RateWindow {
     public required double UsedPercent { get; init; }        // 0..100
@@ -141,10 +138,12 @@ not destroy fields the macOS app wrote. Atomic write: temp file + `File.Replace`
 user only. Unknown provider ids in the file are preserved but not surfaced.
 
 UI prefs (not in config.json, mirrors upstream UserDefaults): `%APPDATA%\CodexWinBar\ui-settings.json` —
-refreshCadence (`manual|1|2|5|15|30` min, default 5), mergeIcons (default true), displayTextMode
+refreshCadence (`manual|1|2|5|15|30` min, default 5), displayTextMode
 (`percent|pace|both|resetTime`, default percent), usageBarsShowUsed (default false), resetTimesShowAbsolute
 (default false), launchAtLogin (default false), statusChecksEnabled (default true), notifications toggles,
-widgetMode (`auto|embedded|overlay|hidden`, default auto), widgetSide (`right|left`, default right).
+widgetMode (`overlay|hidden`, default overlay). Legacy persisted `auto`/`embedded` values normalize to
+`overlay`; placement is automatic on the side opposite the clock, so legacy `widgetSide` is not a user-facing
+placement control.
 
 ## 6. Provider protocols (v1)
 
@@ -155,10 +154,11 @@ Implementers MUST read the corresponding research spec before coding; constants 
 | **Codex** | `%CODEX_HOME%\auth.json` else `%USERPROFILE%\.codex\auth.json`: `{OPENAI_API_KEY?, tokens{id_token,access_token,refresh_token,account_id}, last_refresh}`; refresh `POST https://auth.openai.com/oauth/token`, client `app_EMoamEEZ73f0CkXaXp7hrann`, grant `refresh_token`, scope `openid profile email` | `GET https://chatgpt.com/backend-api/wham/usage`, headers `Authorization: Bearer`, `User-Agent: CodexWinBar`, `Accept: application/json`, optional `ChatGPT-Account-Id`; windows mapped by duration: 300m→session, 10080m→weekly; reset credits `GET …/wham/rate-limit-reset-credits` w/ `OpenAI-Beta: codex-1`. Details: `research/codex-provider.md` |
 | **Claude** | `%USERPROFILE%\.claude\.credentials.json`: `{claudeAiOauth{accessToken,refreshToken,expiresAt,scopes,subscriptionType,rateLimitTier}}`; requires `user:profile` scope; refresh constants extracted from upstream `Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/*` at implementation time | `GET https://api.anthropic.com/api/oauth/usage`, headers `Authorization: Bearer`, `anthropic-beta: oauth-2025-04-20`; map `five_hour`→session, `seven_day`→weekly, `seven_day_opus`→tertiary; plan from `subscriptionType`/`rate_limit_tier`. Details: upstream `docs/CLAUDE.md` |
 | **OpenRouter** | config `apiKey` or `OPENROUTER_API_KEY` | `GET https://openrouter.ai/api/v1/credits`, `GET https://openrouter.ai/api/v1/key` |
-| **OpenAI Admin** | `OPENAI_ADMIN_KEY` / config key | `GET https://api.openai.com/v1/organization/costs`, `…/usage/completions` |
+| **OpenAI Admin** | `OPENAI_ADMIN_KEY` / config key | `GET https://api.openai.com/v1/organization/costs` for the trailing 30 days (daily buckets); surfaces the 30-day spend plus today's spend |
 | **Copilot** | GitHub device flow (`https://github.com/login/device/code`, `…/oauth/access_token`), token in config | `GET https://api.github.com/copilot_internal/user`, `Authorization: token <tok>` |
-| **Gemini** | `%USERPROFILE%\.gemini\oauth_creds.json`; refresh `POST https://oauth2.googleapis.com/token` | `POST https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota` |
+| **Gemini** | built-in browser OAuth stored in the app credential store; the Gemini CLI must be installed to supply its OAuth client configuration; default-off until connected | `POST https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist`, then `POST …/v1internal:retrieveUserQuota` |
 | **z.ai** | config `apiKey` / `Z_AI_API_KEY` | `GET https://api.z.ai/api/monitor/usage/quota/limit` |
+| **Cursor** *(experimental)* | config `cookieHeader` / `CURSOR_COOKIE` / `CURSOR_SESSION_TOKEN` | Best-effort reads of undocumented `GET https://cursor.com/api/usage-summary` and optional `GET …/api/auth/me`; schema changes are surfaced as an error rather than guessed |
 
 Every provider: 15s HTTP timeout, no retries inside a fetch (scheduler handles cadence), map HTTP 401/403 →
 `UnauthorizedProviderException` (UI shows "re-authenticate" guidance), parse defensively (missing windows OK).
@@ -176,7 +176,7 @@ Every provider: 15s HTTP timeout, no retries inside a fetch (scheduler handles c
 - Startup connectivity retry with growing delays until first success.
 - Staleness = last fetch for that provider errored (no TTL).
 - Status polling (if enabled): Statuspage `GET <statusPage>/api/v2/status.json` (10s timeout), Google Workspace
-  incidents feed for Gemini; keep previous status on poll error; indicator enum
+  incidents feed for Gemini; failures and unsupported payloads publish `Unknown` instead of retaining potentially stale status; indicator enum
   `None|Minor|Major|Critical|Maintenance|Unknown`.
 
 ## 8. Widget spec
@@ -191,12 +191,14 @@ Every provider: 15s HTTP timeout, no retries inside a fetch (scheduler handles c
   `displayTextMode == resetTime`.
 - Interactions: hover = subtle background pill (fg @ 8%); left-click = toggle flyout anchored to chip;
   right-click = tray context menu equivalents. Tooltip = combined summary.
-- Embed mode: after `SetParent`, re-assert position on `EVENT_OBJECT_LOCATIONCHANGE` of tray + on
-  `WM_SETTINGCHANGE`/`WM_DISPLAYCHANGE`/`WM_DPICHANGED` (debounced 250ms). Health check after each reposition;
-  two consecutive failures → overlay mode (log + tray balloon once).
-- Explorer restart: `TaskbarCreated` registered message → destroy + re-create + re-embed (debounced).
-- Overlay mode extras: hide when taskbar auto-hides or fullscreen foreground on same monitor.
-- Primary monitor only in v1.
+- Position the overlay on the taskbar's start side when the tray/clock is on the opposite end; on horizontal
+  taskbars, measure the occupied app cluster and collapse the widget's content tier to fit without overlap.
+- Reposition on taskbar location, settings, display, and DPI changes. `TaskbarCreated` destroys and recreates
+  the overlay against Explorer's new taskbar HWND.
+- Create one overlay for the primary taskbar and each visible secondary taskbar. Reconcile the set as displays
+  or the "show taskbar on all displays" setting changes.
+- Hide an instance when its taskbar is retracted by auto-hide, a fullscreen foreground window covers the same
+  monitor, or the available taskbar span cannot fit even the compact tier.
 
 ## 9. Flyout & settings spec
 
@@ -274,16 +276,12 @@ public type XML-doc'd; match upstream behavior constants exactly.
   registry/context registration lines via their reports.
 
 ### Widget / UI
-- **A13 Mode policy**: `auto` = attempt embedded, validate via capability probe, fall back to overlay. The probe
-  (embedded): `SetParent` succeeded; ancestor chain reaches current `Shell_TrayWnd`; owner process is Explorer;
-  style is `WS_CHILD` (no `WS_POPUP`); rect non-empty, on taskbar monitor, intersects taskbar client rect,
-  adjacent to `TrayNotifyWnd`; `UpdateLayeredWindow` (per-pixel alpha child) succeeds. Failure counting is
-  SUSPENDED while: taskbar auto-hidden, Explorer restarting, display topology changing, fullscreen suppression.
-  Two consecutive validated failures → overlay for the session (+ log, one-time balloon).
-- **A14 SetParent transition** (exact): create with `WS_POPUP` hidden → `SetParent(widget, trayWnd)` → clear
-  `WS_POPUP|WS_CAPTION|WS_THICKFRAME|WS_SYSMENU`, set `WS_CHILD|WS_VISIBLE|WS_CLIPSIBLINGS|WS_CLIPCHILDREN`;
-  ex-style: clear `WS_EX_APPWINDOW`, keep `WS_EX_TOOLWINDOW|WS_EX_LAYERED`; then
-  `SetWindowPos(SWP_FRAMECHANGED|SWP_NOACTIVATE|SWP_SHOWWINDOW)`.
+- **A13 Mode policy**: overlay-only. `overlay` creates the taskbar-positioned window; `hidden` disables it.
+  Legacy `auto` and `embedded` settings normalize to overlay. There is no runtime embedding probe or fallback.
+- **A14 Overlay hosting**: create a top-level layered `WS_POPUP` with
+  `WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TOPMOST|WS_EX_LAYERED`; set the taskbar as owner (not parent), place
+  in screen coordinates, and use `UpdateLayeredWindow` for per-pixel alpha. Reassert topmost ordering without
+  activation when Explorer raises the taskbar.
 - **A15 Threading**: dedicated `WidgetHost` STA thread owns ALL widget/controller HWNDs, the message pump,
   `SetWinEventHook` hooks, and `TaskbarCreated` handling. WPF → widget: immutable render-state snapshots
   posted via custom message; widget → WPF (clicks): `Dispatcher.BeginInvoke`.
@@ -298,7 +296,7 @@ public type XML-doc'd; match upstream behavior constants exactly.
 - **A19 Notifications v1**: tray balloons (`NIF_INFO` + `NIIF_RESPECT_QUIET_TIME`, deduped per
   provider+window+threshold per reset period) — documented as best-effort; real toasts (AUMID + COM activator)
   deferred to v1.1.
-- **A20 Constraints**: RTL shell (`WS_EX_LAYOUTRTL` on `Shell_TrayWnd`) → force overlay mode. `widgetSide:left`
-  → overlay mode only. Bottom taskbar edge only; other `ABM_GETTASKBARPOS` edges → overlay with edge-aware
-  placement or hidden with logged reason. While tray overflow (`NotifyIconOverflowWindow`) is visible, overlay
-  hides; embedded revalidates z-order after it closes. Primary monitor only.
+- **A20 Placement and visibility**: auto-detect the tray/clock end and place the overlay at the opposite end;
+  apply edge-aware geometry for horizontal and vertical taskbars. Run one instance per taskbar, use per-monitor
+  DPI and fullscreen checks, follow auto-hide retraction, and hide when there is insufficient collision-free
+  space.

@@ -21,10 +21,8 @@ public sealed class QuotaNotifier : IDisposable
     private readonly TrayIcon tray;
     private readonly IReadOnlyDictionary<ProviderId, string> names;
     private readonly object gate = new();
-    private readonly Dictionary<WindowKey, double> previousRemaining = new();
-    private readonly HashSet<string> firedKeys = new(StringComparer.Ordinal);
-    private readonly Queue<string> firedOrder = new();
-    private readonly HashSet<string> depleted = new(StringComparer.Ordinal);
+    private readonly ResetWindowHistory<double> history = new(MaxFiredKeys);
+    private readonly HashSet<NotificationSlot> depleted = [];
     private bool disposed;
 
     /// <summary>
@@ -61,73 +59,97 @@ public sealed class QuotaNotifier : IDisposable
             var settings = this.uiStore.Load();
             if (!settings.QuotaNotificationsEnabled)
             {
+                this.history.Clear();
+                this.depleted.Clear();
                 return;
             }
 
             var config = this.configStore.Load();
+            var activeSlots = new HashSet<NotificationSlot>();
             foreach (var state in this.store.States)
             {
                 var entry = this.configStore.EntryFor(config, state.Provider);
-                this.ProcessWindow(
+                if (this.ProcessWindow(
                     state.Provider,
                     "session",
                     state.Snapshot?.Primary,
-                    ResolveWindow(entry.QuotaWarnings?.Session, settings.QuotaSessionEnabled, settings.QuotaSessionThresholds));
-                this.ProcessWindow(
+                    ResolveWindow(entry.QuotaWarnings?.Session, settings.QuotaSessionEnabled, settings.QuotaSessionThresholds)))
+                {
+                    activeSlots.Add(new NotificationSlot(state.Provider, "session"));
+                }
+
+                if (this.ProcessWindow(
                     state.Provider,
                     "weekly",
                     state.Snapshot?.Secondary,
-                    ResolveWindow(entry.QuotaWarnings?.Weekly, settings.QuotaWeeklyEnabled, settings.QuotaWeeklyThresholds));
+                    ResolveWindow(entry.QuotaWarnings?.Weekly, settings.QuotaWeeklyEnabled, settings.QuotaWeeklyThresholds)))
+                {
+                    activeSlots.Add(new NotificationSlot(state.Provider, "weekly"));
+                }
             }
+
+            this.history.RetainOnly(activeSlots);
+            this.depleted.IntersectWith(activeSlots);
         }
     }
 
-    private void ProcessWindow(ProviderId provider, string slot, RateWindow? window, QuotaWarningWindow warningWindow)
+    private bool ProcessWindow(ProviderId provider, string slot, RateWindow? window, QuotaWarningWindow warningWindow)
     {
+        var notificationSlot = new NotificationSlot(provider, slot);
         if (window is null || window.IsSyntheticPlaceholder)
         {
-            return;
+            this.history.Forget(notificationSlot);
+            _ = this.depleted.Remove(notificationSlot);
+            return false;
         }
 
         if (warningWindow.Enabled == false)
         {
-            return;
+            this.history.Forget(notificationSlot);
+            _ = this.depleted.Remove(notificationSlot);
+            return false;
         }
 
         var remaining = Math.Clamp(window.RemainingPercent, 0, 100);
         var resetKey = ResetKey(window);
-        var key = new WindowKey(provider, slot, resetKey);
-        var hadPrevious = this.previousRemaining.TryGetValue(key, out var previous);
-        this.previousRemaining[key] = remaining;
+        var observation = this.history.Observe(notificationSlot, resetKey, remaining);
+        if (observation.ResetChanged)
+        {
+            _ = this.depleted.Remove(notificationSlot);
+            if (observation.PreviousWasNotified)
+            {
+                this.tray.ShowBalloon("Quota restored", $"{this.ProviderName(provider)} {slot} restored.");
+            }
+        }
 
-        var depletionKey = $"{provider.ConfigId()}|{slot}|depleted|{resetKey}";
         if (remaining < DepletedRemainingPercent)
         {
-            if (this.MarkFired(depletionKey))
+            if (!this.depleted.Contains(notificationSlot) &&
+                this.history.TryMarkFired(notificationSlot, resetKey, "depleted", marksWindowNotified: true))
             {
-                this.depleted.Add(depletionKey);
+                _ = this.depleted.Add(notificationSlot);
                 this.tray.ShowBalloon("Quota depleted", $"{this.ProviderName(provider)} {slot} depleted.");
             }
 
-            return;
+            return true;
         }
 
-        if (this.depleted.Remove(depletionKey))
+        if (this.depleted.Remove(notificationSlot))
         {
+            this.history.ClearWindowNotification(notificationSlot, resetKey);
             this.tray.ShowBalloon("Quota restored", $"{this.ProviderName(provider)} {slot} restored.");
         }
 
-        if (!hadPrevious)
+        if (!observation.HadPrevious)
         {
-            return;
+            return true;
         }
 
         foreach (var threshold in warningWindow.Thresholds ?? QuotaWarningWindow.DefaultThresholds)
         {
-            if (previous > threshold && remaining <= threshold)
+            if (observation.Previous > threshold && remaining <= threshold)
             {
-                var thresholdKey = $"{provider.ConfigId()}|{slot}|{threshold}|{resetKey}";
-                if (this.MarkFired(thresholdKey))
+                if (this.history.TryMarkFired(notificationSlot, resetKey, $"threshold:{threshold}"))
                 {
                     var percent = Math.Round(remaining);
                     this.tray.ShowBalloon(
@@ -136,6 +158,8 @@ public sealed class QuotaNotifier : IDisposable
                 }
             }
         }
+
+        return true;
     }
 
     private static QuotaWarningWindow ResolveWindow(
@@ -161,22 +185,6 @@ public sealed class QuotaNotifier : IDisposable
             .Distinct()
             .OrderDescending()
             .ToArray();
-
-    private bool MarkFired(string key)
-    {
-        if (!this.firedKeys.Add(key))
-        {
-            return false;
-        }
-
-        this.firedOrder.Enqueue(key);
-        while (this.firedOrder.Count > MaxFiredKeys)
-        {
-            _ = this.firedKeys.Remove(this.firedOrder.Dequeue());
-        }
-
-        return true;
-    }
 
     private string ProviderName(ProviderId provider) =>
         this.names.TryGetValue(provider, out var name) ? name : provider.ToString();
@@ -206,6 +214,4 @@ public sealed class QuotaNotifier : IDisposable
 
         return string.IsNullOrWhiteSpace(window.ResetDescription) ? "reset time unknown" : window.ResetDescription;
     }
-
-    private readonly record struct WindowKey(ProviderId Provider, string Slot, string ResetKey);
 }

@@ -100,7 +100,20 @@ public sealed class LoopbackHttpListener : IDisposable
                 continue;
             }
 
-            var query = ParseQuery(queryIndex < 0 ? string.Empty : target[(queryIndex + 1)..]);
+            Dictionary<string, string> query;
+            try
+            {
+                query = ParseQuery(queryIndex < 0 ? string.Empty : target[(queryIndex + 1)..]);
+            }
+            catch (UriFormatException)
+            {
+                await WriteResponseAsync(
+                    stream,
+                    LoopbackResponse.Html(400, "Invalid callback request"),
+                    ct).ConfigureAwait(false);
+                continue;
+            }
+
             var result = respond(query);
             await WriteResponseAsync(stream, result.Response, ct).ConfigureAwait(false);
             if (result.Complete)
@@ -181,5 +194,25 @@ public sealed class LoopbackHttpListener : IDisposable
         return result;
     }
 
-    private static string Decode(string value) => Uri.UnescapeDataString(value.Replace('+', ' '));
+    private static string Decode(string value)
+    {
+        for (var index = 0; index < value.Length; index++)
+        {
+            if (value[index] != '%')
+            {
+                continue;
+            }
+
+            if (index + 2 >= value.Length
+                || !Uri.IsHexDigit(value[index + 1])
+                || !Uri.IsHexDigit(value[index + 2]))
+            {
+                throw new UriFormatException("The callback query contains an invalid percent escape.");
+            }
+
+            index += 2;
+        }
+
+        return Uri.UnescapeDataString(value.Replace('+', ' '));
+    }
 }

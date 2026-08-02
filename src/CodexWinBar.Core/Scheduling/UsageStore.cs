@@ -19,6 +19,7 @@ public sealed class UsageStore : IUsageStore
     private const int MaxRememberedResetBoundaries = 64;
 
     private readonly object sync = new();
+    private readonly object configSync = new();
     private readonly IReadOnlyList<ProviderDescriptor> descriptors;
     private readonly Dictionary<ProviderId, ProviderDescriptor> descriptorsById;
     private readonly ConfigStore configStore;
@@ -32,12 +33,18 @@ public sealed class UsageStore : IUsageStore
 
     private Timer? periodicTimer;
     private Timer? resetBoundaryTimer;
+    private long resetBoundaryTimerGeneration;
+    private ResetBoundaryKey? scheduledResetBoundary;
     private Timer? flyoutTimer;
     private Timer? startupRetryTimer;
     private bool disposed;
     private bool isRefreshing;
     private bool firstBatchCompleted;
     private int startupRetryAttempt;
+    private string? cachedConfigPath;
+    private bool cachedConfigExists;
+    private DateTime cachedConfigLastWriteUtc;
+    private CodexBarConfig? cachedConfig;
 
     /// <summary>
     /// Initializes a new usage store.
@@ -57,7 +64,7 @@ public sealed class UsageStore : IUsageStore
         this.configStore = configStore;
         this.uiStore = uiStore;
         this.log = log;
-        this.statusPoller = new StatusPoller(log);
+        this.statusPoller = new StatusPoller();
     }
 
     /// <inheritdoc />
@@ -128,22 +135,30 @@ public sealed class UsageStore : IUsageStore
             {
                 this.isRefreshing = false;
             }
+
+            this.ScheduleResetBoundaryRefresh();
         }
 
-        this.ScheduleResetBoundaryRefresh();
         this.HandleStartupRetry(batchResults);
     }
 
     /// <inheritdoc />
-    public Task RefreshProviderAsync(ProviderId id, CancellationToken ct = default)
+    public async Task RefreshProviderAsync(ProviderId id, CancellationToken ct = default)
     {
         this.ThrowIfDisposed();
         if (!this.descriptorsById.TryGetValue(id, out var descriptor))
         {
-            return Task.CompletedTask;
+            return;
         }
 
-        return this.RefreshProviderCoreAsync(descriptor, ct);
+        try
+        {
+            await this.RefreshProviderCoreAsync(descriptor, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            this.ScheduleResetBoundaryRefresh();
+        }
     }
 
     /// <inheritdoc />
@@ -208,7 +223,7 @@ public sealed class UsageStore : IUsageStore
         int generation,
         CancellationToken ct)
     {
-        var config = this.configStore.Load();
+        var config = this.LoadConfig();
         var providerConfig = this.configStore.EntryFor(config, descriptor.Id);
         var context = new FetchContext
         {
@@ -333,18 +348,35 @@ public sealed class UsageStore : IUsageStore
             return;
         }
 
-        foreach (var descriptor in enabled)
+        var now = DateTimeOffset.UtcNow;
+        var tasks = enabled.Select(async descriptor =>
         {
             var current = this.GetState(descriptor.Id).ServiceStatus;
-            var status = await this.statusPoller.PollAsync(descriptor, current, DateTimeOffset.UtcNow, ct).ConfigureAwait(false);
-            if (status is null || status == current)
+            try
+            {
+                var status = await this.statusPoller.PollAsync(descriptor, current, now, ct).ConfigureAwait(false);
+                return new StatusPollResult(descriptor.Id, current, status);
+            }
+            catch (Exception ex)
+            {
+                this.TryLog($"Status poll failed for {descriptor.Id}. {ex.GetType().Name}: {ex.Message}");
+                return new StatusPollResult(descriptor.Id, current, current);
+            }
+        }).ToArray();
+
+        // Task.WhenAll returns results in the same order as the input tasks. Publishing only after
+        // every independent check completes keeps provider display/event order deterministic.
+        var results = await Task.WhenAll(tasks).ConfigureAwait(false);
+        foreach (var result in results)
+        {
+            if (result.Status is null || result.Status == result.Current)
             {
                 continue;
             }
 
             lock (this.sync)
             {
-                this.SetStateNoLock(descriptor.Id, this.GetStateNoLock(descriptor.Id) with { ServiceStatus = status });
+                this.SetStateNoLock(result.Provider, this.GetStateNoLock(result.Provider) with { ServiceStatus = result.Status });
             }
 
             this.RaiseStateChanged();
@@ -354,8 +386,15 @@ public sealed class UsageStore : IUsageStore
     private async Task RefreshFlyoutProvidersAsync()
     {
         var providers = this.StaleOrMissingDescriptors();
-        await Task.WhenAll(providers.Select(descriptor =>
-            this.RefreshProviderCoreAsync(descriptor, CancellationToken.None))).ConfigureAwait(false);
+        try
+        {
+            await Task.WhenAll(providers.Select(descriptor =>
+                this.RefreshProviderCoreAsync(descriptor, CancellationToken.None))).ConfigureAwait(false);
+        }
+        finally
+        {
+            this.ScheduleResetBoundaryRefresh();
+        }
     }
 
     private void ReschedulePeriodicTimer()
@@ -377,30 +416,61 @@ public sealed class UsageStore : IUsageStore
 
     private void ScheduleResetBoundaryRefresh()
     {
-        this.resetBoundaryTimer?.Dispose();
         var cadence = this.uiStore.Load().RefreshCadenceMinutes;
-        if (cadence is null)
+        lock (this.sync)
         {
-            return;
+            this.resetBoundaryTimer?.Dispose();
+            this.resetBoundaryTimer = null;
+            this.scheduledResetBoundary = null;
+            var generation = ++this.resetBoundaryTimerGeneration;
+            if (this.disposed || cadence is null)
+            {
+                return;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            var nextNormalTick = now.AddMinutes(cadence.Value);
+            var candidate = this.FindNextResetBoundary(now, nextNormalTick);
+            if (candidate is null)
+            {
+                return;
+            }
+
+            var due = candidate.Value.RefreshAt - now;
+            if (due < ResetBoundaryMinimumDelay)
+            {
+                due = ResetBoundaryMinimumDelay;
+            }
+
+            this.scheduledResetBoundary = candidate.Value.Key;
+            this.resetBoundaryTimer = new Timer(
+                _ => _ = this.HandleResetBoundaryTimerAsync(candidate.Value.Key, generation),
+                null,
+                due,
+                Timeout.InfiniteTimeSpan);
+        }
+    }
+
+    private async Task HandleResetBoundaryTimerAsync(ResetBoundaryKey key, long generation)
+    {
+        lock (this.sync)
+        {
+            if (this.disposed
+                || generation != this.resetBoundaryTimerGeneration
+                || this.scheduledResetBoundary != key)
+            {
+                return;
+            }
+
+            // A boundary is attempted only after the currently-active timer actually claims it.
+            // A disposed callback from an older generation therefore cannot consume a replacement.
+            this.RememberResetBoundary(key);
+            this.scheduledResetBoundary = null;
+            this.resetBoundaryTimer?.Dispose();
+            this.resetBoundaryTimer = null;
         }
 
-        var now = DateTimeOffset.UtcNow;
-        var nextNormalTick = now.AddMinutes(cadence.Value);
-        var candidate = this.FindNextResetBoundary(now, nextNormalTick);
-        if (candidate is null)
-        {
-            return;
-        }
-
-        this.RememberResetBoundary(candidate.Value.Key);
-        var due = candidate.Value.RefreshAt < now.Add(ResetBoundaryMinimumDelay)
-            ? ResetBoundaryMinimumDelay
-            : candidate.Value.RefreshAt - now;
-        this.resetBoundaryTimer = new Timer(
-            _ => _ = this.RefreshProviderAsync(candidate.Value.Key.Provider),
-            null,
-            due,
-            Timeout.InfiniteTimeSpan);
+        await this.RefreshProviderAsync(key.Provider).ConfigureAwait(false);
     }
 
     private ResetBoundaryCandidate? FindNextResetBoundary(DateTimeOffset now, DateTimeOffset nextNormalTick)
@@ -491,7 +561,7 @@ public sealed class UsageStore : IUsageStore
 
     private IReadOnlyList<ProviderDescriptor> EnabledDescriptorsNoLock()
     {
-        var config = this.configStore.Load();
+        var config = this.LoadConfig();
         return this.descriptors
             .Where(descriptor =>
             {
@@ -532,7 +602,81 @@ public sealed class UsageStore : IUsageStore
 
     private void RaiseStateChanged()
     {
-        this.StateChanged?.Invoke();
+        var subscribers = this.StateChanged;
+        if (subscribers is null)
+        {
+            return;
+        }
+
+        foreach (Action subscriber in subscribers.GetInvocationList())
+        {
+            try
+            {
+                subscriber();
+            }
+            catch (Exception ex)
+            {
+                this.TryLog($"StateChanged subscriber failed. {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+    }
+
+    private CodexBarConfig LoadConfig()
+    {
+        lock (this.configSync)
+        {
+            var snapshot = this.configStore.LoadSnapshot();
+            if (this.cachedConfig is not null
+                && string.Equals(this.cachedConfigPath, snapshot.Path, StringComparison.OrdinalIgnoreCase)
+                && this.cachedConfigExists == snapshot.Exists
+                && this.cachedConfigLastWriteUtc == snapshot.LastWriteUtc)
+            {
+                return this.cachedConfig;
+            }
+
+            if (snapshot.Config is not null)
+            {
+                this.CacheConfig(snapshot.Path, snapshot.Exists, snapshot.LastWriteUtc, snapshot.Config);
+                return snapshot.Config;
+            }
+
+            var error = snapshot.Error!;
+            if (this.cachedConfig is not null)
+            {
+                // Remember the failed file stamp too: retain the last good object without reparsing
+                // and re-logging the same broken write on every state read or provider refresh.
+                this.cachedConfigPath = snapshot.Path;
+                this.cachedConfigExists = snapshot.Exists;
+                this.cachedConfigLastWriteUtc = snapshot.LastWriteUtc;
+                this.TryLog($"Failed to load config.json; keeping last good config. {error.GetType().Name}: {error.Message}");
+                return this.cachedConfig;
+            }
+
+            var defaults = ConfigStore.CreateDefaultConfig();
+            this.CacheConfig(snapshot.Path, snapshot.Exists, snapshot.LastWriteUtc, defaults);
+            this.TryLog($"Failed to load config.json; using defaults without overwriting the file. {error.GetType().Name}: {error.Message}");
+            return defaults;
+        }
+    }
+
+    private void CacheConfig(string path, bool exists, DateTime lastWriteUtc, CodexBarConfig config)
+    {
+        this.cachedConfigPath = path;
+        this.cachedConfigExists = exists;
+        this.cachedConfigLastWriteUtc = lastWriteUtc;
+        this.cachedConfig = config;
+    }
+
+    private void TryLog(string message)
+    {
+        try
+        {
+            this.log(message);
+        }
+        catch (Exception)
+        {
+            // Diagnostics must never affect refresh state or event delivery.
+        }
     }
 
     private void ThrowIfDisposed()
@@ -597,6 +741,11 @@ public sealed class UsageStore : IUsageStore
 
         public static ProviderBatchResult Failure(ProviderId provider, Exception error) => new(provider, error);
     }
+
+    private readonly record struct StatusPollResult(
+        ProviderId Provider,
+        ProviderStatus? Current,
+        ProviderStatus? Status);
 
     private readonly record struct ResetBoundary(string Slot, DateTimeOffset ResetAt);
 

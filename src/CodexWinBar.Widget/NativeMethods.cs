@@ -5,29 +5,18 @@ namespace CodexWinBar.Widget;
 internal static partial class NativeMethods
 {
     internal const int GWL_STYLE = -16;
-    internal const int GWL_EXSTYLE = -20;
     internal const int GWLP_HWNDPARENT = -8;
     internal const int GW_OWNER = 4;
-    internal const int GA_PARENT = 1;
-    internal const int GA_ROOT = 2;
-    internal const int GA_ROOTOWNER = 3;
 
-    internal const uint WS_CHILD = 0x40000000;
-    internal const uint WS_VISIBLE = 0x10000000;
     internal const uint WS_POPUP = 0x80000000;
     internal const uint WS_CAPTION = 0x00C00000;
     internal const uint WS_THICKFRAME = 0x00040000;
-    internal const uint WS_SYSMENU = 0x00080000;
-    internal const uint WS_CLIPSIBLINGS = 0x04000000;
-    internal const uint WS_CLIPCHILDREN = 0x02000000;
     internal const uint WS_OVERLAPPED = 0x00000000;
 
     internal const uint WS_EX_TOOLWINDOW = 0x00000080;
     internal const uint WS_EX_LAYERED = 0x00080000;
     internal const uint WS_EX_NOACTIVATE = 0x08000000;
     internal const uint WS_EX_TOPMOST = 0x00000008;
-    internal const uint WS_EX_APPWINDOW = 0x00040000;
-    internal const uint WS_EX_LAYOUTRTL = 0x00400000;
 
     internal const uint SWP_NOSIZE = 0x0001;
     internal const uint SWP_NOMOVE = 0x0002;
@@ -35,12 +24,12 @@ internal static partial class NativeMethods
     internal const uint SWP_NOACTIVATE = 0x0010;
     internal const uint SWP_SHOWWINDOW = 0x0040;
     internal const uint SWP_HIDEWINDOW = 0x0080;
-    internal const uint SWP_FRAMECHANGED = 0x0020;
 
     internal const int SW_HIDE = 0;
     internal const int SW_SHOWNOACTIVATE = 4;
-    internal static readonly IntPtr HWND_TOP = new(0);
     internal static readonly IntPtr HWND_TOPMOST = new(-1);
+
+    internal const int ERROR_CLASS_ALREADY_EXISTS = 1410;
 
     internal const uint WM_QUIT = 0x0012;
     internal const uint WM_DESTROY = 0x0002;
@@ -206,15 +195,6 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll", EntryPoint = "DefWindowProcW")]
     internal static partial IntPtr DefWindowProcW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
-    [LibraryImport("user32.dll", EntryPoint = "SetParent", SetLastError = true)]
-    internal static partial IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
-
-    [LibraryImport("user32.dll", EntryPoint = "GetParent")]
-    internal static partial IntPtr GetParent(IntPtr hWnd);
-
-    [LibraryImport("user32.dll", EntryPoint = "GetAncestor")]
-    internal static partial IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
-
     [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
     internal static partial IntPtr SetWindowLongPtrW(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
 
@@ -246,9 +226,6 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll", EntryPoint = "GetClientRect", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool GetClientRect(IntPtr hWnd, out RECT lpRect);
-
-    [LibraryImport("user32.dll", EntryPoint = "MapWindowPoints", SetLastError = true)]
-    internal static partial int MapWindowPoints(IntPtr hWndFrom, IntPtr hWndTo, ref RECT lpPoints, uint cPoints);
 
     [LibraryImport("user32.dll", EntryPoint = "UpdateLayeredWindow", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -301,9 +278,6 @@ internal static partial class NativeMethods
         int length = GetClassNameW(hWnd, ref System.Runtime.InteropServices.MemoryMarshal.GetReference(buffer), buffer.Length);
         return length > 0 ? new string(System.Runtime.InteropServices.MemoryMarshal.Cast<ushort, char>(buffer[..length])) : string.Empty;
     }
-
-    [LibraryImport("user32.dll", EntryPoint = "GetWindowThreadProcessId", SetLastError = true)]
-    internal static partial uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
     [LibraryImport("user32.dll", EntryPoint = "IsWindowVisible")]
     [return: MarshalAs(UnmanagedType.Bool)]

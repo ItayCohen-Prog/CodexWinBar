@@ -156,7 +156,7 @@ internal sealed class FakeUsageStore : IUsageStore
         {
             Provider = ProviderId.OpenAIAdmin,
             ExtraWindows = [Scalar("today", "Today", "$12.30 today")],
-            Credits = new CreditsSnapshot { Remaining = 143.20, Unit = "USD (30d)", UpdatedAt = now },
+            Credits = new CreditsSnapshot { Remaining = 143.20, Unit = "USD", Kind = CreditsSnapshotKind.Spend, UpdatedAt = now },
             Identity = new ProviderIdentity { AccountOrganization = "acme-inc", LoginMethod = "Admin API key" },
             UpdatedAt = now,
             Confidence = DataConfidence.Estimated,

@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using CodexWinBar.Core.Providers;
 
 namespace CodexWinBar.Core.Models;
@@ -22,6 +23,16 @@ public sealed record ProviderIdentity
     public string? LoginMethod { get; init; }
 }
 
+/// <summary>Whether a credit value is a remaining balance or an amount already spent.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<CreditsSnapshotKind>))]
+public enum CreditsSnapshotKind
+{
+    /// <summary>A balance that can be depleted. This is the legacy/default meaning.</summary>
+    Credits = 0,
+    /// <summary>An amount already spent, which must not be treated as a remaining balance.</summary>
+    Spend,
+}
+
 /// <summary>Credit balance information for providers that expose one.</summary>
 public sealed record CreditsSnapshot
 {
@@ -31,6 +42,15 @@ public sealed record CreditsSnapshot
     /// <summary>Display unit, e.g. "credits" or "USD".</summary>
     public string Unit { get; init; } = "credits";
     public DateTimeOffset UpdatedAt { get; init; }
+    /// <summary>
+    /// Whether <see cref="Remaining"/> contains remaining credits or spend. Missing serialized values retain
+    /// the legacy meaning of <see cref="CreditsSnapshotKind.Credits"/>.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public CreditsSnapshotKind Kind { get; init; } = CreditsSnapshotKind.Credits;
+    /// <summary>Whether depletion and remaining-percentage semantics are valid for this snapshot.</summary>
+    [JsonIgnore]
+    public bool SupportsDepletionSemantics => this.Kind == CreditsSnapshotKind.Credits;
 }
 
 /// <summary>The normalized usage envelope handed to the UI — the Windows port of upstream UsageSnapshot.</summary>

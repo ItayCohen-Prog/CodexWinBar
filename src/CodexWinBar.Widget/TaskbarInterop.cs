@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Drawing;
 
 namespace CodexWinBar.Widget;
@@ -7,7 +6,7 @@ namespace CodexWinBar.Widget;
 /// <paramref name="Monitor"/> is the HMONITOR the taskbar lives on and is the stable identity widgets
 /// are keyed by; <paramref name="TrayHwnd"/>/<paramref name="TrayRect"/> are empty on secondary
 /// taskbars, which have no notification area.</summary>
-internal sealed record TaskbarInfo(IntPtr TaskbarHwnd, IntPtr TrayHwnd, IntPtr Monitor, bool IsPrimary, Rectangle TaskbarRect, Rectangle ClientRect, Rectangle TrayRect, int Edge, bool IsRtl, bool IsExplorer);
+internal sealed record TaskbarInfo(IntPtr TaskbarHwnd, IntPtr TrayHwnd, IntPtr Monitor, bool IsPrimary, Rectangle TaskbarRect, Rectangle ClientRect, Rectangle TrayRect, int Edge);
 
 internal static class TaskbarInterop
 {
@@ -72,7 +71,6 @@ internal static class TaskbarInterop
         }
 
         IntPtr monitor = NativeMethods.MonitorFromWindow(taskbar, NativeMethods.MONITOR_DEFAULTTONEAREST);
-        long exStyle = NativeMethods.GetWindowLongPtrW(taskbar, NativeMethods.GWL_EXSTYLE).ToInt64();
         int edge = isPrimary ? GetTaskbarEdge() : GuessEdgeFromMonitor(taskbarRect, monitor);
 
         return new TaskbarInfo(
@@ -83,9 +81,7 @@ internal static class TaskbarInterop
             ToRectangle(taskbarRect),
             ToRectangle(clientRect),
             ToRectangle(trayRect),
-            edge,
-            (exStyle & NativeMethods.WS_EX_LAYOUTRTL) != 0,
-            IsExplorerProcess(taskbar));
+            edge);
     }
 
     /// <summary>
@@ -134,41 +130,6 @@ internal static class TaskbarInterop
         };
         nint result = NativeMethods.SHAppBarMessage(NativeMethods.ABM_GETTASKBARPOS, ref data);
         return result == IntPtr.Zero ? NativeMethods.ABE_BOTTOM : (int)data.uEdge;
-    }
-
-    internal static bool IsExplorerProcess(IntPtr hwnd)
-    {
-        _ = NativeMethods.GetWindowThreadProcessId(hwnd, out uint processId);
-        if (processId == 0)
-        {
-            return false;
-        }
-
-        try
-        {
-            using Process process = Process.GetProcessById((int)processId);
-            return string.Equals(process.ProcessName, "explorer", StringComparison.OrdinalIgnoreCase);
-        }
-        catch (ArgumentException)
-        {
-            return false;
-        }
-        catch (InvalidOperationException)
-        {
-            return false;
-        }
-    }
-
-    internal static bool RectIntersectsTaskbarClient(IntPtr taskbar, Rectangle screenRect)
-    {
-        if (!NativeMethods.GetClientRect(taskbar, out NativeMethods.RECT client))
-        {
-            return false;
-        }
-
-        NativeMethods.RECT mapped = client;
-        _ = NativeMethods.MapWindowPoints(taskbar, IntPtr.Zero, ref mapped, 2);
-        return ToRectangle(mapped).IntersectsWith(screenRect);
     }
 
     /// <summary>

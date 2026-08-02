@@ -23,7 +23,7 @@ public static class ClaudeProvider
             WeeklyLabel = "Weekly",
             DefaultEnabled = false,
             DashboardUrl = new Uri("https://claude.ai/settings/usage"),
-            StatusPageUrl = new Uri("https://status.anthropic.com"),
+            StatusPageUrl = new Uri("https://status.claude.com"),
         },
         Branding = new ProviderBranding { GlyphKey = "claude", R = 217, G = 119, B = 87 },
         Strategies = [new ClaudeOAuthFetchStrategy()],
@@ -56,7 +56,7 @@ internal sealed class ClaudeOAuthFetchStrategy : IFetchStrategy
         string usageJson;
         try
         {
-            usageJson = await GetUsageAsync(credentials, ct).ConfigureAwait(false);
+            usageJson = await GetUsageAsync(ctx.Http, credentials, ct).ConfigureAwait(false);
         }
         catch (UnauthorizedProviderException) when (!string.IsNullOrWhiteSpace(credentials.RefreshToken))
         {
@@ -64,7 +64,7 @@ internal sealed class ClaudeOAuthFetchStrategy : IFetchStrategy
             // unknown expiry as valid); mirror Codex's 401 -> refresh -> retry path before
             // surfacing an auth error.
             credentials = await RefreshAsync(ctx, credentials, ct).ConfigureAwait(false);
-            usageJson = await GetUsageAsync(credentials, ct).ConfigureAwait(false);
+            usageJson = await GetUsageAsync(ctx.Http, credentials, ct).ConfigureAwait(false);
         }
 
         if (string.IsNullOrWhiteSpace(credentials.SubscriptionType) && string.IsNullOrWhiteSpace(credentials.RateLimitTier))
@@ -105,7 +105,7 @@ internal sealed class ClaudeOAuthFetchStrategy : IFetchStrategy
             new KeyValuePair<string, string>("client_id", ClaudeAuth.ClientId),
         ]);
 
-        using var response = await ProviderHttpClient.Shared.SendAsync(request, timeout.Token).ConfigureAwait(false);
+        using var response = await ctx.Http.SendAsync(request, timeout.Token).ConfigureAwait(false);
         var body = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden or HttpStatusCode.BadRequest)
         {
@@ -142,7 +142,7 @@ internal sealed class ClaudeOAuthFetchStrategy : IFetchStrategy
             request.Headers.Accept.Clear();
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             request.Headers.TryAddWithoutValidation("anthropic-beta", "oauth-2025-04-20");
-            using var response = await ProviderHttpClient.Shared.SendAsync(request, timeout.Token).ConfigureAwait(false);
+            using var response = await ctx.Http.SendAsync(request, timeout.Token).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 return credentials;
@@ -184,7 +184,10 @@ internal sealed class ClaudeOAuthFetchStrategy : IFetchStrategy
             ? value.GetString()!.Trim()
             : null;
 
-    private static async Task<string> GetUsageAsync(ClaudeCredentials credentials, CancellationToken ct)
+    private static async Task<string> GetUsageAsync(
+        HttpClient http,
+        ClaudeCredentials credentials,
+        CancellationToken ct)
     {
         using var timeout = ProviderHttpClient.TimeoutCts(ct, RequestTimeout);
         using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.anthropic.com/api/oauth/usage");
@@ -192,7 +195,7 @@ internal sealed class ClaudeOAuthFetchStrategy : IFetchStrategy
         request.Headers.Accept.Clear();
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.TryAddWithoutValidation("anthropic-beta", "oauth-2025-04-20");
-        using var response = await ProviderHttpClient.Shared.SendAsync(request, timeout.Token).ConfigureAwait(false);
+        using var response = await http.SendAsync(request, timeout.Token).ConfigureAwait(false);
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
         {
             throw new UnauthorizedProviderException("Claude OAuth token is expired or unauthorized.");

@@ -20,9 +20,7 @@ public sealed class PaceNotifier : IDisposable
     private readonly TrayIcon tray;
     private readonly IReadOnlyDictionary<ProviderId, string> names;
     private readonly object gate = new();
-    private readonly Dictionary<WindowKey, PaceState> previousBand = new();
-    private readonly HashSet<string> firedKeys = new(StringComparer.Ordinal);
-    private readonly Queue<string> firedOrder = new();
+    private readonly ResetWindowHistory<PaceState> history = new(MaxFiredKeys);
     private bool disposed;
 
     /// <summary>
@@ -60,45 +58,55 @@ public sealed class PaceNotifier : IDisposable
             var settings = this.uiStore.Load();
             if (!settings.PaceNotificationsEnabled)
             {
+                this.history.Clear();
                 return;
             }
 
             var now = DateTimeOffset.UtcNow;
+            var activeSlots = new HashSet<NotificationSlot>();
             foreach (var state in this.store.States)
             {
-                this.ProcessWindow(state.Provider, "session", state.Snapshot?.Primary, settings.PaceUnderuseNotificationsEnabled, now);
-                this.ProcessWindow(state.Provider, "weekly", state.Snapshot?.Secondary, settings.PaceUnderuseNotificationsEnabled, now);
+                if (this.ProcessWindow(state.Provider, "session", state.Snapshot?.Primary, settings.PaceUnderuseNotificationsEnabled, now))
+                {
+                    activeSlots.Add(new NotificationSlot(state.Provider, "session"));
+                }
+
+                if (this.ProcessWindow(state.Provider, "weekly", state.Snapshot?.Secondary, settings.PaceUnderuseNotificationsEnabled, now))
+                {
+                    activeSlots.Add(new NotificationSlot(state.Provider, "weekly"));
+                }
             }
+
+            this.history.RetainOnly(activeSlots);
         }
     }
 
-    private void ProcessWindow(ProviderId provider, string slot, RateWindow? window, bool underuseEnabled, DateTimeOffset now)
+    private bool ProcessWindow(ProviderId provider, string slot, RateWindow? window, bool underuseEnabled, DateTimeOffset now)
     {
+        var notificationSlot = new NotificationSlot(provider, slot);
         if (window is null || window.IsSyntheticPlaceholder)
         {
-            return;
+            this.history.Forget(notificationSlot);
+            return false;
         }
 
         var resetKey = ResetKey(window);
-        var key = new WindowKey(provider, slot, resetKey);
         if (PaceCalculator.Compute(window, now) is not { } pace)
         {
-            _ = this.previousBand.Remove(key);
-            return;
+            this.history.Forget(notificationSlot);
+            return false;
         }
 
-        var hadPrevious = this.previousBand.TryGetValue(key, out var previous);
-        this.previousBand[key] = pace.State;
+        var observation = this.history.Observe(notificationSlot, resetKey, pace.State);
 
-        if (!hadPrevious || previous == pace.State)
+        if (!observation.HadPrevious || observation.Previous == pace.State)
         {
-            return;
+            return true;
         }
 
         if (pace.State == PaceState.AtRisk)
         {
-            var atRiskKey = $"{provider.ConfigId()}|{slot}|atrisk|{resetKey}";
-            if (this.MarkFired(atRiskKey))
+            if (this.history.TryMarkFired(notificationSlot, resetKey, "at-risk"))
             {
                 this.tray.ShowBalloon(
                     "Pace warning",
@@ -107,27 +115,12 @@ public sealed class PaceNotifier : IDisposable
         }
         else if (pace.State == PaceState.Underusing && underuseEnabled)
         {
-            var underuseKey = $"{provider.ConfigId()}|{slot}|underuse|{resetKey}";
-            if (this.MarkFired(underuseKey))
+            if (this.history.TryMarkFired(notificationSlot, resetKey, "underuse"))
             {
                 this.tray.ShowBalloon(
                     "Pace notice",
                     $"{this.ProviderName(provider)} {slot}: under-using - lots of quota left with time to spare.");
             }
-        }
-    }
-
-    private bool MarkFired(string key)
-    {
-        if (!this.firedKeys.Add(key))
-        {
-            return false;
-        }
-
-        this.firedOrder.Enqueue(key);
-        while (this.firedOrder.Count > MaxFiredKeys)
-        {
-            _ = this.firedKeys.Remove(this.firedOrder.Dequeue());
         }
 
         return true;
@@ -161,6 +154,4 @@ public sealed class PaceNotifier : IDisposable
 
         return string.IsNullOrWhiteSpace(window.ResetDescription) ? "reset time unknown" : window.ResetDescription;
     }
-
-    private readonly record struct WindowKey(ProviderId Provider, string Slot, string ResetKey);
 }

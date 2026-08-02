@@ -1176,10 +1176,8 @@ public sealed class FlyoutWindow : Window
 
     private UIElement CreateCreditsRow(CreditsSnapshot credits)
     {
-        var value = credits.Limit is { } limit
-            ? string.Create(CultureInfo.InvariantCulture, $"{credits.Remaining:0.##} of {limit:0.##} {credits.Unit}")
-            : string.Create(CultureInfo.InvariantCulture, $"{credits.Remaining:0.##} {credits.Unit}");
-        return this.CreateValueRow("Credits", value);
+        var presentation = CreditDisplay.For(credits);
+        return this.CreateValueRow(presentation.Label, presentation.Value);
     }
 
     private UIElement CreateIncidentRow(ProviderStatus status)
@@ -1996,5 +1994,25 @@ public sealed class FlyoutWindow : Window
         var data = new AppBarData { CbSize = (uint)Marshal.SizeOf<AppBarData>() };
         var result = SHAppBarMessage(AbmGetTaskbarPos, ref data);
         return result == IntPtr.Zero ? AbeBottom : (int)data.Edge;
+    }
+}
+
+internal readonly record struct CreditPresentation(string Label, string Value);
+
+internal static class CreditDisplay
+{
+    internal static CreditPresentation For(CreditsSnapshot credits)
+    {
+        if (!credits.SupportsDepletionSemantics)
+        {
+            return new CreditPresentation(
+                "Spend (30d)",
+                string.Create(CultureInfo.InvariantCulture, $"{credits.Remaining:0.##} {credits.Unit} spent"));
+        }
+
+        var value = credits.Limit is { } limit
+            ? string.Create(CultureInfo.InvariantCulture, $"{credits.Remaining:0.##} of {limit:0.##} {credits.Unit}")
+            : string.Create(CultureInfo.InvariantCulture, $"{credits.Remaining:0.##} {credits.Unit}");
+        return new CreditPresentation("Credits", value);
     }
 }

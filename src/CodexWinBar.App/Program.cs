@@ -6,12 +6,14 @@ using System.Windows;
 using CodexWinBar.App.Flyout;
 using CodexWinBar.App.Notifications;
 using CodexWinBar.App.Settings;
+using CodexWinBar.App.Statistics;
 using CodexWinBar.App.Tray;
 using CodexWinBar.App.Updates;
 using CodexWinBar.Core.Config;
 using CodexWinBar.Core.Models;
 using CodexWinBar.Core.Providers;
 using CodexWinBar.Core.Scheduling;
+using CodexWinBar.Core.Statistics;
 using CodexWinBar.Providers;
 using CodexWinBar.Widget;
 using Velopack;
@@ -49,16 +51,17 @@ public static class Program
         }
 
         var openSettings = args.Contains("--settings", StringComparer.OrdinalIgnoreCase);
+        var openStatistics = args.Contains("--statistics", StringComparer.OrdinalIgnoreCase);
         singleInstanceMutex = new Mutex(initiallyOwned: true, MutexName, out var createdNew);
         if (!createdNew)
         {
-            SendActivationToPrimary(openSettings ? "settings" : "show");
+            SendActivationToPrimary(openStatistics ? "statistics" : openSettings ? "settings" : "show");
             singleInstanceMutex.Dispose();
             return 0;
         }
 
         var app = new App();
-        var shell = new AppShell(app, openSettings);
+        var shell = new AppShell(app, openSettings, openStatistics);
         app.InitializeShell(shell);
         var exitCode = app.Run();
         singleInstanceMutex.ReleaseMutex();
@@ -91,12 +94,14 @@ internal sealed class AppShell : IDisposable
     private static readonly System.Drawing.Rectangle FallbackAnchor = new(0, 1_000_000, 1, 1);
     private readonly App app;
     private readonly bool startWithSettings;
+    private readonly bool startWithStatistics;
     private readonly RollingLog log;
     private readonly ConfigStore configStore;
     private readonly UiSettingsStore uiStore;
     private readonly IReadOnlyList<ProviderDescriptor> descriptors;
     private readonly Dictionary<ProviderId, ProviderDescriptor> descriptorsById;
     private readonly IUsageStore usageStore;
+    private readonly IPlanStatisticsStore planStatisticsStore;
     private readonly WidgetHost widgetHost;
     private readonly FlyoutWindow flyout;
     private readonly TrayIcon trayIcon;
@@ -122,10 +127,11 @@ internal sealed class AppShell : IDisposable
     // =error drives it to the red error state instead. Inert (null) in normal use.
     private readonly string? fakeUpdate = Environment.GetEnvironmentVariable("CODEXWINBAR_FAKE_UPDATE");
 
-    public AppShell(App app, bool startWithSettings = false)
+    public AppShell(App app, bool startWithSettings = false, bool startWithStatistics = false)
     {
         this.app = app;
         this.startWithSettings = startWithSettings;
+        this.startWithStatistics = startWithStatistics;
         this.log = new RollingLog();
         this.configStore = new ConfigStore(
             Environment.GetEnvironmentVariable,
@@ -134,9 +140,13 @@ internal sealed class AppShell : IDisposable
         this.uiStore = new UiSettingsStore(this.Log);
         this.descriptors = ProviderCatalog.CreateAll();
         this.descriptorsById = this.descriptors.ToDictionary(descriptor => descriptor.Id);
-        this.usageStore = Dev.FakeUsageStore.IsEnabled(Environment.GetEnvironmentVariable)
+        var fakeData = Dev.FakeUsageStore.IsEnabled(Environment.GetEnvironmentVariable);
+        this.usageStore = fakeData
             ? new Dev.FakeUsageStore(this.Log)
             : new UsageStore(this.descriptors, this.configStore, this.uiStore, this.Log);
+        this.planStatisticsStore = fakeData
+            ? new Dev.FakePlanStatisticsStore()
+            : new PlanStatisticsStore(this.Log);
         this.widgetHost = new WidgetHost();
         WidgetHost.SetLogger(this.Log);
         ToastService.Initialize(this.Log);
@@ -144,6 +154,7 @@ internal sealed class AppShell : IDisposable
         this.flyout = new FlyoutWindow(
             this.usageStore,
             this.uiStore,
+            this.OpenStatistics,
             this.OpenSettings,
             this.Quit,
             this.StartUpdateDownload,
@@ -157,7 +168,11 @@ internal sealed class AppShell : IDisposable
             this.Log);
         this.quotaNotifier = new QuotaNotifier(this.usageStore, this.configStore, this.uiStore, this.trayIcon);
         this.paceNotifier = new PaceNotifier(this.usageStore, this.configStore, this.uiStore, this.trayIcon);
-        this.usageStateChangedHandler = () => this.app.Dispatcher.BeginInvoke(() => this.UpdateWidget());
+        this.usageStateChangedHandler = () =>
+        {
+            this.RecordStatistics();
+            _ = this.app.Dispatcher.BeginInvoke(() => this.UpdateWidget());
+        };
     }
 
     public void Start()
@@ -177,7 +192,11 @@ internal sealed class AppShell : IDisposable
             new Action(() =>
             {
                 this.flyout.PreWarm();
-                if (this.startWithSettings)
+                if (this.startWithStatistics)
+                {
+                    this.OpenStatistics();
+                }
+                else if (this.startWithSettings)
                 {
                     this.OpenSettings();
                 }
@@ -456,6 +475,7 @@ internal sealed class AppShell : IDisposable
         this.pipeCancellation.Cancel();
         this.usageStore.StateChanged -= this.usageStateChangedHandler;
         this.usageStore.Dispose();
+        this.planStatisticsStore.Dispose();
         this.quotaNotifier.Dispose();
         this.paceNotifier.Dispose();
         this.trayIcon.Dispose();
@@ -526,6 +546,19 @@ internal sealed class AppShell : IDisposable
             this.ApplySettings,
             () => Volatile.Read(ref this.updateStatus),
             this.HandleSettingsUpdateAction);
+    }
+
+    private void OpenStatistics()
+    {
+        StatisticsWindow.ShowOrActivate(this.planStatisticsStore, this.descriptors);
+    }
+
+    private void RecordStatistics()
+    {
+        foreach (var snapshot in this.usageStore.States.Select(state => state.Snapshot).OfType<UsageSnapshot>())
+        {
+            this.planStatisticsStore.Record(snapshot);
+        }
     }
 
     // First launch (no onboarding recorded yet) opens the connect-your-providers welcome. It marks
@@ -720,6 +753,10 @@ internal sealed class AppShell : IDisposable
                     if (string.Equals(line, "settings", StringComparison.OrdinalIgnoreCase))
                     {
                         _ = this.app.Dispatcher.BeginInvoke(this.OpenSettings);
+                    }
+                    else if (string.Equals(line, "statistics", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _ = this.app.Dispatcher.BeginInvoke(this.OpenStatistics);
                     }
                     else if (!string.IsNullOrWhiteSpace(line) && line.StartsWith("show", StringComparison.OrdinalIgnoreCase))
                     {

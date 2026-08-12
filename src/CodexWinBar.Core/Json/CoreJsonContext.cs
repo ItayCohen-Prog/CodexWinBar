@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using CodexWinBar.Core.Config;
+using CodexWinBar.Core.Statistics;
 
 namespace CodexWinBar.Core.Json;
 
@@ -12,4 +13,5 @@ namespace CodexWinBar.Core.Json;
 [JsonSerializable(typeof(QuotaWarnings))]
 [JsonSerializable(typeof(QuotaWarningWindow))]
 [JsonSerializable(typeof(UiSettings))]
+[JsonSerializable(typeof(PlanStatisticsDocument))]
 public sealed partial class CoreJsonContext : JsonSerializerContext;

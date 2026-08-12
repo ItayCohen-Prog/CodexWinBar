@@ -10,6 +10,7 @@ namespace CodexWinBar.App.Assets;
 internal static class LogoImages
 {
     internal const string RefreshGlyph = "\uE72C";
+    internal const string StatisticsGlyph = "\uE9D2";
     internal const string SettingsGlyph = "\uE713";
     internal const string CloseGlyph = "\uE711";
     internal const string CopyGlyph = "\uE8C8";

@@ -86,8 +86,6 @@ Or with [winget](https://learn.microsoft.com/windows/package-manager/):
 winget install ItayCohen.CodexWinBar
 ```
 
-> ⏳ **winget is in review** ([winget-pkgs #398215](https://github.com/microsoft/winget-pkgs/pull/398215)).
-> Until it merges, use the PowerShell command above or the direct download.
 
 Either way it installs per-user (no admin), adds Start-Menu and desktop shortcuts, launches automatically,
 and self-updates. After installing, connect the providers you use in **Settings → Providers** — Codex,

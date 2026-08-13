@@ -18,9 +18,9 @@ internal sealed class FakePlanStatisticsStore : IPlanStatisticsStore
                 Provider = ProviderId.Codex,
                 Series =
                 [
-                    BuildSeries("session", "Session", 300, now, 26, [42, 68, 31, 84, 57, 74, 46, 92, 63, 51, 78, 39, 71]),
-                    BuildSeries("weekly", "Weekly", 10080, now, 14, [64, 81, 73, 55, 89, 67, 77, 48, 83, 61, 72, 45, 58]),
-                    BuildSeries("extra:gpt-5-codex", "GPT-5.3-Codex", 10080, now, 14, [28, 46, 52, 39, 63, 49, 71, 32, 58, 44, 67, 36, 41]),
+                    BuildSeries("session", "Session", 300, now, 1800, [42, 68, 31, 84, 0, 57, 74, 46, 92, 12, 63, 51, 78, 0, 39, 71]),
+                    BuildSeries("weekly", "Weekly", 10080, now, 54, [64, 81, 73, 55, 89, 67, 77, 48, 83, 61, 72, 45, 58]),
+                    BuildSeries("extra:gpt-5-codex", "GPT-5.3-Codex", 10080, now, 54, [28, 46, 52, 39, 63, 49, 71, 32, 58, 44, 67, 36, 41]),
                 ],
             },
             [ProviderId.Claude] = new()
@@ -28,9 +28,9 @@ internal sealed class FakePlanStatisticsStore : IPlanStatisticsStore
                 Provider = ProviderId.Claude,
                 Series =
                 [
-                    BuildSeries("session", "Session", 300, now, 26, [76, 54, 89, 67, 82, 48, 93, 71, 64, 86, 59, 79, 72]),
-                    BuildSeries("weekly", "Weekly", 10080, now, 14, [71, 62, 88, 79, 56, 91, 73, 68, 84, 77, 59, 86, 52]),
-                    BuildSeries("tertiary", "Opus weekly", 10080, now, 14, [31, 49, 44, 72, 38, 65, 53, 47, 69, 42, 58, 36, 20]),
+                    BuildSeries("session", "Session", 300, now, 1800, [76, 54, 89, 0, 67, 82, 48, 93, 18, 71, 64, 86, 0, 59, 79, 72]),
+                    BuildSeries("weekly", "Weekly", 10080, now, 54, [71, 62, 88, 79, 56, 91, 73, 68, 84, 77, 59, 86, 52]),
+                    BuildSeries("tertiary", "Opus weekly", 10080, now, 54, [31, 49, 44, 72, 38, 65, 53, 47, 69, 42, 58, 36, 20]),
                 ],
             },
         };
@@ -73,7 +73,7 @@ internal sealed class FakePlanStatisticsStore : IPlanStatisticsStore
             samples.Add(new PlanUsageSample
             {
                 CapturedAt = reset - TimeSpan.FromTicks((long)(duration.Ticks * 0.72)),
-                UsedPercent = Math.Max(2, peak * 0.34),
+                UsedPercent = peak <= 0 ? 0 : Math.Max(2, peak * 0.34),
                 ResetsAt = reset,
             });
             samples.Add(new PlanUsageSample

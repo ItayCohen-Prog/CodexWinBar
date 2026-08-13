@@ -7,74 +7,141 @@ namespace CodexWinBar.App.Tests;
 public sealed class PlanStatisticsProjectionTests
 {
     [Fact]
-    public void Build_groups_observations_by_reset_and_excludes_current_from_benchmark()
+    public void BuildActivity_attributes_positive_cycle_deltas_to_local_hours()
     {
-        var now = new DateTimeOffset(2026, 8, 12, 12, 0, 0, TimeSpan.Zero);
-        var series = new PlanUsageSeries
-        {
-            Id = "weekly",
-            Title = "Weekly",
-            WindowMinutes = 10080,
-            Samples =
-            [
-                Sample(now.AddDays(-9), 20, now.AddDays(-7)),
-                Sample(now.AddDays(-8), 70, now.AddDays(-7)),
-                Sample(now.AddDays(-3), 30, now.AddHours(4)),
-                Sample(now.AddHours(-1), 40, now.AddHours(4)),
-            ],
-        };
+        var now = new DateTimeOffset(2026, 8, 13, 12, 0, 0, TimeSpan.Zero);
+        var reset = now.AddHours(5);
+        var series = Series(
+            Sample(now.AddHours(-3), 10, reset),
+            Sample(now.AddHours(-2), 26, reset),
+            Sample(now.AddHours(-1), 21, reset),
+            Sample(now, 35, reset));
 
-        var summary = PlanStatisticsProjection.Build(series, now);
+        var activity = PlanStatisticsProjection.BuildActivity(series, now);
+        var day = Assert.IsType<ActivityDay>(activity.Day(DateOnly.FromDateTime(now.LocalDateTime)));
 
-        Assert.Equal(2, summary.Cycles.Count);
-        Assert.Equal(40, summary.CurrentUsedPercent);
-        Assert.Equal(70, summary.AveragePeakPercent);
-        Assert.Equal(70, summary.HighestPeakPercent);
-        Assert.Equal(30, summary.AverageUnusedPercent);
+        Assert.Equal(25, day.Value);
+        Assert.Equal(2, day.ActiveHours);
+        Assert.Equal(4, day.ObservationCount);
+        Assert.Equal(16, day.Hours[now.AddHours(-2).LocalDateTime.Hour].Value);
+        Assert.Equal(0, day.Hours[now.AddHours(-1).LocalDateTime.Hour].Value);
+        Assert.Equal(9, day.Hours[now.LocalDateTime.Hour].Value);
     }
 
     [Fact]
-    public void Build_groups_reset_times_across_two_minute_bucket_boundary()
+    public void BuildActivity_treats_new_reset_as_new_cycle()
     {
-        var now = new DateTimeOffset(2026, 8, 12, 12, 0, 0, TimeSpan.Zero);
-        var reset = new DateTimeOffset(2026, 8, 13, 12, 1, 59, TimeSpan.Zero);
-        var series = new PlanUsageSeries
-        {
-            Id = "session",
-            Title = "Session",
-            WindowMinutes = 300,
-            Samples =
-            [
-                Sample(now.AddMinutes(-10), 20, reset),
-                Sample(now, 44, reset.AddSeconds(2)),
-            ],
-        };
+        var now = new DateTimeOffset(2026, 8, 13, 12, 0, 0, TimeSpan.Zero);
+        var series = Series(
+            Sample(now.AddHours(-3), 82, now.AddHours(-2)),
+            Sample(now.AddHours(-2), 90, now.AddHours(-2)),
+            Sample(now.AddHours(-1), 7, now.AddHours(4)),
+            Sample(now, 20, now.AddHours(4)));
 
-        var summary = PlanStatisticsProjection.Build(series, now);
+        var day = Assert.IsType<ActivityDay>(PlanStatisticsProjection.BuildActivity(series, now)
+            .Day(DateOnly.FromDateTime(now.LocalDateTime)));
 
-        Assert.Single(summary.Cycles);
-        Assert.Equal(44, summary.CurrentUsedPercent);
-        Assert.Null(summary.AveragePeakPercent);
+        Assert.Equal(21, day.Value);
+        Assert.Equal(2, day.ActiveHours);
     }
 
     [Fact]
-    public void Build_caps_chart_at_thirty_cycles()
+    public void BuildActivity_groups_reset_times_across_two_minute_boundary()
     {
-        var now = new DateTimeOffset(2026, 8, 12, 12, 0, 0, TimeSpan.Zero);
-        var series = new PlanUsageSeries
-        {
-            Id = "session",
-            Title = "Session",
-            WindowMinutes = 300,
-            Samples = Enumerable.Range(1, 42)
-                .Select(index => Sample(now.AddHours(-index), index, now.AddHours(-index + 1)))
-                .ToArray(),
-        };
+        var now = new DateTimeOffset(2026, 8, 13, 12, 0, 0, TimeSpan.Zero);
+        var reset = new DateTimeOffset(2026, 8, 13, 17, 1, 59, TimeSpan.Zero);
+        var series = Series(
+            Sample(now.AddMinutes(-10), 20, reset),
+            Sample(now, 44, reset.AddSeconds(2)));
 
-        var summary = PlanStatisticsProjection.Build(series, now);
+        var day = Assert.IsType<ActivityDay>(PlanStatisticsProjection.BuildActivity(series, now)
+            .Day(DateOnly.FromDateTime(now.LocalDateTime)));
 
-        Assert.Equal(30, summary.Cycles.Count);
+        Assert.Equal(24, day.Value);
+        Assert.Equal(2, day.ObservationCount);
     }
+
+    [Fact]
+    public void BuildActivity_personal_scale_uses_distribution_and_fixed_scale_uses_defined_limits()
+    {
+        var now = new DateTimeOffset(2026, 8, 13, 12, 0, 0, TimeSpan.Zero);
+        var samples = new List<PlanUsageSample>();
+        var values = new[] { 2d, 8d, 20d, 44d };
+        for (var index = 0; index < values.Length; index++)
+        {
+            var captured = now.AddDays(index - values.Length + 1);
+            var reset = captured.AddHours(5);
+            samples.Add(Sample(captured.AddMinutes(-1), 0, reset));
+            samples.Add(Sample(captured, values[index], reset));
+        }
+
+        var activity = PlanStatisticsProjection.BuildActivity(Series([.. samples]), now);
+        var active = activity.Days.Where(day => day.Value > 0).ToArray();
+
+        Assert.Equal([1, 2, 3, 4], active.Select(day => day.PersonalIntensity));
+        Assert.Equal([1, 2, 3, 4], active.Select(day => day.FixedIntensity));
+    }
+
+    [Fact]
+    public void WeekContaining_returns_sunday_week_and_summary()
+    {
+        var now = new DateTimeOffset(2026, 8, 13, 12, 0, 0, TimeSpan.Zero);
+        var series = Series(
+            Sample(now.AddDays(-3).AddMinutes(-1), 0, now.AddDays(-3).AddHours(5)),
+            Sample(now.AddDays(-3), 20, now.AddDays(-3).AddHours(5)),
+            Sample(now.AddMinutes(-1), 0, now.AddHours(5)),
+            Sample(now, 30, now.AddHours(5)));
+        var activity = PlanStatisticsProjection.BuildActivity(series, now);
+
+        var week = activity.WeekContaining(DateOnly.FromDateTime(now.LocalDateTime));
+
+        Assert.Equal(DayOfWeek.Sunday, week.StartsOn.DayOfWeek);
+        Assert.Equal(50, week.Total);
+        Assert.Equal(2, week.ActiveDays);
+        Assert.Equal(30, week.BusiestDay?.Value);
+    }
+
+    [Fact]
+    public void BuildActivity_ignores_samples_captured_after_now()
+    {
+        var now = new DateTimeOffset(2026, 8, 13, 12, 0, 0, TimeSpan.Zero);
+        var reset = now.AddHours(5);
+        var series = Series(
+            Sample(now.AddHours(-2), 0, reset),
+            Sample(now.AddHours(-1), 12, reset),
+            Sample(now.AddMinutes(1), 70, reset));
+
+        var day = Assert.IsType<ActivityDay>(PlanStatisticsProjection.BuildActivity(series, now)
+            .Day(DateOnly.FromDateTime(now.LocalDateTime)));
+
+        Assert.Equal(12, day.Value);
+        Assert.Equal(2, day.ObservationCount);
+    }
+
+    [Fact]
+    public void BuildActivity_does_not_assign_mid_cycle_baseline_to_capture_hour()
+    {
+        var now = new DateTimeOffset(2026, 8, 13, 12, 0, 0, TimeSpan.Zero);
+        var reset = now.AddHours(2);
+        var series = Series(
+            Sample(now.AddHours(-1), 70, reset),
+            Sample(now, 78, reset));
+
+        var day = Assert.IsType<ActivityDay>(PlanStatisticsProjection.BuildActivity(series, now)
+            .Day(DateOnly.FromDateTime(now.LocalDateTime)));
+
+        Assert.Equal(8, day.Value);
+        Assert.Equal(0, day.Hours[now.AddHours(-1).LocalDateTime.Hour].Value);
+        Assert.Equal(8, day.Hours[now.LocalDateTime.Hour].Value);
+    }
+
+    private static PlanUsageSeries Series(params PlanUsageSample[] samples) => new()
+    {
+        Id = "session",
+        Title = "Session",
+        WindowMinutes = 300,
+        Samples = samples,
+    };
 
     private static PlanUsageSample Sample(DateTimeOffset captured, double used, DateTimeOffset reset) => new()
     {

@@ -26,8 +26,12 @@ public sealed class StatisticsWindowTests
                     modifiers: null);
                 var window = Assert.IsType<StatisticsWindow>(constructor?.Invoke([store, ProviderCatalog.CreateAll()]));
                 var refresh = typeof(StatisticsWindow).GetMethod("Refresh", BindingFlags.Instance | BindingFlags.NonPublic);
+                var selectDate = typeof(StatisticsWindow).GetMethod("SelectDate", BindingFlags.Instance | BindingFlags.NonPublic);
+                var scaleMode = typeof(StatisticsWindow).GetField("scaleMode", BindingFlags.Instance | BindingFlags.NonPublic);
 
                 refresh?.Invoke(window, null);
+                selectDate?.Invoke(window, [DateOnly.FromDateTime(DateTime.Today.AddDays(-2))]);
+                scaleMode?.SetValue(window, ActivityScaleMode.Fixed);
                 refresh?.Invoke(window, null);
             }
             catch (Exception ex)

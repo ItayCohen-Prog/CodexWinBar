@@ -2,56 +2,144 @@ using CodexWinBar.Core.Statistics;
 
 namespace CodexWinBar.App.Statistics;
 
-internal sealed record PlanCycle(
-    DateTimeOffset CycleEndsAt,
-    double PeakUsedPercent,
-    double LatestUsedPercent,
-    bool IsCurrent,
-    int ObservationCount);
+internal enum ActivityScaleMode
+{
+    Personal,
+    Fixed,
+}
 
-internal sealed record PlanStatisticsSummary(
-    IReadOnlyList<PlanCycle> Cycles,
-    double? CurrentUsedPercent,
-    double? AveragePeakPercent,
-    double? HighestPeakPercent,
-    double? AverageUnusedPercent);
+internal sealed record ActivityHour(int Hour, double Value, int ObservationCount);
+
+internal sealed record ActivityDay(
+    DateOnly Date,
+    double Value,
+    int ActiveHours,
+    int ObservationCount,
+    IReadOnlyList<ActivityHour> Hours,
+    int PersonalIntensity,
+    int FixedIntensity)
+{
+    internal bool HasCoverage => this.ObservationCount > 0;
+
+    internal int Intensity(ActivityScaleMode mode) => mode == ActivityScaleMode.Personal
+        ? this.PersonalIntensity
+        : this.FixedIntensity;
+}
+
+internal sealed record ActivityWeek(
+    DateOnly StartsOn,
+    IReadOnlyList<ActivityDay> Days,
+    double Total,
+    int ActiveDays,
+    int CoveredDays,
+    ActivityDay? BusiestDay);
+
+internal sealed record ActivityOverview(
+    IReadOnlyList<ActivityDay> Days,
+    double Total,
+    int ActiveDays,
+    int CoveredDays,
+    double DailyAverage,
+    ActivityDay? BusiestDay,
+    DateOnly StartsOn,
+    DateOnly EndsOn)
+{
+    internal ActivityDay? Day(DateOnly date) => this.Days.FirstOrDefault(item => item.Date == date);
+
+    internal ActivityWeek WeekContaining(DateOnly date)
+    {
+        var start = PlanStatisticsProjection.WeekStart(date);
+        var days = this.Days.Where(item => item.Date >= start && item.Date <= start.AddDays(6)).ToArray();
+        var active = days.Where(item => item.Value > 0.001).ToArray();
+        return new ActivityWeek(
+            start,
+            days,
+            days.Sum(item => item.Value),
+            active.Length,
+            days.Count(item => item.HasCoverage),
+            active.OrderByDescending(item => item.Value).FirstOrDefault());
+    }
+}
 
 internal static class PlanStatisticsProjection
 {
-    private const int MaxVisibleCycles = 30;
+    private const int CalendarWeeks = 52;
+    private const double ActivityEpsilon = 0.001;
+    private static readonly TimeSpan ResetEquivalenceTolerance = TimeSpan.FromMinutes(2);
 
-    internal static PlanStatisticsSummary Build(PlanUsageSeries series, DateTimeOffset now)
+    internal static ActivityOverview BuildActivity(PlanUsageSeries series, DateTimeOffset now)
     {
-        var groups = GroupByEquivalentReset(series.Samples)
-            .Select(group =>
-            {
-                var ordered = group.OrderBy(item => item.CapturedAt).ToArray();
-                var reset = ordered.Max(item => item.ResetsAt!.Value);
-                return new PlanCycle(
-                    reset,
-                    ordered.Max(item => item.UsedPercent),
-                    ordered[^1].UsedPercent,
-                    reset > now,
-                    ordered.Length);
-            })
-            .OrderBy(item => item.CycleEndsAt)
-            .TakeLast(MaxVisibleCycles)
-            .ToArray();
+        var end = DateOnly.FromDateTime(now.LocalDateTime.Date);
+        var calendarStart = WeekStart(end).AddDays(-7 * (CalendarWeeks - 1));
+        var buckets = Enumerable.Range(0, CalendarWeeks * 7)
+            .Select(offset => calendarStart.AddDays(offset))
+            .ToDictionary(
+                date => date,
+                date => new DayAccumulator(date));
 
-        if (groups.Length == 0)
+        foreach (var cycle in GroupByEquivalentReset(series.Samples))
         {
-            return new PlanStatisticsSummary([], null, null, null, null);
+            double? observedPeak = null;
+            foreach (var sample in cycle
+                .Where(item => item.CapturedAt <= now)
+                .OrderBy(item => item.CapturedAt))
+            {
+                var local = sample.CapturedAt.LocalDateTime;
+                var date = DateOnly.FromDateTime(local.Date);
+                if (!buckets.TryGetValue(date, out var day))
+                {
+                    observedPeak = observedPeak is null
+                        ? sample.UsedPercent
+                        : Math.Max(observedPeak.Value, sample.UsedPercent);
+                    continue;
+                }
+
+                // The first value is a baseline: attributing it to its capture hour would claim that
+                // all usage since the reset happened at the instant CodexWinBar started observing.
+                // Later activity is counted only when the cycle reaches a new high, so provider
+                // corrections and temporary dips cannot count the same quota points twice.
+                var increment = observedPeak is null
+                    ? 0
+                    : Math.Max(0, sample.UsedPercent - observedPeak.Value);
+                day.Add(local.Hour, increment);
+                observedPeak = observedPeak is null
+                    ? sample.UsedPercent
+                    : Math.Max(observedPeak.Value, sample.UsedPercent);
+            }
         }
 
-        var completed = groups.Where(item => !item.IsCurrent).ToArray();
-        var current = groups.LastOrDefault(item => item.IsCurrent);
-        var average = completed.Length > 0 ? completed.Average(item => item.PeakUsedPercent) : (double?)null;
-        return new PlanStatisticsSummary(
-            groups,
-            current?.LatestUsedPercent,
-            average,
-            completed.Length > 0 ? completed.Max(item => item.PeakUsedPercent) : null,
-            average is { } value ? Math.Max(0, 100 - value) : null);
+        var preliminary = buckets.Values
+            .OrderBy(item => item.Date)
+            .Select(item => item.Build())
+            .ToArray();
+        var activeValues = preliminary
+            .Where(item => item.Value > ActivityEpsilon)
+            .Select(item => item.Value)
+            .OrderBy(value => value)
+            .ToArray();
+        var personalThresholds = PersonalThresholds(activeValues);
+        var days = preliminary.Select(day => day with
+        {
+            PersonalIntensity = Intensity(day.Value, personalThresholds),
+            FixedIntensity = FixedIntensity(day.Value),
+        }).ToArray();
+        var active = days.Where(item => item.Value > ActivityEpsilon).ToArray();
+        var covered = days.Where(item => item.HasCoverage).ToArray();
+        return new ActivityOverview(
+            days,
+            days.Sum(item => item.Value),
+            active.Length,
+            covered.Length,
+            covered.Length == 0 ? 0 : days.Sum(item => item.Value) / covered.Length,
+            active.OrderByDescending(item => item.Value).FirstOrDefault(),
+            calendarStart,
+            end);
+    }
+
+    internal static DateOnly WeekStart(DateOnly date)
+    {
+        var daysSinceSunday = (int)date.DayOfWeek;
+        return date.AddDays(-daysSinceSunday);
     }
 
     private static IReadOnlyList<IReadOnlyList<PlanUsageSample>> GroupByEquivalentReset(
@@ -63,7 +151,8 @@ internal static class PlanStatisticsProjection
             .OrderBy(item => item.ResetsAt))
         {
             var existing = groups.LastOrDefault(group =>
-                Math.Abs((group[0].ResetsAt!.Value - sample.ResetsAt!.Value).TotalMinutes) < 2);
+                Math.Abs((group[0].ResetsAt!.Value - sample.ResetsAt!.Value).TotalSeconds) <
+                ResetEquivalenceTolerance.TotalSeconds);
             if (existing is null)
             {
                 groups.Add([sample]);
@@ -75,5 +164,86 @@ internal static class PlanStatisticsProjection
         }
 
         return groups;
+    }
+
+    private static double[] PersonalThresholds(IReadOnlyList<double> sorted)
+    {
+        if (sorted.Count == 0)
+        {
+            return [0, 0, 0];
+        }
+
+        return [Percentile(sorted, 0.25), Percentile(sorted, 0.50), Percentile(sorted, 0.75)];
+    }
+
+    private static double Percentile(IReadOnlyList<double> sorted, double percentile)
+    {
+        var position = (sorted.Count - 1) * percentile;
+        var lower = (int)Math.Floor(position);
+        var upper = (int)Math.Ceiling(position);
+        if (lower == upper)
+        {
+            return sorted[lower];
+        }
+
+        return sorted[lower] + ((sorted[upper] - sorted[lower]) * (position - lower));
+    }
+
+    private static int Intensity(double value, IReadOnlyList<double> thresholds)
+    {
+        if (value <= ActivityEpsilon)
+        {
+            return 0;
+        }
+
+        if (value <= thresholds[0])
+        {
+            return 1;
+        }
+
+        if (value <= thresholds[1])
+        {
+            return 2;
+        }
+
+        return value <= thresholds[2] ? 3 : 4;
+    }
+
+    private static int FixedIntensity(double value) => value switch
+    {
+        <= ActivityEpsilon => 0,
+        <= 5 => 1,
+        <= 15 => 2,
+        <= 30 => 3,
+        _ => 4,
+    };
+
+    private sealed class DayAccumulator(DateOnly date)
+    {
+        private readonly double[] hourlyValues = new double[24];
+        private readonly int[] hourlyObservations = new int[24];
+
+        internal DateOnly Date { get; } = date;
+
+        internal void Add(int hour, double increment)
+        {
+            this.hourlyValues[hour] += increment;
+            this.hourlyObservations[hour]++;
+        }
+
+        internal ActivityDay Build()
+        {
+            var hours = Enumerable.Range(0, 24)
+                .Select(hour => new ActivityHour(hour, this.hourlyValues[hour], this.hourlyObservations[hour]))
+                .ToArray();
+            return new ActivityDay(
+                this.Date,
+                this.hourlyValues.Sum(),
+                this.hourlyValues.Count(value => value > ActivityEpsilon),
+                this.hourlyObservations.Sum(),
+                hours,
+                PersonalIntensity: 0,
+                FixedIntensity: 0);
+        }
     }
 }

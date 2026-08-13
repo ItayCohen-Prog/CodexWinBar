@@ -48,6 +48,10 @@ public sealed class StatisticsWindow : Window
     private ActivityScaleMode scaleMode = ActivityScaleMode.Personal;
     private ActivityViewMode viewMode = ActivityViewMode.Overview;
     private bool providerTransitioning;
+    private bool dashboardTransitioning;
+    private bool dashboardInteractionPending;
+    private bool statisticsRefreshPending;
+    private Action? dashboardTransitionCompleted;
 
     private StatisticsWindow(
         IPlanStatisticsStore store,
@@ -172,6 +176,7 @@ public sealed class StatisticsWindow : Window
 
         this.dashboardHost.HorizontalContentAlignment = HorizontalAlignment.Stretch;
         this.dashboardHost.VerticalContentAlignment = VerticalAlignment.Stretch;
+        this.dashboardHost.RenderTransform = new TranslateTransform();
         var scroller = new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
@@ -297,30 +302,54 @@ public sealed class StatisticsWindow : Window
         button.Tag = new ProviderButtonVisual(descriptor.Id, logo, nameHost, nameWidth, shadow);
         ToolTipService.SetInitialShowDelay(button, 250);
         ToolTipService.SetBetweenShowDelay(button, 80);
-        void HighlightLogo()
+        void AnimateLogo(
+            double opacity,
+            double scaleValue,
+            double blurRadius,
+            double shadowOpacity,
+            double shadowDepth,
+            int milliseconds)
         {
-            logo.Opacity = 1;
-            scale.ScaleX = 1.08;
-            scale.ScaleY = 1.08;
-            shadow.BlurRadius = 13;
-            shadow.Opacity = 0.42;
-            shadow.ShadowDepth = 3;
+            if (!SystemParameters.ClientAreaAnimation)
+            {
+                logo.Opacity = opacity;
+                scale.ScaleX = scaleValue;
+                scale.ScaleY = scaleValue;
+                shadow.BlurRadius = blurRadius;
+                shadow.Opacity = shadowOpacity;
+                shadow.ShadowDepth = shadowDepth;
+                return;
+            }
+
+            var duration = TimeSpan.FromMilliseconds(milliseconds);
+            var easing = new QuadraticEase { EasingMode = EasingMode.EaseOut };
+            logo.BeginAnimation(OpacityProperty, new DoubleAnimation(logo.Opacity, opacity, duration) { EasingFunction = easing });
+            scale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(scale.ScaleX, scaleValue, duration) { EasingFunction = easing });
+            scale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(scale.ScaleY, scaleValue, duration) { EasingFunction = easing });
+            shadow.BeginAnimation(DropShadowEffect.BlurRadiusProperty, new DoubleAnimation(shadow.BlurRadius, blurRadius, duration) { EasingFunction = easing });
+            shadow.BeginAnimation(DropShadowEffect.OpacityProperty, new DoubleAnimation(shadow.Opacity, shadowOpacity, duration) { EasingFunction = easing });
+            shadow.BeginAnimation(DropShadowEffect.ShadowDepthProperty, new DoubleAnimation(shadow.ShadowDepth, shadowDepth, duration) { EasingFunction = easing });
         }
 
-        void RestoreLogo()
-        {
-            logo.Opacity = selected ? 1 : 0.38;
-            scale.ScaleX = 1;
-            scale.ScaleY = 1;
-            shadow.BlurRadius = selected ? 12 : 9;
-            shadow.Opacity = selected ? 0.38 : 0.24;
-            shadow.ShadowDepth = selected ? 3 : 2;
-        }
+        void HighlightLogo() => AnimateLogo(1, 1.08, 13, 0.42, 3, 125);
+        void RestoreLogo() => AnimateLogo(selected ? 1 : 0.38, 1, selected ? 12 : 9, selected ? 0.38 : 0.24, selected ? 3 : 2, 150);
 
         button.MouseEnter += (_, _) => HighlightLogo();
-        button.MouseLeave += (_, _) => RestoreLogo();
+        button.MouseLeave += (_, _) =>
+        {
+            if (!button.IsKeyboardFocused)
+            {
+                RestoreLogo();
+            }
+        };
         button.GotKeyboardFocus += (_, _) => HighlightLogo();
-        button.LostKeyboardFocus += (_, _) => RestoreLogo();
+        button.LostKeyboardFocus += (_, _) =>
+        {
+            if (!button.IsMouseOver)
+            {
+                RestoreLogo();
+            }
+        };
         return button;
     }
 
@@ -377,28 +406,100 @@ public sealed class StatisticsWindow : Window
 
     private void CommitProviderSelection(ProviderId provider, bool animateDashboard)
     {
+        if (animateDashboard)
+        {
+            this.TransitionDashboard(
+                () => this.SetProviderSelection(provider),
+                () => this.providerTransitioning = false);
+            return;
+        }
+
+        this.SetProviderSelection(provider);
+        this.Refresh();
+        this.providerTransitioning = false;
+    }
+
+    private void SetProviderSelection(ProviderId provider)
+    {
         this.selectedProvider = provider;
         this.selectedSeriesId = null;
         this.selectedDate = null;
         this.selectedMonth = null;
         this.viewMode = ActivityViewMode.Overview;
-        if (animateDashboard)
+    }
+
+    private void TransitionDashboard(Action update, Action? completed = null)
+    {
+        update();
+        this.dashboardTransitionCompleted += completed;
+        if (this.dashboardTransitioning)
         {
-            this.dashboardHost.Opacity = 0.55;
+            this.dashboardInteractionPending = true;
+            return;
         }
 
-        this.Refresh();
-        if (animateDashboard)
+        if (!SystemParameters.ClientAreaAnimation)
         {
-            this.dashboardHost.BeginAnimation(
-                OpacityProperty,
-                new DoubleAnimation(0.55, 1, TimeSpan.FromMilliseconds(140))
+            this.Refresh();
+            var immediate = this.dashboardTransitionCompleted;
+            this.dashboardTransitionCompleted = null;
+            immediate?.Invoke();
+            return;
+        }
+
+        this.dashboardTransitioning = true;
+        var translate = (TranslateTransform)this.dashboardHost.RenderTransform;
+        var fadeOutDuration = TimeSpan.FromMilliseconds(85);
+        var fadeOut = new DoubleAnimation(this.dashboardHost.Opacity, 0, fadeOutDuration)
+        {
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn },
+        };
+        translate.BeginAnimation(
+            TranslateTransform.YProperty,
+            new DoubleAnimation(translate.Y, -3, fadeOutDuration)
+            {
+                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn },
+            });
+        fadeOut.Completed += (_, _) =>
+        {
+            this.dashboardHost.BeginAnimation(OpacityProperty, null);
+            translate.BeginAnimation(TranslateTransform.YProperty, null);
+            this.dashboardHost.Opacity = 0;
+            translate.Y = 5;
+            this.Refresh();
+            var fadeInDuration = TimeSpan.FromMilliseconds(165);
+            var fadeIn = new DoubleAnimation(0, 1, fadeInDuration)
+            {
+                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+            };
+            fadeIn.Completed += (_, _) =>
+            {
+                this.dashboardTransitioning = false;
+                if (this.dashboardInteractionPending)
+                {
+                    this.dashboardInteractionPending = false;
+                    this.TransitionDashboard(() => { });
+                    return;
+                }
+
+                var callbacks = this.dashboardTransitionCompleted;
+                this.dashboardTransitionCompleted = null;
+                callbacks?.Invoke();
+                if (this.statisticsRefreshPending)
+                {
+                    this.statisticsRefreshPending = false;
+                    _ = this.Dispatcher.BeginInvoke(this.Refresh);
+                }
+            };
+            this.dashboardHost.BeginAnimation(OpacityProperty, fadeIn);
+            translate.BeginAnimation(
+                TranslateTransform.YProperty,
+                new DoubleAnimation(5, 0, fadeInDuration)
                 {
                     EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
                 });
-        }
-
-        this.providerTransitioning = false;
+        };
+        this.dashboardHost.BeginAnimation(OpacityProperty, fadeOut);
     }
 
     private UIElement BuildDashboard(
@@ -470,11 +571,13 @@ public sealed class StatisticsWindow : Window
                 compact: true);
             button.Click += (_, _) =>
             {
-                this.selectedSeriesId = item.Id;
-                this.selectedDate = null;
-                this.selectedMonth = null;
-                this.viewMode = ActivityViewMode.Overview;
-                this.Refresh();
+                this.TransitionDashboard(() =>
+                {
+                    this.selectedSeriesId = item.Id;
+                    this.selectedDate = null;
+                    this.selectedMonth = null;
+                    this.viewMode = ActivityViewMode.Overview;
+                });
             };
             AutomationProperties.SetName(button, $"Show {item.Title} activity");
             tabs.Children.Add(button);
@@ -839,8 +942,10 @@ public sealed class StatisticsWindow : Window
                 compact: true);
             button.Click += (_, _) =>
             {
-                this.scaleMode = mode;
-                this.Refresh();
+                if (this.scaleMode != mode)
+                {
+                    this.TransitionDashboard(() => this.scaleMode = mode);
+                }
             };
             button.ToolTip = mode == ActivityScaleMode.Personal
                 ? "Levels follow your own active-day distribution. Best for seeing patterns."
@@ -914,29 +1019,60 @@ public sealed class StatisticsWindow : Window
 
     private Button CreateTabButton(object content, bool selected, bool compact)
     {
+        var restingColor = this.Brush(selected ? "StatisticsSelectedBackground" : "StatisticsTabBackground").Color;
+        var hoverColor = this.Brush("StatisticsHoverBackground").Color;
+        var background = new SolidColorBrush(restingColor);
         var button = new Button
         {
             Content = content,
             Padding = compact ? new Thickness(11, 6, 11, 6) : new Thickness(14, 8, 14, 8),
             MinHeight = compact ? 32 : 38,
             Margin = new Thickness(0, 0, 6, 0),
-            Background = selected ? this.Brush("StatisticsSelectedBackground") : this.Brush("StatisticsTabBackground"),
+            Background = background,
             BorderBrush = selected ? this.Brush("StatisticsSelectedBorder") : this.Brush("StatisticsCardBorder"),
             BorderThickness = new Thickness(1),
             Foreground = selected ? this.Brush("StatisticsForeground") : this.Brush("StatisticsMutedForeground"),
             Cursor = Cursors.Hand,
             Template = CreateTabTemplate(),
         };
+        void AnimateBackground(Color target)
+        {
+            if (!SystemParameters.ClientAreaAnimation)
+            {
+                background.Color = target;
+                return;
+            }
+
+            background.BeginAnimation(
+                SolidColorBrush.ColorProperty,
+                new ColorAnimation(background.Color, target, TimeSpan.FromMilliseconds(115))
+                {
+                    EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+                });
+        }
+
         button.MouseEnter += (_, _) =>
         {
             if (button.IsEnabled)
             {
-                button.Background = this.Brush("StatisticsHoverBackground");
+                AnimateBackground(hoverColor);
             }
         };
-        button.MouseLeave += (_, _) => button.Background = selected
-            ? this.Brush("StatisticsSelectedBackground")
-            : this.Brush("StatisticsTabBackground");
+        button.MouseLeave += (_, _) =>
+        {
+            if (!button.IsKeyboardFocused)
+            {
+                AnimateBackground(restingColor);
+            }
+        };
+        button.GotKeyboardFocus += (_, _) => AnimateBackground(hoverColor);
+        button.LostKeyboardFocus += (_, _) =>
+        {
+            if (!button.IsMouseOver)
+            {
+                AnimateBackground(restingColor);
+            }
+        };
         return button;
     }
 
@@ -952,11 +1088,7 @@ public sealed class StatisticsWindow : Window
         presenter.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
         presenter.SetBinding(ContentPresenter.MarginProperty, TemplateBinding("Padding"));
         border.AppendChild(presenter);
-        var template = new ControlTemplate(typeof(ButtonBase)) { VisualTree = border };
-        var focus = new Trigger { Property = UIElement.IsKeyboardFocusedProperty, Value = true };
-        focus.Setters.Add(new Setter(Border.BorderThicknessProperty, new Thickness(2), "border"));
-        template.Triggers.Add(focus);
-        return template;
+        return new ControlTemplate(typeof(ButtonBase)) { VisualTree = border };
     }
 
     private static ControlTemplate CreateProviderButtonTemplate()
@@ -1012,45 +1144,52 @@ public sealed class StatisticsWindow : Window
 
     private void SelectDate(DateOnly date)
     {
-        this.selectedDate = date;
-        this.viewMode = ActivityViewMode.Day;
-        this.Refresh();
+        this.TransitionDashboard(() =>
+        {
+            this.selectedDate = date;
+            this.viewMode = ActivityViewMode.Day;
+        });
     }
 
     private void SelectMonth(DateOnly date)
     {
-        this.selectedMonth = new DateOnly(date.Year, date.Month, 1);
-        this.selectedDate = date;
-        this.viewMode = ActivityViewMode.Month;
-        this.Refresh();
+        this.TransitionDashboard(() =>
+        {
+            this.selectedMonth = new DateOnly(date.Year, date.Month, 1);
+            this.selectedDate = date;
+            this.viewMode = ActivityViewMode.Month;
+        });
     }
 
     private void SelectWeek(DateOnly weekStart)
     {
-        var monthStart = this.selectedMonth!.Value;
-        this.selectedDate = weekStart < monthStart ? monthStart : weekStart;
-        this.viewMode = ActivityViewMode.Week;
-        this.Refresh();
+        this.TransitionDashboard(() =>
+        {
+            var monthStart = this.selectedMonth!.Value;
+            this.selectedDate = weekStart < monthStart ? monthStart : weekStart;
+            this.viewMode = ActivityViewMode.Week;
+        });
     }
 
     private void NavigateMonth(DateOnly month)
     {
-        this.selectedMonth = new DateOnly(month.Year, month.Month, 1);
-        this.selectedDate = this.selectedMonth;
-        this.viewMode = ActivityViewMode.Month;
-        this.Refresh();
+        this.TransitionDashboard(() =>
+        {
+            this.selectedMonth = new DateOnly(month.Year, month.Month, 1);
+            this.selectedDate = this.selectedMonth;
+            this.viewMode = ActivityViewMode.Month;
+        });
     }
 
     private void GoBack()
     {
-        this.viewMode = this.viewMode switch
+        this.TransitionDashboard(() => this.viewMode = this.viewMode switch
         {
             ActivityViewMode.Day => ActivityViewMode.Week,
             ActivityViewMode.Week => ActivityViewMode.Month,
             ActivityViewMode.Month => ActivityViewMode.Overview,
             _ => ActivityViewMode.Overview,
-        };
-        this.Refresh();
+        });
     }
 
     private string ParentViewName() => this.viewMode switch
@@ -1062,7 +1201,13 @@ public sealed class StatisticsWindow : Window
 
     private void OnStatisticsChanged()
     {
-        _ = this.Dispatcher.BeginInvoke(this.Refresh);
+        if (!this.dashboardTransitioning)
+        {
+            _ = this.Dispatcher.BeginInvoke(this.Refresh);
+            return;
+        }
+
+        this.statisticsRefreshPending = true;
     }
 
     private SolidColorBrush Brush(string key) => (SolidColorBrush)this.Resources[key];

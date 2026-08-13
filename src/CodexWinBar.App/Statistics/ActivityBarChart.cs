@@ -4,6 +4,8 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Shapes;
 
 namespace CodexWinBar.App.Statistics;
 
@@ -44,6 +46,10 @@ internal sealed class ActivityBarChart : Grid
         this.RowDefinitions.Add(new RowDefinition { Height = new GridLength(28) });
         this.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(60) });
         this.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var laneWidth = this.bars.Count > 12 ? 30d : 56d;
+        var plotWidth = Math.Max(laneWidth, this.bars.Count * laneWidth);
+        this.Width = 60 + plotWidth;
+        this.HorizontalAlignment = HorizontalAlignment.Left;
 
         var max = Math.Max(1, this.bars.Count == 0 ? 0 : this.bars.Max(bar => bar.Value));
         var labels = new Grid();
@@ -69,7 +75,7 @@ internal sealed class ActivityBarChart : Grid
             Background = new SolidColorBrush(this.isDark ? Color.FromRgb(35, 39, 47) : Colors.White),
             BorderBrush = new SolidColorBrush(this.accent),
             BorderThickness = new Thickness(1),
-            Visibility = Visibility.Collapsed,
+            Opacity = 0,
             IsHitTestVisible = false,
             Child = hoverValueText,
         };
@@ -78,7 +84,11 @@ internal sealed class ActivityBarChart : Grid
         labels.Children.Add(hoverValue);
         this.Children.Add(labels);
 
-        var plot = new Grid();
+        var plot = new Grid
+        {
+            Width = plotWidth,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
         for (var index = 0; index < this.bars.Count; index++)
         {
             plot.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -96,18 +106,24 @@ internal sealed class ActivityBarChart : Grid
             });
         }
 
-        var hoverGuide = new Border
+        var hoverGuide = new Line
         {
-            Height = 1.5,
+            X1 = 0,
+            Y1 = 0,
+            X2 = 1,
+            Y2 = 0,
+            Height = 1,
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Bottom,
-            Visibility = Visibility.Collapsed,
+            Opacity = 0,
             IsHitTestVisible = false,
-            Background = new LinearGradientBrush(
-                Color.FromArgb(95, this.accent.R, this.accent.G, this.accent.B),
-                Color.FromArgb(225, this.accent.R, this.accent.G, this.accent.B),
-                new Point(0, 0),
-                new Point(1, 0)),
+            Stretch = Stretch.Fill,
+            Stroke = new SolidColorBrush(this.isDark
+                ? Color.FromArgb(145, 183, 188, 198)
+                : Color.FromArgb(120, 88, 96, 108)),
+            StrokeThickness = 1,
+            StrokeDashArray = new DoubleCollection { 4, 3 },
+            StrokeDashCap = PenLineCap.Flat,
         };
         Panel.SetZIndex(hoverGuide, 1);
         plot.Children.Add(hoverGuide);
@@ -115,7 +131,17 @@ internal sealed class ActivityBarChart : Grid
         for (var index = 0; index < this.bars.Count; index++)
         {
             var bar = this.bars[index];
-            var slot = new Grid { Margin = new Thickness(3, 0, 3, 0) };
+            var slotBrush = new SolidColorBrush(Color.FromArgb(0, this.accent.R, this.accent.G, this.accent.B));
+            var slot = new Grid
+            {
+                Margin = new Thickness(3, 0, 3, 0),
+                Background = slotBrush,
+                Cursor = this.interactive && bar.IsEnabled ? Cursors.Hand : Cursors.Arrow,
+                ToolTip = bar.Description,
+            };
+            ToolTipService.SetInitialShowDelay(slot, 160);
+            ToolTipService.SetBetweenShowDelay(slot, 0);
+            var barBrush = new SolidColorBrush(Color.FromArgb(205, this.accent.R, this.accent.G, this.accent.B));
             var button = new Button
             {
                 Height = bar.Value <= 0 ? 3 : Math.Max(5, 154 * bar.Value / max),
@@ -123,40 +149,70 @@ internal sealed class ActivityBarChart : Grid
                 MaxWidth = 30,
                 VerticalAlignment = VerticalAlignment.Bottom,
                 HorizontalAlignment = HorizontalAlignment.Center,
-                Background = new SolidColorBrush(Color.FromArgb(205, this.accent.R, this.accent.G, this.accent.B)),
+                Background = barBrush,
                 BorderBrush = new SolidColorBrush(this.accent),
                 BorderThickness = new Thickness(1),
                 Cursor = this.interactive && bar.IsEnabled ? Cursors.Hand : Cursors.Arrow,
                 IsEnabled = !this.interactive || bar.IsEnabled,
-                ToolTip = bar.Description,
                 Tag = index,
             };
-            ToolTipService.SetInitialShowDelay(button, 160);
-            ToolTipService.SetBetweenShowDelay(button, 0);
-            ToolTipService.SetShowOnDisabled(button, true);
-            var idleBackground = button.Background;
             void ShowInspection()
             {
                 var barHeight = button.ActualHeight > 0 ? button.ActualHeight : button.Height;
-                var barCenter = button.TranslatePoint(new Point(button.ActualWidth / 2, 0), plot).X;
-                hoverGuide.Width = Math.Max(0, barCenter);
-                hoverGuide.Margin = new Thickness(0, 0, 0, barHeight);
-                hoverGuide.Visibility = Visibility.Visible;
+                var barEdge = button.TranslatePoint(new Point(0, 0), plot).X;
+                var duration = TimeSpan.FromMilliseconds(120);
+                var easing = new QuadraticEase { EasingMode = EasingMode.EaseOut };
+                var currentWidth = double.IsNaN(hoverGuide.Width) ? hoverGuide.ActualWidth : hoverGuide.Width;
+                hoverGuide.BeginAnimation(
+                    WidthProperty,
+                    new DoubleAnimation(currentWidth, Math.Max(0, barEdge), duration) { EasingFunction = easing });
+                hoverGuide.BeginAnimation(
+                    MarginProperty,
+                    new ThicknessAnimation(hoverGuide.Margin, new Thickness(0, 0, 0, barHeight), duration) { EasingFunction = easing });
+                hoverGuide.BeginAnimation(
+                    OpacityProperty,
+                    new DoubleAnimation(hoverGuide.Opacity, 1, duration) { EasingFunction = easing });
                 hoverValueText.Text = $"{bar.Value.ToString("0.#", UiCulture)} pts";
-                hoverValue.Margin = new Thickness(0, 0, 4, Math.Max(0, barHeight - 10));
-                hoverValue.Visibility = Visibility.Visible;
-                button.Background = new SolidColorBrush(Color.FromArgb(245, this.accent.R, this.accent.G, this.accent.B));
+                hoverValue.BeginAnimation(
+                    MarginProperty,
+                    new ThicknessAnimation(
+                        hoverValue.Margin,
+                        new Thickness(0, 0, 4, Math.Max(0, barHeight - 10)),
+                        duration)
+                    {
+                        EasingFunction = easing,
+                    });
+                hoverValue.BeginAnimation(
+                    OpacityProperty,
+                    new DoubleAnimation(hoverValue.Opacity, 1, duration) { EasingFunction = easing });
+                slotBrush.BeginAnimation(
+                    SolidColorBrush.ColorProperty,
+                    new ColorAnimation(Color.FromArgb(10, this.accent.R, this.accent.G, this.accent.B), duration));
+                barBrush.BeginAnimation(
+                    SolidColorBrush.ColorProperty,
+                    new ColorAnimation(Color.FromArgb(245, this.accent.R, this.accent.G, this.accent.B), duration));
             }
 
             void HideInspection()
             {
-                hoverGuide.Visibility = Visibility.Collapsed;
-                hoverValue.Visibility = Visibility.Collapsed;
-                button.Background = idleBackground;
+                var duration = TimeSpan.FromMilliseconds(100);
+                var easing = new QuadraticEase { EasingMode = EasingMode.EaseIn };
+                hoverGuide.BeginAnimation(
+                    OpacityProperty,
+                    new DoubleAnimation(hoverGuide.Opacity, 0, duration) { EasingFunction = easing });
+                hoverValue.BeginAnimation(
+                    OpacityProperty,
+                    new DoubleAnimation(hoverValue.Opacity, 0, duration) { EasingFunction = easing });
+                slotBrush.BeginAnimation(
+                    SolidColorBrush.ColorProperty,
+                    new ColorAnimation(Color.FromArgb(0, this.accent.R, this.accent.G, this.accent.B), duration));
+                barBrush.BeginAnimation(
+                    SolidColorBrush.ColorProperty,
+                    new ColorAnimation(Color.FromArgb(205, this.accent.R, this.accent.G, this.accent.B), duration));
             }
 
-            button.MouseEnter += (_, _) => ShowInspection();
-            button.MouseLeave += (_, _) =>
+            slot.MouseEnter += (_, _) => ShowInspection();
+            slot.MouseLeave += (_, _) =>
             {
                 if (!button.IsKeyboardFocused)
                 {
@@ -166,9 +222,17 @@ internal sealed class ActivityBarChart : Grid
             button.GotKeyboardFocus += (_, _) => ShowInspection();
             button.LostKeyboardFocus += (_, _) =>
             {
-                if (!button.IsMouseOver)
+                if (!slot.IsMouseOver)
                 {
                     HideInspection();
+                }
+            };
+            slot.MouseLeftButtonUp += (_, e) =>
+            {
+                if (this.interactive && bar.IsEnabled && !button.IsMouseOver)
+                {
+                    this.BarSelected?.Invoke((int)button.Tag);
+                    e.Handled = true;
                 }
             };
             button.Click += (_, _) =>
@@ -192,7 +256,11 @@ internal sealed class ActivityBarChart : Grid
         Grid.SetColumn(plot, 1);
         this.Children.Add(plot);
 
-        var barLabels = new Grid();
+        var barLabels = new Grid
+        {
+            Width = plotWidth,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
         for (var index = 0; index < this.bars.Count; index++)
         {
             barLabels.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });

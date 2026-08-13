@@ -5,11 +5,17 @@ using System.Windows.Automation.Peers;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 
 namespace CodexWinBar.App.Statistics;
 
 internal sealed class ActivityCalendarControl : FrameworkElement
 {
+    private static readonly DependencyProperty HoverOpacityProperty = DependencyProperty.Register(
+        nameof(HoverOpacity),
+        typeof(double),
+        typeof(ActivityCalendarControl),
+        new FrameworkPropertyMetadata(0d, FrameworkPropertyMetadataOptions.AffectsRender));
     private static readonly FontFamily CalendarFont = new("Segoe UI Variable Text, Segoe UI");
     private static readonly CultureInfo UiCulture = CultureInfo.GetCultureInfo("en-US");
     private readonly IReadOnlyList<ActivityDay> days;
@@ -20,6 +26,12 @@ internal sealed class ActivityCalendarControl : FrameworkElement
     private readonly DateOnly lastSelectableDate;
     private DateOnly selectedDate;
     private DateOnly? hoverDate;
+
+    private double HoverOpacity
+    {
+        get => (double)this.GetValue(HoverOpacityProperty);
+        set => this.SetValue(HoverOpacityProperty, value);
+    }
 
     internal ActivityCalendarControl(
         IReadOnlyList<ActivityDay> days,
@@ -109,9 +121,16 @@ internal sealed class ActivityCalendarControl : FrameworkElement
 
         if (this.hoverDate is { } hover && this.CellRect(hover, layout) is { } hoverRect)
         {
+            var hoverOpacity = Math.Clamp(this.HoverOpacity, 0, 1);
             drawingContext.DrawRoundedRectangle(
                 null,
-                new Pen(new SolidColorBrush(this.accent), 1.75),
+                new Pen(
+                    new SolidColorBrush(Color.FromArgb(
+                        (byte)Math.Round(230 * hoverOpacity),
+                        this.accent.R,
+                        this.accent.G,
+                        this.accent.B)),
+                    1 + (0.75 * hoverOpacity)),
                 new Rect(hoverRect.X - 1.5, hoverRect.Y - 1.5, hoverRect.Width + 3, hoverRect.Height + 3),
                 4,
                 4);
@@ -127,7 +146,15 @@ internal sealed class ActivityCalendarControl : FrameworkElement
             return;
         }
 
+        if (date is null)
+        {
+            this.ToolTip = null;
+            this.FadeHoverOut();
+            return;
+        }
+
         this.hoverDate = date;
+        this.AnimateHoverIn();
         this.ToolTip = date is { } value && this.daysByDate.TryGetValue(value, out var day)
             ? this.Tooltip(day)
             : null;
@@ -137,9 +164,8 @@ internal sealed class ActivityCalendarControl : FrameworkElement
     protected override void OnMouseLeave(MouseEventArgs e)
     {
         base.OnMouseLeave(e);
-        this.hoverDate = null;
         this.ToolTip = null;
-        this.InvalidateVisual();
+        this.FadeHoverOut();
     }
 
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
@@ -195,6 +221,54 @@ internal sealed class ActivityCalendarControl : FrameworkElement
         this.selectedDate = date;
         this.InvalidateVisual();
         this.DateSelected?.Invoke(date);
+    }
+
+    private void AnimateHoverIn()
+    {
+        if (!SystemParameters.ClientAreaAnimation)
+        {
+            this.HoverOpacity = 1;
+            return;
+        }
+
+        this.BeginAnimation(HoverOpacityProperty, null);
+        this.HoverOpacity = 0;
+        this.BeginAnimation(
+            HoverOpacityProperty,
+            new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(110))
+            {
+                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+            });
+    }
+
+    private void FadeHoverOut()
+    {
+        if (this.hoverDate is not { } fadingDate)
+        {
+            return;
+        }
+
+        if (!SystemParameters.ClientAreaAnimation)
+        {
+            this.hoverDate = null;
+            this.HoverOpacity = 0;
+            this.InvalidateVisual();
+            return;
+        }
+
+        var fade = new DoubleAnimation(this.HoverOpacity, 0, TimeSpan.FromMilliseconds(90))
+        {
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn },
+        };
+        fade.Completed += (_, _) =>
+        {
+            if (this.hoverDate == fadingDate && !this.IsMouseOver)
+            {
+                this.hoverDate = null;
+                this.InvalidateVisual();
+            }
+        };
+        this.BeginAnimation(HoverOpacityProperty, fade);
     }
 
     private DateOnly? DateAt(Point point)

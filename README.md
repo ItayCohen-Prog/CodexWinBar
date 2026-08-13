@@ -1,6 +1,8 @@
 # CodexWinBar 🎚️ — May your tokens never run out. Now on Windows.
 
-> Every AI coding limit, on your Windows 11 taskbar.
+> Supported AI coding limits, on your Windows 11 taskbar.
+
+**Website:** [codexwinbar.webivize.com](https://codexwinbar.webivize.com/)
 
 **CodexWinBar** is a native Windows 11 rebuild of [steipete/CodexBar](https://github.com/steipete/CodexBar)
 (the macOS menu-bar app, MIT). It puts your AI coding-provider usage limits **directly on the taskbar** —
@@ -56,16 +58,28 @@ browser-cookie and WebView2 seams (Windsurf, Ollama quota, …) are deferred to 
 
 ## Install
 
-Fastest — one line of PowerShell, no admin, no SmartScreen prompt:
+### Winget (recommended)
+
+Paste this into PowerShell or Windows Terminal:
+
+```powershell
+winget install CodexWinBar --interactive
+```
+
+Winget downloads and verifies the published package, installs it per-user without administrator access,
+and `--interactive` lets the one-click installer launch CodexWinBar when installation finishes.
+
+### Direct PowerShell installer
+
+If you cannot use Winget, paste this alternative into PowerShell:
 
 ```powershell
 irm https://codexwinbar.webivize.com | iex
 ```
 
-This grabs the latest release, **verifies its SHA-256 against the checksum GitHub publishes for the
-asset**, and installs it per-user. Because the download runs through PowerShell (not a browser) it never
-picks up the Mark of the Web, so there's no "Unknown publisher" prompt. The script is short and
-[readable](install.ps1) — it only ever downloads from this repo's own GitHub releases.
+This downloads the latest release, **verifies its SHA-256 against the checksum GitHub publishes for the
+asset**, installs it per-user, and launches CodexWinBar. The script is [readable](install.ps1) and only
+downloads from this repository's own GitHub releases.
 
 ### Updating
 
@@ -76,19 +90,11 @@ the latest release. If the taskbar widget is inaccessible, Settings can also be 
 & "$env:LOCALAPPDATA\CodexWinBar\current\CodexWinBar.exe" --settings
 ```
 
-Older installs can update in place by running the one-line installer again. There is no need to uninstall
-or delete anything: it detects a missing, outdated, or current installation and performs an install,
-update, or repair as appropriate while preserving provider sign-ins and settings.
+Older installs can update in place through the app or by running either installation command again. There
+is no need to uninstall or delete anything; provider sign-ins and settings are preserved.
 
-Or with [winget](https://learn.microsoft.com/windows/package-manager/):
-
-```powershell
-winget install ItayCohen.CodexWinBar
-```
-
-
-Either way it installs per-user (no admin), adds Start-Menu and desktop shortcuts, launches automatically,
-and self-updates. After installing, connect the providers you use in **Settings → Providers** — Codex,
+Both installation methods add Start Menu and desktop shortcuts and launch CodexWinBar after installation.
+After installing, connect the providers you use in **Settings → Providers** — Codex,
 Claude and Gemini sign in through your browser, Copilot uses GitHub's device flow, and OpenRouter, OpenAI
 Admin, z.ai and Cursor take an API key or cookie. Nothing is connected until you sign in.
 
@@ -98,7 +104,7 @@ Admin, z.ai and Cursor take an API key or cookie. Nothing is connected until you
 **Direct download:** grab `CodexWinBar-win-Setup.exe` from the
 [Releases page](https://github.com/ItayCohen-Prog/CodexWinBar/releases) and run it. Because it isn't
 code-signed yet, Windows SmartScreen shows an "Unknown publisher" prompt — click **More info → Run anyway**
-(one-time). The PowerShell command and winget both avoid this.
+(one-time). The Winget and PowerShell options above are recommended for the simplest installation.
 
 **Build from source:** requires Windows 11 and the [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0).
 

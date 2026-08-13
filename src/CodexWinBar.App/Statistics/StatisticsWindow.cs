@@ -67,6 +67,15 @@ public sealed class StatisticsWindow : Window
 
         this.SourceInitialized += (_, _) => WpfDwm.ApplyStandardWindowChrome(this, this.isDark);
         this.ContentRendered += (_, _) => WpfDwm.EnsureTitleBarVisible(this);
+        this.PreviewKeyDown += (_, e) =>
+        {
+            if (this.viewMode != ActivityViewMode.Overview &&
+                e.Key == Key.Left && Keyboard.Modifiers == ModifierKeys.Alt)
+            {
+                this.GoBack();
+                e.Handled = true;
+            }
+        };
         this.store.StateChanged += this.OnStatisticsChanged;
         this.Closed += (_, _) =>
         {
@@ -128,6 +137,7 @@ public sealed class StatisticsWindow : Window
         });
         header.Children.Add(heading);
         var localBadge = this.Badge("LOCAL HISTORY");
+        localBadge.ToolTip = "Built from successful local provider refreshes. Quota activity is observed locally and never estimated from token counts.";
         Grid.SetColumn(localBadge, 1);
         header.Children.Add(localBadge);
         root.Children.Add(header);
@@ -271,14 +281,6 @@ public sealed class StatisticsWindow : Window
                 break;
         }
 
-        root.Children.Add(new TextBlock
-        {
-            Text = "Activity is derived from successful local refreshes. Quota points are new observed highs in the selected limit, not token counts. The first reading in each quota cycle is a baseline, so earlier usage is not assigned to an hour. Missing observations remain unfilled.",
-            Margin = new Thickness(2, 12, 2, 4),
-            TextWrapping = TextWrapping.Wrap,
-            FontSize = 11.5,
-            Foreground = this.Brush("StatisticsMutedForeground"),
-        });
         return root;
     }
 
@@ -307,7 +309,7 @@ public sealed class StatisticsWindow : Window
             var button = this.CreateTabButton(
                 new TextBlock
                 {
-                    Text = mode == ActivityScaleMode.Personal ? "Personal scale" : "Fixed scale",
+                    Text = mode == ActivityScaleMode.Personal ? "Personal" : "Fixed",
                     FontWeight = mode == this.scaleMode ? FontWeights.SemiBold : FontWeights.Normal,
                 },
                 mode == this.scaleMode,
@@ -360,11 +362,26 @@ public sealed class StatisticsWindow : Window
         ActivityWeek week,
         ActivityMonth month)
     {
-        var header = new Grid { Margin = new Thickness(0, 0, 0, 14) };
+        var header = new Grid { Margin = new Thickness(0, 0, 0, 12) };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        if (this.viewMode != ActivityViewMode.Overview)
+        {
+            var back = this.CreateTabButton(
+                new TextBlock { Text = "←  Back", FontWeight = FontWeights.SemiBold },
+                selected: false,
+                compact: true);
+            back.Margin = new Thickness(0, 0, 14, 0);
+            back.VerticalAlignment = VerticalAlignment.Center;
+            back.Click += (_, _) => this.GoBack();
+            back.ToolTip = $"Back to {this.ParentViewName()}";
+            AutomationProperties.SetName(back, $"Back to {this.ParentViewName()}");
+            header.Children.Add(back);
+        }
+
         var copy = new StackPanel();
-        copy.Children.Add(this.BuildBreadcrumb(month, week));
+        copy.Children.Add(this.TimeframeLabel(this.viewMode.ToString().ToUpperInvariant()));
         var title = this.viewMode switch
         {
             ActivityViewMode.Overview => null,
@@ -395,10 +412,11 @@ public sealed class StatisticsWindow : Window
         copy.Children.Add(new TextBlock
         {
             Text = guidance,
-            Margin = this.viewMode == ActivityViewMode.Overview ? new Thickness(0, 5, 0, 0) : new Thickness(0),
+            Margin = this.viewMode == ActivityViewMode.Overview ? new Thickness(0, 4, 0, 0) : new Thickness(0),
             FontSize = 12,
             Foreground = this.Brush("StatisticsMutedForeground"),
         });
+        Grid.SetColumn(copy, 1);
         header.Children.Add(copy);
 
         if (this.viewMode == ActivityViewMode.Month)
@@ -418,60 +436,11 @@ public sealed class StatisticsWindow : Window
             next.IsEnabled = month.StartsOn < maximumMonth;
             next.Click += (_, _) => this.NavigateMonth(month.StartsOn.AddMonths(1));
             navigation.Children.Add(next);
-            Grid.SetColumn(navigation, 1);
+            Grid.SetColumn(navigation, 2);
             header.Children.Add(navigation);
         }
 
         return header;
-    }
-
-    private StackPanel BuildBreadcrumb(ActivityMonth month, ActivityWeek week)
-    {
-        var breadcrumb = new StackPanel { Orientation = Orientation.Horizontal };
-        if (this.viewMode == ActivityViewMode.Overview)
-        {
-            breadcrumb.Children.Add(this.BreadcrumbLabel("OVERVIEW"));
-            return breadcrumb;
-        }
-
-        var overviewButton = this.BreadcrumbButton("Overview");
-        overviewButton.Click += (_, _) =>
-        {
-            this.viewMode = ActivityViewMode.Overview;
-            this.Refresh();
-        };
-        breadcrumb.Children.Add(overviewButton);
-        breadcrumb.Children.Add(this.BreadcrumbLabel("  ›  "));
-        if (this.viewMode == ActivityViewMode.Month)
-        {
-            breadcrumb.Children.Add(this.BreadcrumbLabel("MONTH"));
-            return breadcrumb;
-        }
-
-        var monthButton = this.BreadcrumbButton(month.StartsOn.ToString("MMMM yyyy", UiCulture));
-        monthButton.Click += (_, _) =>
-        {
-            this.viewMode = ActivityViewMode.Month;
-            this.Refresh();
-        };
-        breadcrumb.Children.Add(monthButton);
-        breadcrumb.Children.Add(this.BreadcrumbLabel("  ›  "));
-        if (this.viewMode == ActivityViewMode.Week)
-        {
-            breadcrumb.Children.Add(this.BreadcrumbLabel("WEEK"));
-            return breadcrumb;
-        }
-
-        var weekButton = this.BreadcrumbButton(
-            $"{week.StartsOn.ToString("MMM d", UiCulture)}–{week.StartsOn.AddDays(6).ToString("MMM d", UiCulture)}");
-        weekButton.Click += (_, _) =>
-        {
-            this.viewMode = ActivityViewMode.Week;
-            this.Refresh();
-        };
-        breadcrumb.Children.Add(weekButton);
-        breadcrumb.Children.Add(this.BreadcrumbLabel("  ›  DAY"));
-        return breadcrumb;
     }
 
     private UIElement BuildGeneralMetrics(ActivityOverview activity, Color accent) => this.BuildOverviewMetrics(
@@ -514,7 +483,7 @@ public sealed class StatisticsWindow : Window
         Color accent,
         params (string Label, string Value, string Detail)[] values)
     {
-        var grid = new Grid { Margin = new Thickness(0, 0, 0, 14) };
+        var grid = new Grid { Margin = new Thickness(4, 0, 4, 14) };
         for (var index = 0; index < 4; index++)
         {
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -522,10 +491,14 @@ public sealed class StatisticsWindow : Window
 
         for (var index = 0; index < values.Length; index++)
         {
-            var card = this.BuildMetricCard(values[index].Item1, values[index].Item2, values[index].Item3, accent);
-            card.Margin = new Thickness(index == 0 ? 0 : 5, 0, index == values.Length - 1 ? 0 : 5, 0);
-            Grid.SetColumn(card, index);
-            grid.Children.Add(card);
+            var metric = this.BuildMetricColumn(
+                values[index].Item1,
+                values[index].Item2,
+                values[index].Item3,
+                accent,
+                hasDivider: index > 0);
+            Grid.SetColumn(metric, index);
+            grid.Children.Add(metric);
         }
 
         return grid;
@@ -588,7 +561,7 @@ public sealed class StatisticsWindow : Window
             week.StartsOn.ToString("MMM d", UiCulture),
             week.Total,
             $"Week of {week.StartsOn.ToString("MMMM d", UiCulture)}: {Quota(week.Total)} · {week.ActiveDays} active days")).ToArray();
-        var chart = new ActivityBarChart(bars, accent, this.isDark, interactive: true)
+        var chart = new ActivityBarChart(bars, accent, this.isDark, interactive: true, actionLabel: "Open week")
         {
             Margin = new Thickness(18, 4, 18, 16),
         };
@@ -606,7 +579,7 @@ public sealed class StatisticsWindow : Window
             day.Value,
             $"{day.Date.ToString("dddd, MMM d", UiCulture)}: {Quota(day.Value)} · {day.ActiveHours} active hours",
             day.Date <= activity.EndsOn)).ToArray();
-        var chart = new ActivityBarChart(bars, accent, this.isDark, interactive: true)
+        var chart = new ActivityBarChart(bars, accent, this.isDark, interactive: true, actionLabel: "Open day")
         {
             Margin = new Thickness(18, 4, 18, 16),
         };
@@ -630,22 +603,27 @@ public sealed class StatisticsWindow : Window
         return this.Card(stack, new Thickness(0));
     }
 
-    private Border BuildMetricCard(string label, string value, string detail, Color accent)
+    private Border BuildMetricColumn(
+        string label,
+        string value,
+        string detail,
+        Color accent,
+        bool hasDivider)
     {
-        var stack = new StackPanel { Margin = new Thickness(14, 12, 14, 12) };
+        var stack = new StackPanel();
         stack.Children.Add(new TextBlock
         {
             Text = label,
-            FontSize = 11,
+            FontSize = 10.5,
             FontWeight = FontWeights.SemiBold,
             Foreground = this.Brush("StatisticsMutedForeground"),
         });
         var valueText = new TextBlock
         {
             Text = value,
-            Margin = new Thickness(0, 4, 0, 1),
+            Margin = new Thickness(0, 3, 0, 0),
             FontFamily = DisplayFont,
-            FontSize = 23,
+            FontSize = 20,
             FontWeight = FontWeights.SemiBold,
             Foreground = new SolidColorBrush(this.isDark ? Blend(accent, Colors.White, 0.18) : accent),
         };
@@ -654,10 +632,16 @@ public sealed class StatisticsWindow : Window
         stack.Children.Add(new TextBlock
         {
             Text = detail,
-            FontSize = 11.5,
+            FontSize = 10.5,
             Foreground = this.Brush("StatisticsMutedForeground"),
         });
-        return this.Card(stack, new Thickness(0));
+        return new Border
+        {
+            Padding = new Thickness(hasDivider ? 18 : 4, 4, 12, 4),
+            BorderBrush = this.Brush("StatisticsCardBorder"),
+            BorderThickness = new Thickness(hasDivider ? 1 : 0, 0, 0, 0),
+            Child = stack,
+        };
     }
 
     private Grid CardHeader(string title, string detail)
@@ -796,7 +780,7 @@ public sealed class StatisticsWindow : Window
         Foreground = this.Brush("StatisticsMutedForeground"),
     };
 
-    private TextBlock BreadcrumbLabel(string text) => new()
+    private TextBlock TimeframeLabel(string text) => new()
     {
         Text = text,
         FontSize = 10.5,
@@ -804,23 +788,6 @@ public sealed class StatisticsWindow : Window
         Foreground = this.Brush("StatisticsMutedForeground"),
         VerticalAlignment = VerticalAlignment.Center,
     };
-
-    private Button BreadcrumbButton(string text)
-    {
-        var button = new Button
-        {
-            Content = text,
-            Padding = new Thickness(0),
-            Background = Brushes.Transparent,
-            BorderThickness = new Thickness(0),
-            Foreground = this.Brush("StatisticsMutedForeground"),
-            FontSize = 10.5,
-            FontWeight = FontWeights.SemiBold,
-            Cursor = Cursors.Hand,
-        };
-        AutomationProperties.SetName(button, $"Back to {text}");
-        return button;
-    }
 
     private static System.Windows.Data.Binding TemplateBinding(string path) => new(path)
     {
@@ -857,6 +824,25 @@ public sealed class StatisticsWindow : Window
         this.viewMode = ActivityViewMode.Month;
         this.Refresh();
     }
+
+    private void GoBack()
+    {
+        this.viewMode = this.viewMode switch
+        {
+            ActivityViewMode.Day => ActivityViewMode.Week,
+            ActivityViewMode.Week => ActivityViewMode.Month,
+            ActivityViewMode.Month => ActivityViewMode.Overview,
+            _ => ActivityViewMode.Overview,
+        };
+        this.Refresh();
+    }
+
+    private string ParentViewName() => this.viewMode switch
+    {
+        ActivityViewMode.Day => "week",
+        ActivityViewMode.Week => "month",
+        _ => "overview",
+    };
 
     private void OnStatisticsChanged()
     {

@@ -15,17 +15,20 @@ internal sealed class ActivityBarChart : Grid
     private readonly Color accent;
     private readonly bool isDark;
     private readonly bool interactive;
+    private readonly string? actionLabel;
 
     internal ActivityBarChart(
         IReadOnlyList<ActivityBar> bars,
         Color accent,
         bool isDark,
-        bool interactive)
+        bool interactive,
+        string? actionLabel = null)
     {
         this.bars = bars;
         this.accent = accent;
         this.isDark = isDark;
         this.interactive = interactive;
+        this.actionLabel = actionLabel;
         this.MinHeight = 200;
         AutomationProperties.SetName(this, "Activity bar chart");
         this.Build();
@@ -96,7 +99,9 @@ internal sealed class ActivityBarChart : Grid
             };
             AutomationProperties.SetName(
                 button,
-                this.interactive ? $"{bar.Description}. Open day." : bar.Description);
+                this.interactive && this.actionLabel is not null
+                    ? $"{bar.Description}. {this.actionLabel}."
+                    : bar.Description);
             slot.Children.Add(button);
             Grid.SetColumn(slot, index);
             plot.Children.Add(slot);

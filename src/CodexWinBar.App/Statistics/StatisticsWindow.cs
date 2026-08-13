@@ -6,6 +6,8 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
 using CodexWinBar.App.Assets;
 using CodexWinBar.App.Interop;
 using CodexWinBar.Core.Providers;
@@ -45,6 +47,7 @@ public sealed class StatisticsWindow : Window
     private DateOnly? selectedMonth;
     private ActivityScaleMode scaleMode = ActivityScaleMode.Personal;
     private ActivityViewMode viewMode = ActivityViewMode.Overview;
+    private bool providerTransitioning;
 
     private StatisticsWindow(
         IPlanStatisticsStore store,
@@ -159,7 +162,9 @@ public sealed class StatisticsWindow : Window
         {
             HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden,
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalContentAlignment = VerticalAlignment.Center,
             Content = this.providerTabs,
+            Height = 48,
             Margin = new Thickness(0, 0, 0, 18),
         };
         Grid.SetRow(providers, 1);
@@ -225,39 +230,172 @@ public sealed class StatisticsWindow : Window
         {
             var descriptor = this.descriptors[provider];
             var selected = provider == this.selectedProvider;
-            var content = new StackPanel { Orientation = Orientation.Horizontal };
-            if (LogoImages.Get(descriptor.Branding.GlyphKey, this.isDark) is { } source)
-            {
-                content.Children.Add(new Image
-                {
-                    Source = source,
-                    Width = 18,
-                    Height = 18,
-                    Margin = new Thickness(0, 0, 8, 0),
-                });
-            }
-
-            content.Children.Add(new TextBlock
-            {
-                Text = descriptor.Metadata.DisplayName,
-                FontWeight = selected ? FontWeights.SemiBold : FontWeights.Normal,
-                Foreground = selected ? this.Brush("StatisticsForeground") : this.Brush("StatisticsMutedForeground"),
-                VerticalAlignment = VerticalAlignment.Center,
-            });
-            var button = this.CreateTabButton(content, selected, compact: false);
-            button.Margin = new Thickness(0, 0, 8, 0);
-            button.Click += (_, _) =>
-            {
-                this.selectedProvider = provider;
-                this.selectedSeriesId = null;
-                this.selectedDate = null;
-                this.selectedMonth = null;
-                this.viewMode = ActivityViewMode.Overview;
-                this.Refresh();
-            };
+            var button = this.CreateProviderButton(descriptor, selected);
+            button.Click += (_, _) => this.SelectProvider(provider, button);
             AutomationProperties.SetName(button, $"{descriptor.Metadata.DisplayName} activity");
             this.providerTabs.Children.Add(button);
         }
+    }
+
+    private Button CreateProviderButton(ProviderDescriptor descriptor, bool selected)
+    {
+        var accent = Color.FromRgb(descriptor.Branding.R, descriptor.Branding.G, descriptor.Branding.B);
+        var content = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        FrameworkElement logo = LogoImages.Get(descriptor.Branding.GlyphKey, this.isDark) is { } source
+            ? new Image { Source = source, Width = 27, Height = 27 }
+            : LogoImages.IconGlyph(LogoImages.StatisticsGlyph, 24);
+        var shadow = new DropShadowEffect
+        {
+            BlurRadius = selected ? 12 : 9,
+            Direction = 270,
+            ShadowDepth = selected ? 3 : 2,
+            Opacity = selected ? 0.38 : 0.24,
+            Color = this.isDark ? Colors.Black : Color.FromRgb(50, 55, 66),
+        };
+        logo.Effect = shadow;
+        logo.Opacity = selected ? 1 : 0.38;
+        logo.RenderTransformOrigin = new Point(0.5, 0.5);
+        var scale = new ScaleTransform(1, 1);
+        logo.RenderTransform = scale;
+        content.Children.Add(logo);
+
+        var name = new TextBlock
+        {
+            Text = descriptor.Metadata.DisplayName,
+            Margin = new Thickness(10, 0, 1, 0),
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = this.Brush("StatisticsForeground"),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        name.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var nameWidth = name.DesiredSize.Width;
+        var nameHost = new Border
+        {
+            Width = selected ? double.NaN : 0,
+            Opacity = selected ? 1 : 0,
+            ClipToBounds = true,
+            Child = name,
+        };
+        content.Children.Add(nameHost);
+
+        var button = new Button
+        {
+            Content = content,
+            Padding = new Thickness(5, 5, selected ? 7 : 5, 7),
+            Margin = new Thickness(0, 0, 14, 0),
+            MinWidth = 37,
+            MinHeight = 39,
+            Background = Brushes.Transparent,
+            BorderBrush = new SolidColorBrush(this.isDark ? Blend(accent, Colors.White, 0.28) : accent),
+            BorderThickness = new Thickness(0),
+            Cursor = Cursors.Hand,
+            ToolTip = descriptor.Metadata.DisplayName,
+            Template = CreateProviderButtonTemplate(),
+        };
+        button.Tag = new ProviderButtonVisual(descriptor.Id, logo, nameHost, nameWidth, shadow);
+        ToolTipService.SetInitialShowDelay(button, 250);
+        ToolTipService.SetBetweenShowDelay(button, 80);
+        button.MouseEnter += (_, _) =>
+        {
+            logo.Opacity = 1;
+            scale.ScaleX = 1.08;
+            scale.ScaleY = 1.08;
+            shadow.BlurRadius = 13;
+            shadow.Opacity = 0.42;
+            shadow.ShadowDepth = 3;
+        };
+        button.MouseLeave += (_, _) =>
+        {
+            logo.Opacity = selected ? 1 : 0.38;
+            scale.ScaleX = 1;
+            scale.ScaleY = 1;
+            shadow.BlurRadius = selected ? 12 : 9;
+            shadow.Opacity = selected ? 0.38 : 0.24;
+            shadow.ShadowDepth = selected ? 3 : 2;
+        };
+        return button;
+    }
+
+    private void SelectProvider(ProviderId provider, Button targetButton)
+    {
+        if (provider == this.selectedProvider || this.providerTransitioning)
+        {
+            return;
+        }
+
+        if (!SystemParameters.ClientAreaAnimation ||
+            targetButton.Tag is not ProviderButtonVisual target ||
+            this.providerTabs.Children.OfType<Button>()
+                .Select(button => button.Tag)
+                .OfType<ProviderButtonVisual>()
+                .FirstOrDefault(item => item.Provider == this.selectedProvider) is not { } current)
+        {
+            this.CommitProviderSelection(provider, animateDashboard: false);
+            return;
+        }
+
+        this.providerTransitioning = true;
+        var duration = new Duration(TimeSpan.FromMilliseconds(180));
+        var easing = new QuadraticEase { EasingMode = EasingMode.EaseInOut };
+        current.NameHost.Width = current.NameHost.ActualWidth;
+        current.NameHost.BeginAnimation(
+            WidthProperty,
+            new DoubleAnimation(current.NameHost.ActualWidth, 0, duration) { EasingFunction = easing });
+        current.NameHost.BeginAnimation(
+            OpacityProperty,
+            new DoubleAnimation(1, 0, duration) { EasingFunction = easing });
+        current.Logo.BeginAnimation(
+            OpacityProperty,
+            new DoubleAnimation(1, 0.38, duration) { EasingFunction = easing });
+        current.Shadow.BeginAnimation(
+            DropShadowEffect.OpacityProperty,
+            new DoubleAnimation(0.38, 0.24, duration) { EasingFunction = easing });
+
+        target.NameHost.Width = 0;
+        target.NameHost.Opacity = 0;
+        target.NameHost.BeginAnimation(
+            OpacityProperty,
+            new DoubleAnimation(0, 1, duration) { EasingFunction = easing });
+        target.Logo.BeginAnimation(
+            OpacityProperty,
+            new DoubleAnimation(target.Logo.Opacity, 1, duration) { EasingFunction = easing });
+        target.Shadow.BeginAnimation(
+            DropShadowEffect.OpacityProperty,
+            new DoubleAnimation(target.Shadow.Opacity, 0.38, duration) { EasingFunction = easing });
+        var expand = new DoubleAnimation(0, target.NameWidth, duration) { EasingFunction = easing };
+        expand.Completed += (_, _) => this.CommitProviderSelection(provider, animateDashboard: true);
+        target.NameHost.BeginAnimation(WidthProperty, expand);
+    }
+
+    private void CommitProviderSelection(ProviderId provider, bool animateDashboard)
+    {
+        this.selectedProvider = provider;
+        this.selectedSeriesId = null;
+        this.selectedDate = null;
+        this.selectedMonth = null;
+        this.viewMode = ActivityViewMode.Overview;
+        if (animateDashboard)
+        {
+            this.dashboardHost.Opacity = 0.55;
+        }
+
+        this.Refresh();
+        if (animateDashboard)
+        {
+            this.dashboardHost.BeginAnimation(
+                OpacityProperty,
+                new DoubleAnimation(0.55, 1, TimeSpan.FromMilliseconds(140))
+                {
+                    EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+                });
+        }
+
+        this.providerTransitioning = false;
     }
 
     private UIElement BuildDashboard(
@@ -829,6 +967,23 @@ public sealed class StatisticsWindow : Window
         return template;
     }
 
+    private static ControlTemplate CreateProviderButtonTemplate()
+    {
+        var focusLine = new FrameworkElementFactory(typeof(Border), "focusLine");
+        focusLine.SetBinding(Border.BorderBrushProperty, TemplateBinding("BorderBrush"));
+        focusLine.SetValue(Border.BorderThicknessProperty, new Thickness(0));
+        var presenter = new FrameworkElementFactory(typeof(ContentPresenter));
+        presenter.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+        presenter.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+        presenter.SetBinding(ContentPresenter.MarginProperty, TemplateBinding("Padding"));
+        focusLine.AppendChild(presenter);
+        var template = new ControlTemplate(typeof(ButtonBase)) { VisualTree = focusLine };
+        var focus = new Trigger { Property = UIElement.IsKeyboardFocusedProperty, Value = true };
+        focus.Setters.Add(new Setter(Border.BorderThicknessProperty, new Thickness(0, 0, 0, 2), "focusLine"));
+        template.Triggers.Add(focus);
+        return template;
+    }
+
     private TextBlock LegendText(string text, Thickness? margin = null) => new()
     {
         Text = text,
@@ -970,6 +1125,13 @@ public sealed class StatisticsWindow : Window
         (byte)Math.Round(left.R + ((right.R - left.R) * amount)),
         (byte)Math.Round(left.G + ((right.G - left.G) * amount)),
         (byte)Math.Round(left.B + ((right.B - left.B) * amount)));
+
+    private sealed record ProviderButtonVisual(
+        ProviderId Provider,
+        FrameworkElement Logo,
+        Border NameHost,
+        double NameWidth,
+        DropShadowEffect Shadow);
 
     private static int ProviderOrder(ProviderId provider) => provider switch
     {

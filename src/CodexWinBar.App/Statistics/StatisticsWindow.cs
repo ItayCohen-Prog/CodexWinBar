@@ -25,6 +25,11 @@ internal enum ActivityViewMode
 /// <summary>Locally observed provider activity with calendar, weekly, and hourly drill-downs.</summary>
 public sealed class StatisticsWindow : Window
 {
+    private const string BackGlyph = "\uE72B";
+    private const string CalendarGlyph = "\uE787";
+    private const string ClockGlyph = "\uE823";
+    private const string HistoryGlyph = "\uE81C";
+    private const string ScaleGlyph = "\uE8AB";
     private static readonly FontFamily DisplayFont = new("Segoe UI Variable Display, Segoe UI");
     private static readonly FontFamily TextFont = new("Segoe UI Variable Text, Segoe UI");
     private static readonly CultureInfo UiCulture = CultureInfo.GetCultureInfo("en-US");
@@ -119,8 +124,12 @@ public sealed class StatisticsWindow : Window
         var header = new Grid { Margin = new Thickness(0, 0, 0, 20) };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var heading = new StackPanel();
-        heading.Children.Add(new TextBlock
+        var titleRow = new StackPanel { Orientation = Orientation.Horizontal };
+        var titleIcon = LogoImages.IconGlyph(LogoImages.StatisticsGlyph, 22);
+        titleIcon.Margin = new Thickness(0, 2, 10, 0);
+        titleIcon.Foreground = this.Brush("StatisticsForeground");
+        titleRow.Children.Add(titleIcon);
+        titleRow.Children.Add(new TextBlock
         {
             Text = "Activity",
             FontFamily = DisplayFont,
@@ -128,6 +137,8 @@ public sealed class StatisticsWindow : Window
             FontWeight = FontWeights.SemiBold,
             Foreground = this.Brush("StatisticsForeground"),
         });
+        var heading = new StackPanel();
+        heading.Children.Add(titleRow);
         heading.Children.Add(new TextBlock
         {
             Text = "Your observed AI usage, from the month down to the hour",
@@ -136,10 +147,12 @@ public sealed class StatisticsWindow : Window
             Foreground = this.Brush("StatisticsMutedForeground"),
         });
         header.Children.Add(heading);
-        var localBadge = this.Badge("LOCAL HISTORY");
-        localBadge.ToolTip = "Built from successful local provider refreshes. Quota activity is observed locally and never estimated from token counts.";
-        Grid.SetColumn(localBadge, 1);
-        header.Children.Add(localBadge);
+        var localHistory = this.IconLabel(HistoryGlyph, "Local history", iconSize: 13);
+        localHistory.VerticalAlignment = VerticalAlignment.Top;
+        localHistory.Margin = new Thickness(0, 8, 0, 0);
+        localHistory.ToolTip = "Built from successful local provider refreshes. Quota activity is observed locally and never estimated from token counts.";
+        Grid.SetColumn(localHistory, 1);
+        header.Children.Add(localHistory);
         root.Children.Add(header);
 
         var providers = new ScrollViewer
@@ -264,20 +277,20 @@ public sealed class StatisticsWindow : Window
         switch (this.viewMode)
         {
             case ActivityViewMode.Overview:
-                root.Children.Add(this.BuildGeneralMetrics(activity, accent));
-                root.Children.Add(this.BuildOverviewCard(activity, selected, accent));
+                root.Children.Add(this.BuildGeneralSummary(descriptor, activity, accent));
+                root.Children.Add(this.BuildOverviewSection(activity, selected, accent));
                 break;
             case ActivityViewMode.Month:
-                root.Children.Add(this.BuildMonthMetrics(month, accent));
-                root.Children.Add(this.BuildMonthCard(month, accent));
+                root.Children.Add(this.BuildMonthSummary(descriptor, month, accent));
+                root.Children.Add(this.BuildMonthSection(month, accent));
                 break;
             case ActivityViewMode.Week:
-                root.Children.Add(this.BuildWeekMetrics(activity, week, accent));
-                root.Children.Add(this.BuildWeekCard(activity, week, accent));
+                root.Children.Add(this.BuildWeekSummary(descriptor, activity, week, accent));
+                root.Children.Add(this.BuildWeekSection(activity, week, accent));
                 break;
             case ActivityViewMode.Day:
-                root.Children.Add(this.BuildDayMetrics(activity, selected, accent));
-                root.Children.Add(this.BuildDayCard(selected, accent));
+                root.Children.Add(this.BuildDaySummary(descriptor, activity, selected, accent));
+                root.Children.Add(this.BuildDaySection(selected, accent));
                 break;
         }
 
@@ -289,12 +302,11 @@ public sealed class StatisticsWindow : Window
         var row = new Grid { Margin = new Thickness(0, 0, 0, 16), MinHeight = 34 };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         row.Children.Add(this.BuildSeriesTabs(series));
 
         var metrics = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(12, 0, 0, 0) };
-        metrics.Children.Add(this.CreateTabButton(new TextBlock { Text = "Quota", FontWeight = FontWeights.SemiBold }, selected: true, compact: true));
-        var tokens = this.CreateTabButton(new TextBlock { Text = "Tokens" }, selected: false, compact: true);
+        metrics.Children.Add(this.CreateTabButton(this.IconLabel(LogoImages.StatisticsGlyph, "Quota", true), selected: true, compact: true));
+        var tokens = this.CreateTabButton(this.IconLabel("\uE8B7", "Tokens"), selected: false, compact: true);
         tokens.IsEnabled = false;
         tokens.Opacity = 0.42;
         tokens.ToolTip = "Token history is not available yet. This view never estimates tokens from quota percentages.";
@@ -302,31 +314,6 @@ public sealed class StatisticsWindow : Window
         metrics.Children.Add(tokens);
         Grid.SetColumn(metrics, 1);
         row.Children.Add(metrics);
-
-        var scales = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(12, 0, 0, 0) };
-        foreach (var mode in new[] { ActivityScaleMode.Personal, ActivityScaleMode.Fixed })
-        {
-            var button = this.CreateTabButton(
-                new TextBlock
-                {
-                    Text = mode == ActivityScaleMode.Personal ? "Personal" : "Fixed",
-                    FontWeight = mode == this.scaleMode ? FontWeights.SemiBold : FontWeights.Normal,
-                },
-                mode == this.scaleMode,
-                compact: true);
-            button.Click += (_, _) =>
-            {
-                this.scaleMode = mode;
-                this.Refresh();
-            };
-            button.ToolTip = mode == ActivityScaleMode.Personal
-                ? "Levels follow your own active-day distribution. Best for seeing patterns."
-                : "Levels use 5, 15, and 30 observed quota-point thresholds. Best for comparison.";
-            scales.Children.Add(button);
-        }
-
-        Grid.SetColumn(scales, 2);
-        row.Children.Add(scales);
         return row;
     }
 
@@ -336,11 +323,10 @@ public sealed class StatisticsWindow : Window
         foreach (var item in series)
         {
             var selected = item.Id == this.selectedSeriesId;
-            var button = this.CreateTabButton(new TextBlock
-            {
-                Text = item.Title,
-                FontWeight = selected ? FontWeights.SemiBold : FontWeights.Normal,
-            }, selected, compact: true);
+            var button = this.CreateTabButton(
+                this.IconLabel(item.Title.Contains("Weekly", StringComparison.OrdinalIgnoreCase) ? CalendarGlyph : ClockGlyph, item.Title, selected),
+                selected,
+                compact: true);
             button.Click += (_, _) =>
             {
                 this.selectedSeriesId = item.Id;
@@ -369,7 +355,7 @@ public sealed class StatisticsWindow : Window
         if (this.viewMode != ActivityViewMode.Overview)
         {
             var back = this.CreateTabButton(
-                new TextBlock { Text = "←  Back", FontWeight = FontWeights.SemiBold },
+                this.IconLabel(BackGlyph, "Back", true),
                 selected: false,
                 compact: true);
             back.Margin = new Thickness(0, 0, 14, 0);
@@ -381,7 +367,9 @@ public sealed class StatisticsWindow : Window
         }
 
         var copy = new StackPanel();
-        copy.Children.Add(this.TimeframeLabel(this.viewMode.ToString().ToUpperInvariant()));
+        copy.Children.Add(this.TimeframeLabel(
+            this.viewMode.ToString().ToUpperInvariant(),
+            this.viewMode is ActivityViewMode.Overview or ActivityViewMode.Month ? CalendarGlyph : ClockGlyph));
         var title = this.viewMode switch
         {
             ActivityViewMode.Overview => null,
@@ -428,11 +416,11 @@ public sealed class StatisticsWindow : Window
             };
             var minimumMonth = new DateOnly(activity.StartsOn.Year, activity.StartsOn.Month, 1);
             var maximumMonth = new DateOnly(activity.EndsOn.Year, activity.EndsOn.Month, 1);
-            var previous = this.CreateTabButton(new TextBlock { Text = "‹ Previous" }, selected: false, compact: true);
+            var previous = this.CreateTabButton(this.IconLabel(BackGlyph, "Previous"), selected: false, compact: true);
             previous.IsEnabled = month.StartsOn > minimumMonth;
             previous.Click += (_, _) => this.NavigateMonth(month.StartsOn.AddMonths(-1));
             navigation.Children.Add(previous);
-            var next = this.CreateTabButton(new TextBlock { Text = "Next ›" }, selected: false, compact: true);
+            var next = this.CreateTabButton(this.IconLabel("\uE72A", "Next"), selected: false, compact: true);
             next.IsEnabled = month.StartsOn < maximumMonth;
             next.Click += (_, _) => this.NavigateMonth(month.StartsOn.AddMonths(1));
             navigation.Children.Add(next);
@@ -443,71 +431,112 @@ public sealed class StatisticsWindow : Window
         return header;
     }
 
-    private UIElement BuildGeneralMetrics(ActivityOverview activity, Color accent) => this.BuildOverviewMetrics(
+    private UIElement BuildGeneralSummary(ProviderDescriptor descriptor, ActivityOverview activity, Color accent) => this.BuildSummary(
+        descriptor,
         accent,
-        ("OBSERVED", Quota(activity.Total), $"{activity.CoveredDays} observed days"),
-        ("ACTIVE DAYS", activity.ActiveDays.ToString(UiCulture), "during the last 52 weeks"),
-        ("DAILY AVG", Quota(activity.DailyAverage), "per observed day"),
-        ("BUSIEST DAY", activity.BusiestDay is { } day ? day.Date.ToString("MMM d", UiCulture) : "—", activity.BusiestDay is { } busiest ? Quota(busiest.Value) : "no activity yet"));
+        "OBSERVED",
+        Quota(activity.Total),
+        $"{activity.CoveredDays} days recorded locally",
+        (CalendarGlyph, "Active days", activity.ActiveDays.ToString(UiCulture), "in the last 52 weeks"),
+        (LogoImages.StatisticsGlyph, "Daily average", Quota(activity.DailyAverage), "per observed day"),
+        ("\uE9D9", "Busiest day", activity.BusiestDay is { } day ? day.Date.ToString("MMM d", UiCulture) : "—", activity.BusiestDay is { } busiest ? Quota(busiest.Value) : "no activity yet"));
 
-    private UIElement BuildMonthMetrics(ActivityMonth month, Color accent) => this.BuildOverviewMetrics(
+    private UIElement BuildMonthSummary(ProviderDescriptor descriptor, ActivityMonth month, Color accent) => this.BuildSummary(
+        descriptor,
         accent,
-        ("MONTH TOTAL", Quota(month.Total), $"{month.CoveredDays} observed days"),
-        ("ACTIVE DAYS", month.ActiveDays.ToString(UiCulture), $"of {month.Days.Count} elapsed days"),
-        ("DAILY AVG", Quota(month.DailyAverage), "per observed day"),
-        ("BUSIEST WEEK", month.BusiestWeek is { } week ? week.StartsOn.ToString("MMM d", UiCulture) : "—", month.BusiestWeek is { } busiest ? Quota(busiest.Total) : "no activity yet"));
+        "MONTH TOTAL",
+        Quota(month.Total),
+        $"{month.CoveredDays} days recorded locally",
+        (CalendarGlyph, "Active days", month.ActiveDays.ToString(UiCulture), $"of {month.Days.Count} elapsed days"),
+        (LogoImages.StatisticsGlyph, "Daily average", Quota(month.DailyAverage), "per observed day"),
+        ("\uE9D9", "Busiest week", month.BusiestWeek is { } week ? week.StartsOn.ToString("MMM d", UiCulture) : "—", month.BusiestWeek is { } busiest ? Quota(busiest.Total) : "no activity yet"));
 
-    private UIElement BuildWeekMetrics(ActivityOverview activity, ActivityWeek week, Color accent)
+    private UIElement BuildWeekSummary(ProviderDescriptor descriptor, ActivityOverview activity, ActivityWeek week, Color accent)
     {
         var previous = activity.WeekContaining(week.StartsOn.AddDays(-7));
-        return this.BuildOverviewMetrics(
+        return this.BuildSummary(
+            descriptor,
             accent,
-            ("WEEK TOTAL", Quota(week.Total), $"{week.CoveredDays} observed days"),
-            ("ACTIVE DAYS", week.ActiveDays.ToString(UiCulture), "of 7 days"),
-            ("VS PREV WEEK", previous.CoveredDays > 0 ? Difference(week.Total, previous.Total) : "No comparison", "observed quota points"),
-            ("BUSIEST DAY", week.BusiestDay is { } day ? day.Date.ToString("ddd", UiCulture) : "—", week.BusiestDay is { } busiest ? Quota(busiest.Value) : "no activity yet"));
+            "WEEK TOTAL",
+            Quota(week.Total),
+            $"{week.CoveredDays} days recorded locally",
+            (CalendarGlyph, "Active days", week.ActiveDays.ToString(UiCulture), "of 7 days"),
+            ("\uE7BA", "Previous week", previous.CoveredDays > 0 ? Difference(week.Total, previous.Total) : "No comparison", "observed quota points"),
+            ("\uE9D9", "Busiest day", week.BusiestDay is { } day ? day.Date.ToString("ddd", UiCulture) : "—", week.BusiestDay is { } busiest ? Quota(busiest.Value) : "no activity yet"));
     }
 
-    private UIElement BuildDayMetrics(ActivityOverview activity, ActivityDay selected, Color accent)
+    private UIElement BuildDaySummary(ProviderDescriptor descriptor, ActivityOverview activity, ActivityDay selected, Color accent)
     {
         var peak = selected.Hours.OrderByDescending(hour => hour.Value).FirstOrDefault();
-        return this.BuildOverviewMetrics(
+        return this.BuildSummary(
+            descriptor,
             accent,
-            ("DAY TOTAL", selected.HasCoverage ? Quota(selected.Value) : "—", selected.HasCoverage ? $"{selected.ObservationCount} observations" : "no observations"),
-            ("ACTIVE HOURS", selected.ActiveHours.ToString(UiCulture), "of 24 hours"),
-            ("VS PREV DAY", PreviousComparison(selected, activity.Day(selected.Date.AddDays(-1))), "observed quota points"),
-            ("BUSIEST HOUR", peak is { Value: > 0.001 } ? $"{peak.Hour:00}:00" : "—", peak is { Value: > 0.001 } ? Quota(peak.Value) : "no activity yet"));
+            "DAY TOTAL",
+            selected.HasCoverage ? Quota(selected.Value) : "—",
+            selected.HasCoverage ? $"{selected.ObservationCount} local observations" : "no observations",
+            (ClockGlyph, "Active hours", selected.ActiveHours.ToString(UiCulture), "of 24 hours"),
+            ("\uE7BA", "Previous day", PreviousComparison(selected, activity.Day(selected.Date.AddDays(-1))), "observed quota points"),
+            ("\uE9D9", "Busiest hour", peak is { Value: > 0.001 } ? $"{peak.Hour:00}:00" : "—", peak is { Value: > 0.001 } ? Quota(peak.Value) : "no activity yet"));
     }
 
-    private UIElement BuildOverviewMetrics(
+    private UIElement BuildSummary(
+        ProviderDescriptor descriptor,
         Color accent,
-        params (string Label, string Value, string Detail)[] values)
+        string primaryLabel,
+        string primaryValue,
+        string primaryDetail,
+        params (string Icon, string Label, string Value, string Detail)[] facts)
     {
-        var grid = new Grid { Margin = new Thickness(4, 0, 4, 14) };
-        for (var index = 0; index < 4; index++)
+        var grid = new Grid { Margin = new Thickness(0, 2, 0, 28), MinHeight = 96 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(255) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.Children.Add(this.BuildProviderArtwork(descriptor, accent));
+
+        var primary = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        primary.Children.Add(new TextBlock
         {
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            Text = primaryLabel,
+            FontSize = 10.5,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = this.Brush("StatisticsMutedForeground"),
+        });
+        var value = new TextBlock
+        {
+            Text = primaryValue,
+            Margin = new Thickness(0, 1, 0, 0),
+            FontFamily = DisplayFont,
+            FontSize = 32,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(this.isDark ? Blend(accent, Colors.White, 0.18) : accent),
+        };
+        Typography.SetNumeralAlignment(value, FontNumeralAlignment.Tabular);
+        primary.Children.Add(value);
+        primary.Children.Add(new TextBlock
+        {
+            Text = primaryDetail,
+            FontSize = 11.5,
+            Foreground = this.Brush("StatisticsMutedForeground"),
+        });
+        Grid.SetColumn(primary, 1);
+        grid.Children.Add(primary);
+
+        var factList = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        foreach (var fact in facts)
+        {
+            factList.Children.Add(this.BuildSummaryFact(fact.Icon, fact.Label, fact.Value, fact.Detail, accent));
         }
 
-        for (var index = 0; index < values.Length; index++)
-        {
-            var metric = this.BuildMetricColumn(
-                values[index].Item1,
-                values[index].Item2,
-                values[index].Item3,
-                accent,
-                hasDivider: index > 0);
-            Grid.SetColumn(metric, index);
-            grid.Children.Add(metric);
-        }
+        Grid.SetColumn(factList, 2);
+        grid.Children.Add(factList);
 
         return grid;
     }
 
-    private UIElement BuildOverviewCard(ActivityOverview activity, ActivityDay selected, Color accent)
+    private UIElement BuildOverviewSection(ActivityOverview activity, ActivityDay selected, Color accent)
     {
         var stack = new StackPanel();
-        stack.Children.Add(this.CardHeader("Activity calendar", "Last 52 weeks"));
+        stack.Children.Add(this.SectionHeader(CalendarGlyph, "Activity calendar", null, accent, this.BuildScaleButtons()));
         var calendar = new ActivityCalendarControl(
             activity.Days,
             selected.Date,
@@ -516,12 +545,12 @@ public sealed class StatisticsWindow : Window
             this.isDark,
             this.scaleMode)
         {
-            Margin = new Thickness(18, 2, 18, 2),
+            Margin = new Thickness(0, 5, 0, 5),
         };
         calendar.DateSelected += this.SelectMonth;
         stack.Children.Add(calendar);
 
-        var legend = new Grid { Margin = new Thickness(18, 2, 18, 15) };
+        var legend = new Grid { Margin = new Thickness(30, 2, 0, 4) };
         legend.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         legend.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         legend.Children.Add(new TextBlock
@@ -550,30 +579,30 @@ public sealed class StatisticsWindow : Window
         Grid.SetColumn(scale, 1);
         legend.Children.Add(scale);
         stack.Children.Add(legend);
-        return this.Card(stack, new Thickness(0));
+        return stack;
     }
 
-    private UIElement BuildMonthCard(ActivityMonth month, Color accent)
+    private UIElement BuildMonthSection(ActivityMonth month, Color accent)
     {
         var stack = new StackPanel();
-        stack.Children.Add(this.CardHeader("Weekly activity", "Select a week to see its days"));
+        stack.Children.Add(this.SectionHeader(LogoImages.StatisticsGlyph, "Weekly activity", "Select a week to see its days", accent));
         var bars = month.Weeks.Select(week => new ActivityBar(
             week.StartsOn.ToString("MMM d", UiCulture),
             week.Total,
             $"Week of {week.StartsOn.ToString("MMMM d", UiCulture)}: {Quota(week.Total)} · {week.ActiveDays} active days")).ToArray();
         var chart = new ActivityBarChart(bars, accent, this.isDark, interactive: true, actionLabel: "Open week")
         {
-            Margin = new Thickness(18, 4, 18, 16),
+            Margin = new Thickness(0, 8, 0, 12),
         };
         chart.BarSelected += index => this.SelectWeek(month.Weeks[index].StartsOn);
         stack.Children.Add(chart);
-        return this.Card(stack, new Thickness(0));
+        return stack;
     }
 
-    private UIElement BuildWeekCard(ActivityOverview activity, ActivityWeek week, Color accent)
+    private UIElement BuildWeekSection(ActivityOverview activity, ActivityWeek week, Color accent)
     {
         var stack = new StackPanel();
-        stack.Children.Add(this.CardHeader("Daily activity", "Select a day to see its hours"));
+        stack.Children.Add(this.SectionHeader(LogoImages.StatisticsGlyph, "Daily activity", "Select a day to see its hours", accent));
         var bars = week.Days.Select(day => new ActivityBar(
             day.Date.ToString("ddd", UiCulture),
             day.Value,
@@ -581,89 +610,144 @@ public sealed class StatisticsWindow : Window
             day.Date <= activity.EndsOn)).ToArray();
         var chart = new ActivityBarChart(bars, accent, this.isDark, interactive: true, actionLabel: "Open day")
         {
-            Margin = new Thickness(18, 4, 18, 16),
+            Margin = new Thickness(0, 8, 0, 12),
         };
         chart.BarSelected += index => this.SelectDate(week.StartsOn.AddDays(index));
         stack.Children.Add(chart);
-        return this.Card(stack, new Thickness(0));
+        return stack;
     }
 
-    private UIElement BuildDayCard(ActivityDay selected, Color accent)
+    private UIElement BuildDaySection(ActivityDay selected, Color accent)
     {
         var stack = new StackPanel();
-        stack.Children.Add(this.CardHeader("Hourly activity", "Local time"));
+        stack.Children.Add(this.SectionHeader(ClockGlyph, "Hourly activity", "Local time", accent));
         var bars = selected.Hours.Select(hour => new ActivityBar(
             hour.Hour.ToString("00", UiCulture),
             hour.Value,
             $"{hour.Hour:00}:00–{hour.Hour:00}:59: {Quota(hour.Value)} · {hour.ObservationCount} observations")).ToArray();
         stack.Children.Add(new ActivityBarChart(bars, accent, this.isDark, interactive: false)
         {
-            Margin = new Thickness(18, 4, 18, 16),
+            Margin = new Thickness(0, 8, 0, 12),
         });
-        return this.Card(stack, new Thickness(0));
+        return stack;
     }
 
-    private Border BuildMetricColumn(
+    private UIElement BuildProviderArtwork(ProviderDescriptor descriptor, Color accent)
+    {
+        var artwork = new Grid { Width = 78, Height = 78, HorizontalAlignment = HorizontalAlignment.Left };
+        var mosaic = new Canvas { Width = 72, Height = 72, Opacity = this.isDark ? 0.72 : 0.55 };
+        var levels = new[] { 1, 2, 0, 3, 1, 4, 2, 1, 3, 0, 2, 4, 1, 2, 3, 1 };
+        for (var index = 0; index < levels.Length; index++)
+        {
+            var square = new Border
+            {
+                Width = 12,
+                Height = 12,
+                CornerRadius = new CornerRadius(3),
+                Background = new SolidColorBrush(levels[index] == 0
+                    ? Color.FromArgb(18, accent.R, accent.G, accent.B)
+                    : IntensityColor(accent, levels[index])),
+            };
+            Canvas.SetLeft(square, (index % 4) * 16);
+            Canvas.SetTop(square, (index / 4) * 16);
+            mosaic.Children.Add(square);
+        }
+
+        artwork.Children.Add(mosaic);
+        FrameworkElement logo = LogoImages.Get(descriptor.Branding.GlyphKey, this.isDark) is { } source
+            ? new Image { Source = source, Width = 38, Height = 38 }
+            : LogoImages.IconGlyph(LogoImages.StatisticsGlyph, 32);
+        logo.HorizontalAlignment = HorizontalAlignment.Center;
+        logo.VerticalAlignment = VerticalAlignment.Center;
+        artwork.Children.Add(logo);
+        return artwork;
+    }
+
+    private UIElement BuildSummaryFact(
+        string icon,
         string label,
         string value,
         string detail,
-        Color accent,
-        bool hasDivider)
+        Color accent)
     {
-        var stack = new StackPanel();
-        stack.Children.Add(new TextBlock
+        var row = new Grid { Margin = new Thickness(0, 2, 0, 2) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(25) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(108) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var glyph = LogoImages.IconGlyph(icon, 13);
+        glyph.HorizontalAlignment = HorizontalAlignment.Left;
+        glyph.Foreground = new SolidColorBrush(accent);
+        row.Children.Add(glyph);
+        var labelText = new TextBlock
         {
             Text = label,
-            FontSize = 10.5,
+            FontSize = 11.5,
             FontWeight = FontWeights.SemiBold,
             Foreground = this.Brush("StatisticsMutedForeground"),
-        });
-        var valueText = new TextBlock
-        {
-            Text = value,
-            Margin = new Thickness(0, 3, 0, 0),
-            FontFamily = DisplayFont,
-            FontSize = 20,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(this.isDark ? Blend(accent, Colors.White, 0.18) : accent),
         };
-        Typography.SetNumeralAlignment(valueText, FontNumeralAlignment.Tabular);
-        stack.Children.Add(valueText);
-        stack.Children.Add(new TextBlock
-        {
-            Text = detail,
-            FontSize = 10.5,
-            Foreground = this.Brush("StatisticsMutedForeground"),
-        });
-        return new Border
-        {
-            Padding = new Thickness(hasDivider ? 18 : 4, 4, 12, 4),
-            BorderBrush = this.Brush("StatisticsCardBorder"),
-            BorderThickness = new Thickness(hasDivider ? 1 : 0, 0, 0, 0),
-            Child = stack,
-        };
+        Grid.SetColumn(labelText, 1);
+        row.Children.Add(labelText);
+        var reading = new TextBlock { FontSize = 11.5, Foreground = this.Brush("StatisticsMutedForeground") };
+        reading.Inlines.Add(new Run(value) { FontWeight = FontWeights.SemiBold, Foreground = this.Brush("StatisticsForeground") });
+        reading.Inlines.Add(new Run($"  {detail}"));
+        Grid.SetColumn(reading, 2);
+        row.Children.Add(reading);
+        return row;
     }
 
-    private Grid CardHeader(string title, string detail)
+    private StackPanel BuildScaleButtons()
     {
-        var header = new Grid { Margin = new Thickness(18, 15, 18, 10) };
+        var scales = new StackPanel { Orientation = Orientation.Horizontal };
+        foreach (var mode in new[] { ActivityScaleMode.Personal, ActivityScaleMode.Fixed })
+        {
+            var button = this.CreateTabButton(
+                this.IconLabel(
+                    mode == ActivityScaleMode.Personal ? ScaleGlyph : "\uE72E",
+                    mode == ActivityScaleMode.Personal ? "Personal" : "Fixed",
+                    mode == this.scaleMode),
+                mode == this.scaleMode,
+                compact: true);
+            button.Click += (_, _) =>
+            {
+                this.scaleMode = mode;
+                this.Refresh();
+            };
+            button.ToolTip = mode == ActivityScaleMode.Personal
+                ? "Levels follow your own active-day distribution. Best for seeing patterns."
+                : "Levels use 5, 15, and 30 observed quota-point thresholds. Best for comparison.";
+            scales.Children.Add(button);
+        }
+
+        return scales;
+    }
+
+    private Grid SectionHeader(string icon, string title, string? detail, Color accent, UIElement? trailing = null)
+    {
+        var header = new Grid { Margin = new Thickness(0, 0, 0, 8) };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(28) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        header.Children.Add(new TextBlock
+        var glyph = LogoImages.IconGlyph(icon, 15);
+        glyph.HorizontalAlignment = HorizontalAlignment.Left;
+        glyph.Foreground = new SolidColorBrush(accent);
+        header.Children.Add(glyph);
+        var titleText = new TextBlock
         {
             Text = title,
             FontSize = 15,
             FontWeight = FontWeights.SemiBold,
             Foreground = this.Brush("StatisticsForeground"),
-        });
-        var right = new TextBlock
+        };
+        Grid.SetColumn(titleText, 1);
+        header.Children.Add(titleText);
+        UIElement right = trailing ?? new TextBlock
         {
-            Text = detail,
+            Text = detail ?? string.Empty,
             FontSize = 11.5,
             Foreground = this.Brush("StatisticsMutedForeground"),
             VerticalAlignment = VerticalAlignment.Center,
         };
-        Grid.SetColumn(right, 1);
+        Grid.SetColumn(right, 2);
         header.Children.Add(right);
         return header;
     }
@@ -695,7 +779,7 @@ public sealed class StatisticsWindow : Window
             FontSize = 13,
             Foreground = this.Brush("StatisticsMutedForeground"),
         });
-        return this.Card(stack, new Thickness(0));
+        return stack;
     }
 
     private Button CreateTabButton(object content, bool selected, bool compact)
@@ -745,33 +829,6 @@ public sealed class StatisticsWindow : Window
         return template;
     }
 
-    private Border Card(object child, Thickness margin) => new()
-    {
-        Margin = margin,
-        Background = this.Brush("StatisticsCardBackground"),
-        BorderBrush = this.Brush("StatisticsCardBorder"),
-        BorderThickness = new Thickness(1),
-        CornerRadius = new CornerRadius(10),
-        Child = (UIElement)child,
-    };
-
-    private Border Badge(string text) => new()
-    {
-        Padding = new Thickness(10, 5, 10, 5),
-        CornerRadius = new CornerRadius(12),
-        Background = this.Brush("StatisticsBadgeBackground"),
-        BorderBrush = this.Brush("StatisticsCardBorder"),
-        BorderThickness = new Thickness(1),
-        VerticalAlignment = VerticalAlignment.Top,
-        Child = new TextBlock
-        {
-            Text = text,
-            FontSize = 10.5,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = this.Brush("StatisticsMutedForeground"),
-        },
-    };
-
     private TextBlock LegendText(string text, Thickness? margin = null) => new()
     {
         Text = text,
@@ -780,14 +837,31 @@ public sealed class StatisticsWindow : Window
         Foreground = this.Brush("StatisticsMutedForeground"),
     };
 
-    private TextBlock TimeframeLabel(string text) => new()
+    private StackPanel TimeframeLabel(string text, string icon)
     {
-        Text = text,
-        FontSize = 10.5,
-        FontWeight = FontWeights.SemiBold,
-        Foreground = this.Brush("StatisticsMutedForeground"),
-        VerticalAlignment = VerticalAlignment.Center,
-    };
+        var label = this.IconLabel(icon, text, true, iconSize: 11);
+        foreach (var child in label.Children.OfType<TextBlock>())
+        {
+            child.Foreground = this.Brush("StatisticsMutedForeground");
+        }
+
+        return label;
+    }
+
+    private StackPanel IconLabel(string glyph, string text, bool strong = false, double iconSize = 12)
+    {
+        var content = new StackPanel { Orientation = Orientation.Horizontal };
+        var icon = LogoImages.IconGlyph(glyph, iconSize);
+        icon.Margin = new Thickness(0, 0, 7, 0);
+        content.Children.Add(icon);
+        content.Children.Add(new TextBlock
+        {
+            Text = text,
+            FontWeight = strong ? FontWeights.SemiBold : FontWeights.Normal,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        return content;
+    }
 
     private static System.Windows.Data.Binding TemplateBinding(string path) => new(path)
     {

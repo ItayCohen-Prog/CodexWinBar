@@ -62,10 +62,10 @@ public sealed class StatisticsWindow : Window
         this.FontFamily = TextFont;
         this.Resources.MergedDictionaries.Add(StatisticsTheme.Create(this.isDark));
         this.Foreground = this.Brush("StatisticsForeground");
-        this.Background = Brushes.Transparent;
+        this.Background = this.Brush("StatisticsWindowBackground");
         this.Content = this.BuildRoot();
 
-        this.SourceInitialized += (_, _) => WpfDwm.ApplyWindowChrome(this, this.isDark);
+        this.SourceInitialized += (_, _) => WpfDwm.ApplyStandardWindowChrome(this, this.isDark);
         this.ContentRendered += (_, _) => WpfDwm.EnsureTitleBarVisible(this);
         this.store.StateChanged += this.OnStatisticsChanged;
         this.Closed += (_, _) =>
@@ -938,6 +938,7 @@ internal static class StatisticsTheme
     {
         var resources = new ResourceDictionary();
         Add(resources, "StatisticsForeground", dark ? "#F3F4F6" : "#17191D");
+        Add(resources, "StatisticsWindowBackground", dark ? "#111419" : "#F4F5F7");
         Add(resources, "StatisticsMutedForeground", dark ? "#A7ADB8" : "#626874");
         Add(resources, "StatisticsCardBackground", dark ? "#991B1E24" : "#C8FFFFFF");
         Add(resources, "StatisticsCardBorder", dark ? "#33FFFFFF" : "#1F121722");

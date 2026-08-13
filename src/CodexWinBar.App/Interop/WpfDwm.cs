@@ -16,6 +16,7 @@ public static class WpfDwm
     private const int DwmwaWindowCornerPreference = 33;
     private const int DwmwaSystemBackdropType = 38;
     private const int DwmwcpRound = 2;
+    private const int DwmsbtNone = 1;
     private const int DwmsbtMainWindow = 2;
 
     /// <summary>
@@ -43,6 +44,13 @@ public static class WpfDwm
         {
             target.BackgroundColor = Colors.Transparent;
         }
+    }
+
+    /// <summary>Applies native dark/light caption styling without extending glass into the client area.</summary>
+    public static void ApplyStandardWindowChrome(Window window, bool dark)
+    {
+        ArgumentNullException.ThrowIfNull(window);
+        ApplyChrome(window, dark, DwmsbtNone);
     }
 
     /// <summary>

@@ -366,7 +366,7 @@ public sealed class StatisticsWindow : Window
         copy.Children.Add(this.BuildBreadcrumb(month, week));
         var title = this.viewMode switch
         {
-            ActivityViewMode.Overview => "Last 52 weeks",
+            ActivityViewMode.Overview => null,
             ActivityViewMode.Month => month.StartsOn.ToString("MMMM yyyy", UiCulture),
             ActivityViewMode.Week => $"{week.StartsOn.ToString("MMMM d", UiCulture)}–{week.StartsOn.AddDays(6).ToString("MMMM d", UiCulture)}",
             _ => selected.Date.ToString("dddd, MMMM d", UiCulture),
@@ -378,18 +378,23 @@ public sealed class StatisticsWindow : Window
             ActivityViewMode.Week => "Select a day to inspect its hourly activity",
             _ => "Hourly activity observed during this day",
         };
-        copy.Children.Add(new TextBlock
+        if (title is not null)
         {
-            Text = title,
-            Margin = new Thickness(0, 5, 0, 2),
-            FontFamily = DisplayFont,
-            FontSize = 24,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = this.Brush("StatisticsForeground"),
-        });
+            copy.Children.Add(new TextBlock
+            {
+                Text = title,
+                Margin = new Thickness(0, 5, 0, 2),
+                FontFamily = DisplayFont,
+                FontSize = 24,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = this.Brush("StatisticsForeground"),
+            });
+        }
+
         copy.Children.Add(new TextBlock
         {
             Text = guidance,
+            Margin = this.viewMode == ActivityViewMode.Overview ? new Thickness(0, 5, 0, 0) : new Thickness(0),
             FontSize = 12,
             Foreground = this.Brush("StatisticsMutedForeground"),
         });

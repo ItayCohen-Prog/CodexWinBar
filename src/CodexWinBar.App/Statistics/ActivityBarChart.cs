@@ -42,13 +42,14 @@ internal sealed class ActivityBarChart : Grid
 
     private void Build()
     {
+        const double axisWidth = 88;
         this.RowDefinitions.Add(new RowDefinition { Height = new GridLength(164) });
         this.RowDefinitions.Add(new RowDefinition { Height = new GridLength(28) });
-        this.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(60) });
+        this.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(axisWidth) });
         this.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         var laneWidth = this.bars.Count > 12 ? 30d : 56d;
         var plotWidth = Math.Max(laneWidth, this.bars.Count * laneWidth);
-        this.Width = 60 + plotWidth;
+        this.Width = axisWidth + plotWidth;
         this.HorizontalAlignment = HorizontalAlignment.Left;
 
         var max = Math.Max(1, this.bars.Count == 0 ? 0 : this.bars.Max(bar => bar.Value));
@@ -63,11 +64,13 @@ internal sealed class ActivityBarChart : Grid
         {
             FontSize = 10.5,
             FontWeight = FontWeights.SemiBold,
+            TextWrapping = TextWrapping.NoWrap,
             Foreground = new SolidColorBrush(this.isDark ? Colors.White : Color.FromRgb(23, 25, 29)),
         };
         var hoverValue = new Border
         {
             Padding = new Thickness(5, 2, 5, 2),
+            MinWidth = 76,
             Margin = new Thickness(0, 0, 4, 0),
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Bottom,
@@ -128,6 +131,21 @@ internal sealed class ActivityBarChart : Grid
         Panel.SetZIndex(hoverGuide, 1);
         plot.Children.Add(hoverGuide);
 
+        var hoverMarker = new Ellipse
+        {
+            Width = 5,
+            Height = 5,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Fill = new SolidColorBrush(this.isDark
+                ? Color.FromArgb(210, 183, 188, 198)
+                : Color.FromArgb(190, 88, 96, 108)),
+            Opacity = 0,
+            IsHitTestVisible = false,
+        };
+        Panel.SetZIndex(hoverMarker, 3);
+        plot.Children.Add(hoverMarker);
+
         for (var index = 0; index < this.bars.Count; index++)
         {
             var bar = this.bars[index];
@@ -159,7 +177,8 @@ internal sealed class ActivityBarChart : Grid
             void ShowInspection()
             {
                 var barHeight = button.ActualHeight > 0 ? button.ActualHeight : button.Height;
-                var barEdge = button.TranslatePoint(new Point(0, 0), plot).X;
+                var visualBarWidth = this.bars.Count > 12 ? 12d : 30d;
+                var barEdge = (index * laneWidth) + ((laneWidth - visualBarWidth) / 2);
                 var duration = TimeSpan.FromMilliseconds(120);
                 var easing = new QuadraticEase { EasingMode = EasingMode.EaseOut };
                 var currentWidth = double.IsNaN(hoverGuide.Width) ? hoverGuide.ActualWidth : hoverGuide.Width;
@@ -172,6 +191,18 @@ internal sealed class ActivityBarChart : Grid
                 hoverGuide.BeginAnimation(
                     OpacityProperty,
                     new DoubleAnimation(hoverGuide.Opacity, 1, duration) { EasingFunction = easing });
+                hoverMarker.BeginAnimation(
+                    MarginProperty,
+                    new ThicknessAnimation(
+                        hoverMarker.Margin,
+                        new Thickness(Math.Max(0, barEdge - 2.5), 0, 0, Math.Max(0, barHeight - 2.5)),
+                        duration)
+                    {
+                        EasingFunction = easing,
+                    });
+                hoverMarker.BeginAnimation(
+                    OpacityProperty,
+                    new DoubleAnimation(hoverMarker.Opacity, 1, duration) { EasingFunction = easing });
                 hoverValueText.Text = $"{bar.Value.ToString("0.#", UiCulture)} pts";
                 hoverValue.BeginAnimation(
                     MarginProperty,
@@ -200,6 +231,9 @@ internal sealed class ActivityBarChart : Grid
                 hoverGuide.BeginAnimation(
                     OpacityProperty,
                     new DoubleAnimation(hoverGuide.Opacity, 0, duration) { EasingFunction = easing });
+                hoverMarker.BeginAnimation(
+                    OpacityProperty,
+                    new DoubleAnimation(hoverMarker.Opacity, 0, duration) { EasingFunction = easing });
                 hoverValue.BeginAnimation(
                     OpacityProperty,
                     new DoubleAnimation(hoverValue.Opacity, 0, duration) { EasingFunction = easing });

@@ -66,6 +66,7 @@ public sealed class StatisticsWindow : Window
         this.Content = this.BuildRoot();
 
         this.SourceInitialized += (_, _) => WpfDwm.ApplyWindowChrome(this, this.isDark);
+        this.ContentRendered += (_, _) => WpfDwm.EnsureTitleBarVisible(this);
         this.store.StateChanged += this.OnStatisticsChanged;
         this.Closed += (_, _) =>
         {

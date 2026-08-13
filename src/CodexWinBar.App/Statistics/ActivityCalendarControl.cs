@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Automation.Peers;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 
@@ -38,6 +39,8 @@ internal sealed class ActivityCalendarControl : FrameworkElement
         this.Focusable = true;
         this.Cursor = Cursors.Hand;
         this.MinHeight = 148;
+        ToolTipService.SetInitialShowDelay(this, 160);
+        ToolTipService.SetBetweenShowDelay(this, 0);
         AutomationProperties.SetName(this, "Daily activity overview");
         AutomationProperties.SetHelpText(this, "Use arrow keys to move by day or week, then press Enter to open that month.");
     }
@@ -103,6 +106,16 @@ internal sealed class ActivityCalendarControl : FrameworkElement
                     4);
             }
         }
+
+        if (this.hoverDate is { } hover && this.CellRect(hover, layout) is { } hoverRect)
+        {
+            drawingContext.DrawRoundedRectangle(
+                null,
+                new Pen(new SolidColorBrush(this.accent), 1.75),
+                new Rect(hoverRect.X - 1.5, hoverRect.Y - 1.5, hoverRect.Width + 3, hoverRect.Height + 3),
+                4,
+                4);
+        }
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
@@ -118,6 +131,7 @@ internal sealed class ActivityCalendarControl : FrameworkElement
         this.ToolTip = date is { } value && this.daysByDate.TryGetValue(value, out var day)
             ? this.Tooltip(day)
             : null;
+        this.InvalidateVisual();
     }
 
     protected override void OnMouseLeave(MouseEventArgs e)
@@ -125,6 +139,7 @@ internal sealed class ActivityCalendarControl : FrameworkElement
         base.OnMouseLeave(e);
         this.hoverDate = null;
         this.ToolTip = null;
+        this.InvalidateVisual();
     }
 
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)

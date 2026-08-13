@@ -239,7 +239,6 @@ public sealed class StatisticsWindow : Window
 
     private Button CreateProviderButton(ProviderDescriptor descriptor, bool selected)
     {
-        var accent = Color.FromRgb(descriptor.Branding.R, descriptor.Branding.G, descriptor.Branding.B);
         var content = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -291,8 +290,6 @@ public sealed class StatisticsWindow : Window
             MinWidth = 37,
             MinHeight = 39,
             Background = Brushes.Transparent,
-            BorderBrush = new SolidColorBrush(this.isDark ? Blend(accent, Colors.White, 0.28) : accent),
-            BorderThickness = new Thickness(0),
             Cursor = Cursors.Hand,
             ToolTip = descriptor.Metadata.DisplayName,
             Template = CreateProviderButtonTemplate(),
@@ -300,7 +297,7 @@ public sealed class StatisticsWindow : Window
         button.Tag = new ProviderButtonVisual(descriptor.Id, logo, nameHost, nameWidth, shadow);
         ToolTipService.SetInitialShowDelay(button, 250);
         ToolTipService.SetBetweenShowDelay(button, 80);
-        button.MouseEnter += (_, _) =>
+        void HighlightLogo()
         {
             logo.Opacity = 1;
             scale.ScaleX = 1.08;
@@ -308,8 +305,9 @@ public sealed class StatisticsWindow : Window
             shadow.BlurRadius = 13;
             shadow.Opacity = 0.42;
             shadow.ShadowDepth = 3;
-        };
-        button.MouseLeave += (_, _) =>
+        }
+
+        void RestoreLogo()
         {
             logo.Opacity = selected ? 1 : 0.38;
             scale.ScaleX = 1;
@@ -317,7 +315,12 @@ public sealed class StatisticsWindow : Window
             shadow.BlurRadius = selected ? 12 : 9;
             shadow.Opacity = selected ? 0.38 : 0.24;
             shadow.ShadowDepth = selected ? 3 : 2;
-        };
+        }
+
+        button.MouseEnter += (_, _) => HighlightLogo();
+        button.MouseLeave += (_, _) => RestoreLogo();
+        button.GotKeyboardFocus += (_, _) => HighlightLogo();
+        button.LostKeyboardFocus += (_, _) => RestoreLogo();
         return button;
     }
 
@@ -773,30 +776,19 @@ public sealed class StatisticsWindow : Window
     private UIElement BuildProviderArtwork(ProviderDescriptor descriptor, Color accent)
     {
         var artwork = new Grid { Width = 78, Height = 78, HorizontalAlignment = HorizontalAlignment.Left };
-        var mosaic = new Canvas { Width = 72, Height = 72, Opacity = this.isDark ? 0.72 : 0.55 };
-        var levels = new[] { 1, 2, 0, 3, 1, 4, 2, 1, 3, 0, 2, 4, 1, 2, 3, 1 };
-        for (var index = 0; index < levels.Length; index++)
-        {
-            var square = new Border
-            {
-                Width = 12,
-                Height = 12,
-                CornerRadius = new CornerRadius(3),
-                Background = new SolidColorBrush(levels[index] == 0
-                    ? Color.FromArgb(18, accent.R, accent.G, accent.B)
-                    : IntensityColor(accent, levels[index])),
-            };
-            Canvas.SetLeft(square, (index % 4) * 16);
-            Canvas.SetTop(square, (index / 4) * 16);
-            mosaic.Children.Add(square);
-        }
-
-        artwork.Children.Add(mosaic);
         FrameworkElement logo = LogoImages.Get(descriptor.Branding.GlyphKey, this.isDark) is { } source
-            ? new Image { Source = source, Width = 38, Height = 38 }
-            : LogoImages.IconGlyph(LogoImages.StatisticsGlyph, 32);
+            ? new Image { Source = source, Width = 46, Height = 46 }
+            : LogoImages.IconGlyph(LogoImages.StatisticsGlyph, 38);
         logo.HorizontalAlignment = HorizontalAlignment.Center;
         logo.VerticalAlignment = VerticalAlignment.Center;
+        logo.Effect = new DropShadowEffect
+        {
+            BlurRadius = 13,
+            Direction = 270,
+            ShadowDepth = 3,
+            Opacity = 0.34,
+            Color = this.isDark ? Colors.Black : Blend(accent, Colors.Black, 0.58),
+        };
         artwork.Children.Add(logo);
         return artwork;
     }
@@ -969,19 +961,14 @@ public sealed class StatisticsWindow : Window
 
     private static ControlTemplate CreateProviderButtonTemplate()
     {
-        var focusLine = new FrameworkElementFactory(typeof(Border), "focusLine");
-        focusLine.SetBinding(Border.BorderBrushProperty, TemplateBinding("BorderBrush"));
-        focusLine.SetValue(Border.BorderThicknessProperty, new Thickness(0));
+        var surface = new FrameworkElementFactory(typeof(Border));
+        surface.SetValue(Border.BorderThicknessProperty, new Thickness(0));
         var presenter = new FrameworkElementFactory(typeof(ContentPresenter));
         presenter.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center);
         presenter.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
         presenter.SetBinding(ContentPresenter.MarginProperty, TemplateBinding("Padding"));
-        focusLine.AppendChild(presenter);
-        var template = new ControlTemplate(typeof(ButtonBase)) { VisualTree = focusLine };
-        var focus = new Trigger { Property = UIElement.IsKeyboardFocusedProperty, Value = true };
-        focus.Setters.Add(new Setter(Border.BorderThicknessProperty, new Thickness(0, 0, 0, 2), "focusLine"));
-        template.Triggers.Add(focus);
-        return template;
+        surface.AppendChild(presenter);
+        return new ControlTemplate(typeof(ButtonBase)) { VisualTree = surface };
     }
 
     private TextBlock LegendText(string text, Thickness? margin = null) => new()

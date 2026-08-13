@@ -367,7 +367,7 @@ public sealed class StatisticsWindow : Window
                 .OfType<ProviderButtonVisual>()
                 .FirstOrDefault(item => item.Provider == this.selectedProvider) is not { } current)
         {
-            this.CommitProviderSelection(provider, animateDashboard: false);
+            this.CommitProviderSelection(provider);
             return;
         }
 
@@ -400,20 +400,12 @@ public sealed class StatisticsWindow : Window
             DropShadowEffect.OpacityProperty,
             new DoubleAnimation(target.Shadow.Opacity, 0.38, duration) { EasingFunction = easing });
         var expand = new DoubleAnimation(0, target.NameWidth, duration) { EasingFunction = easing };
-        expand.Completed += (_, _) => this.CommitProviderSelection(provider, animateDashboard: true);
+        expand.Completed += (_, _) => this.CommitProviderSelection(provider);
         target.NameHost.BeginAnimation(WidthProperty, expand);
     }
 
-    private void CommitProviderSelection(ProviderId provider, bool animateDashboard)
+    private void CommitProviderSelection(ProviderId provider)
     {
-        if (animateDashboard)
-        {
-            this.TransitionDashboard(
-                () => this.SetProviderSelection(provider),
-                () => this.providerTransitioning = false);
-            return;
-        }
-
         this.SetProviderSelection(provider);
         this.Refresh();
         this.providerTransitioning = false;
@@ -571,13 +563,14 @@ public sealed class StatisticsWindow : Window
                 compact: true);
             button.Click += (_, _) =>
             {
-                this.TransitionDashboard(() =>
+                if (this.selectedSeriesId != item.Id)
                 {
                     this.selectedSeriesId = item.Id;
                     this.selectedDate = null;
                     this.selectedMonth = null;
                     this.viewMode = ActivityViewMode.Overview;
-                });
+                    this.Refresh();
+                }
             };
             AutomationProperties.SetName(button, $"Show {item.Title} activity");
             tabs.Children.Add(button);
@@ -944,7 +937,8 @@ public sealed class StatisticsWindow : Window
             {
                 if (this.scaleMode != mode)
                 {
-                    this.TransitionDashboard(() => this.scaleMode = mode);
+                    this.scaleMode = mode;
+                    this.Refresh();
                 }
             };
             button.ToolTip = mode == ActivityScaleMode.Personal

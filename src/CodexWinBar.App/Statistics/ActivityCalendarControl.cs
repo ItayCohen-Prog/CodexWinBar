@@ -38,8 +38,8 @@ internal sealed class ActivityCalendarControl : FrameworkElement
         this.Focusable = true;
         this.Cursor = Cursors.Hand;
         this.MinHeight = 148;
-        AutomationProperties.SetName(this, "Daily activity calendar");
-        AutomationProperties.SetHelpText(this, "Use arrow keys to move by day or week, then press Enter to show hourly details.");
+        AutomationProperties.SetName(this, "Daily activity overview");
+        AutomationProperties.SetHelpText(this, "Use arrow keys to move by day or week, then press Enter to open that month.");
     }
 
     internal event Action<DateOnly>? DateSelected;
@@ -71,13 +71,7 @@ internal sealed class ActivityCalendarControl : FrameworkElement
             if (first.Month != lastMonth && (week == 0 || first.Day <= 7))
             {
                 var label = first.ToDateTime(TimeOnly.MinValue).ToString("MMM", UiCulture);
-                this.DrawText(
-                    drawingContext,
-                    label,
-                    muted,
-                    10.5,
-                    new Point(layout.Left + (week * layout.Step), 0),
-                    dpi);
+                this.DrawText(drawingContext, label, muted, 10.5, new Point(layout.Left + (week * layout.Step), 0), dpi);
                 lastMonth = first.Month;
             }
         }
@@ -90,7 +84,7 @@ internal sealed class ActivityCalendarControl : FrameworkElement
                 continue;
             }
 
-            var fill = day.Date > DateOnly.FromDateTime(DateTime.Today)
+            var fill = day.Date > this.lastSelectableDate
                 ? unavailable
                 : day.HasCoverage
                     ? day.Value <= 0.001
@@ -122,7 +116,7 @@ internal sealed class ActivityCalendarControl : FrameworkElement
 
         this.hoverDate = date;
         this.ToolTip = date is { } value && this.daysByDate.TryGetValue(value, out var day)
-            ? Tooltip(day, this.scaleMode)
+            ? this.Tooltip(day)
             : null;
     }
 
@@ -218,11 +212,7 @@ internal sealed class ActivityCalendarControl : FrameworkElement
 
         var week = offset / 7;
         var row = offset % 7;
-        return new Rect(
-            layout.Left + (week * layout.Step),
-            layout.Top + (row * layout.Step),
-            layout.CellSize,
-            layout.CellSize);
+        return new Rect(layout.Left + (week * layout.Step), layout.Top + (row * layout.Step), layout.CellSize, layout.CellSize);
     }
 
     private CalendarLayout Layout()
@@ -236,15 +226,20 @@ internal sealed class ActivityCalendarControl : FrameworkElement
         return new CalendarLayout(this.days[0].Date, weeks, left, top, cell, cell + gap);
     }
 
-    private static string Tooltip(ActivityDay day, ActivityScaleMode mode)
+    private string Tooltip(ActivityDay day)
     {
+        var week = this.days.Where(item => item.Date >= PlanStatisticsProjection.WeekStart(day.Date) &&
+            item.Date <= PlanStatisticsProjection.WeekStart(day.Date).AddDays(6));
+        var weekTotal = week.Sum(item => item.Value);
         if (!day.HasCoverage)
         {
-            return $"{day.Date.ToString("dddd, MMM d", UiCulture)}\nNo observation data";
+            return $"{day.Date.ToString("dddd, MMMM d", UiCulture)}\nNo observation data\nWeek total: {weekTotal:0.#} quota points";
         }
 
-        return $"{day.Date.ToString("dddd, MMM d", UiCulture)}\n{day.Value:0.#} quota points observed\n" +
-            $"{day.ActiveHours} active hours · {mode} scale level {day.Intensity(mode)}/4";
+        return $"{day.Date.ToString("dddd, MMMM d", UiCulture)}\n" +
+            $"{day.Value:0.#} quota points observed\n" +
+            $"{day.ActiveHours} active hours · {day.ObservationCount} observations\n" +
+            $"{this.scaleMode} intensity {day.Intensity(this.scaleMode)}/4 · Week total {weekTotal:0.#} pts";
     }
 
     private bool CanSelect(DateOnly date) => date <= this.lastSelectableDate && this.daysByDate.ContainsKey(date);
@@ -266,13 +261,7 @@ internal sealed class ActivityCalendarControl : FrameworkElement
         return Color.FromArgb((byte)alpha, accent.R, accent.G, accent.B);
     }
 
-    private void DrawText(
-        DrawingContext drawingContext,
-        string text,
-        Color color,
-        double size,
-        Point origin,
-        double pixelsPerDip)
+    private void DrawText(DrawingContext context, string text, Color color, double size, Point origin, double dpi)
     {
         var formatted = new FormattedText(
             text,
@@ -281,15 +270,9 @@ internal sealed class ActivityCalendarControl : FrameworkElement
             new Typeface(CalendarFont, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal),
             size,
             new SolidColorBrush(color),
-            pixelsPerDip);
-        drawingContext.DrawText(formatted, origin);
+            dpi);
+        context.DrawText(formatted, origin);
     }
 
-    private sealed record CalendarLayout(
-        DateOnly Start,
-        int Weeks,
-        double Left,
-        double Top,
-        double CellSize,
-        double Step);
+    private sealed record CalendarLayout(DateOnly Start, int Weeks, double Left, double Top, double CellSize, double Step);
 }

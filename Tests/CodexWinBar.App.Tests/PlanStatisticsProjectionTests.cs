@@ -135,6 +135,26 @@ public sealed class PlanStatisticsProjectionTests
         Assert.Equal(8, day.Hours[now.LocalDateTime.Hour].Value);
     }
 
+    [Fact]
+    public void MonthContaining_clips_week_totals_to_the_selected_month()
+    {
+        var now = new DateTimeOffset(2026, 8, 13, 12, 0, 0, TimeSpan.Zero);
+        var julyReset = new DateTimeOffset(2026, 7, 31, 17, 0, 0, TimeSpan.Zero);
+        var augustReset = new DateTimeOffset(2026, 8, 1, 17, 0, 0, TimeSpan.Zero);
+        var series = Series(
+            Sample(new DateTimeOffset(2026, 7, 31, 10, 0, 0, TimeSpan.Zero), 0, julyReset),
+            Sample(new DateTimeOffset(2026, 7, 31, 11, 0, 0, TimeSpan.Zero), 80, julyReset),
+            Sample(new DateTimeOffset(2026, 8, 1, 10, 0, 0, TimeSpan.Zero), 0, augustReset),
+            Sample(new DateTimeOffset(2026, 8, 1, 11, 0, 0, TimeSpan.Zero), 20, augustReset));
+
+        var month = PlanStatisticsProjection.BuildActivity(series, now)
+            .MonthContaining(new DateOnly(2026, 8, 1));
+
+        Assert.Equal(20, month.Total);
+        Assert.Equal(20, month.Weeks[0].Total);
+        Assert.DoesNotContain(month.Weeks[0].Days, day => day.Date.Month == 7);
+    }
+
     private static PlanUsageSeries Series(params PlanUsageSample[] samples) => new()
     {
         Id = "session",

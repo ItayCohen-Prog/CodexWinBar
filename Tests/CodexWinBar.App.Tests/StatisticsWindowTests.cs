@@ -27,10 +27,19 @@ public sealed class StatisticsWindowTests
                 var window = Assert.IsType<StatisticsWindow>(constructor?.Invoke([store, ProviderCatalog.CreateAll()]));
                 var refresh = typeof(StatisticsWindow).GetMethod("Refresh", BindingFlags.Instance | BindingFlags.NonPublic);
                 var selectDate = typeof(StatisticsWindow).GetMethod("SelectDate", BindingFlags.Instance | BindingFlags.NonPublic);
+                var selectMonth = typeof(StatisticsWindow).GetMethod("SelectMonth", BindingFlags.Instance | BindingFlags.NonPublic);
+                var selectWeek = typeof(StatisticsWindow).GetMethod("SelectWeek", BindingFlags.Instance | BindingFlags.NonPublic);
                 var scaleMode = typeof(StatisticsWindow).GetField("scaleMode", BindingFlags.Instance | BindingFlags.NonPublic);
+                var viewMode = typeof(StatisticsWindow).GetField("viewMode", BindingFlags.Instance | BindingFlags.NonPublic);
 
                 refresh?.Invoke(window, null);
+                Assert.Equal(ActivityViewMode.Overview, viewMode?.GetValue(window));
+                selectMonth?.Invoke(window, [DateOnly.FromDateTime(DateTime.Today)]);
+                Assert.Equal(ActivityViewMode.Month, viewMode?.GetValue(window));
+                selectWeek?.Invoke(window, [PlanStatisticsProjection.WeekStart(DateOnly.FromDateTime(DateTime.Today))]);
+                Assert.Equal(ActivityViewMode.Week, viewMode?.GetValue(window));
                 selectDate?.Invoke(window, [DateOnly.FromDateTime(DateTime.Today.AddDays(-2))]);
+                Assert.Equal(ActivityViewMode.Day, viewMode?.GetValue(window));
                 scaleMode?.SetValue(window, ActivityScaleMode.Fixed);
                 refresh?.Invoke(window, null);
             }

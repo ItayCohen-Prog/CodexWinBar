@@ -34,6 +34,18 @@ internal sealed record ActivityWeek(
     int CoveredDays,
     ActivityDay? BusiestDay);
 
+internal sealed record ActivityMonth(
+    DateOnly StartsOn,
+    DateOnly EndsOn,
+    IReadOnlyList<ActivityDay> Days,
+    IReadOnlyList<ActivityWeek> Weeks,
+    double Total,
+    int ActiveDays,
+    int CoveredDays,
+    double DailyAverage,
+    ActivityDay? BusiestDay,
+    ActivityWeek? BusiestWeek);
+
 internal sealed record ActivityOverview(
     IReadOnlyList<ActivityDay> Days,
     double Total,
@@ -58,6 +70,44 @@ internal sealed record ActivityOverview(
             active.Length,
             days.Count(item => item.HasCoverage),
             active.OrderByDescending(item => item.Value).FirstOrDefault());
+    }
+
+    internal ActivityMonth MonthContaining(DateOnly date)
+    {
+        var start = new DateOnly(date.Year, date.Month, 1);
+        var end = start.AddMonths(1).AddDays(-1);
+        var days = this.Days.Where(item => item.Date >= start && item.Date <= end && item.Date <= this.EndsOn).ToArray();
+        var weeks = new List<ActivityWeek>();
+        for (var weekStart = PlanStatisticsProjection.WeekStart(start);
+             weekStart <= PlanStatisticsProjection.WeekStart(end);
+             weekStart = weekStart.AddDays(7))
+        {
+            var visibleDays = this.WeekContaining(weekStart).Days
+                .Where(item => item.Date >= start && item.Date <= end && item.Date <= this.EndsOn)
+                .ToArray();
+            var activeWeekDays = visibleDays.Where(item => item.Value > 0.001).ToArray();
+            weeks.Add(new ActivityWeek(
+                weekStart,
+                visibleDays,
+                visibleDays.Sum(item => item.Value),
+                activeWeekDays.Length,
+                visibleDays.Count(item => item.HasCoverage),
+                activeWeekDays.OrderByDescending(item => item.Value).FirstOrDefault()));
+        }
+
+        var active = days.Where(item => item.Value > 0.001).ToArray();
+        var coveredDays = days.Count(item => item.HasCoverage);
+        return new ActivityMonth(
+            start,
+            end,
+            days,
+            weeks,
+            days.Sum(item => item.Value),
+            active.Length,
+            coveredDays,
+            coveredDays == 0 ? 0 : days.Sum(item => item.Value) / coveredDays,
+            active.OrderByDescending(item => item.Value).FirstOrDefault(),
+            weeks.Where(item => item.Total > 0.001).OrderByDescending(item => item.Total).FirstOrDefault());
     }
 }
 

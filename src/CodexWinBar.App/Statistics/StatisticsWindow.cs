@@ -14,6 +14,14 @@ using Microsoft.Win32;
 
 namespace CodexWinBar.App.Statistics;
 
+internal enum ActivityViewMode
+{
+    Overview,
+    Month,
+    Week,
+    Day,
+}
+
 /// <summary>Locally observed provider activity with calendar, weekly, and hourly drill-downs.</summary>
 public sealed class StatisticsWindow : Window
 {
@@ -29,7 +37,9 @@ public sealed class StatisticsWindow : Window
     private ProviderId selectedProvider = ProviderId.Codex;
     private string? selectedSeriesId;
     private DateOnly? selectedDate;
+    private DateOnly? selectedMonth;
     private ActivityScaleMode scaleMode = ActivityScaleMode.Personal;
+    private ActivityViewMode viewMode = ActivityViewMode.Overview;
 
     private StatisticsWindow(
         IPlanStatisticsStore store,
@@ -110,7 +120,7 @@ public sealed class StatisticsWindow : Window
         });
         heading.Children.Add(new TextBlock
         {
-            Text = "Your observed AI usage, from the year down to the hour",
+            Text = "Your observed AI usage, from the month down to the hour",
             Margin = new Thickness(0, 5, 0, 0),
             FontSize = 13,
             Foreground = this.Brush("StatisticsMutedForeground"),
@@ -159,6 +169,13 @@ public sealed class StatisticsWindow : Window
 
         var activity = PlanStatisticsProjection.BuildActivity(series, DateTimeOffset.Now);
         var latestCovered = activity.Days.LastOrDefault(day => day.HasCoverage)?.Date ?? activity.EndsOn;
+        var earliestMonth = new DateOnly(activity.StartsOn.Year, activity.StartsOn.Month, 1);
+        var latestMonth = new DateOnly(activity.EndsOn.Year, activity.EndsOn.Month, 1);
+        if (this.selectedMonth is null || this.selectedMonth.Value < earliestMonth || this.selectedMonth.Value > latestMonth)
+        {
+            this.selectedMonth = new DateOnly(latestCovered.Year, latestCovered.Month, 1);
+        }
+
         if (this.selectedDate is null || activity.Day(this.selectedDate.Value) is null)
         {
             this.selectedDate = latestCovered;
@@ -210,6 +227,8 @@ public sealed class StatisticsWindow : Window
                 this.selectedProvider = provider;
                 this.selectedSeriesId = null;
                 this.selectedDate = null;
+                this.selectedMonth = null;
+                this.viewMode = ActivityViewMode.Overview;
                 this.Refresh();
             };
             AutomationProperties.SetName(button, $"{descriptor.Metadata.DisplayName} activity");
@@ -227,12 +246,30 @@ public sealed class StatisticsWindow : Window
         var accent = this.isDark ? Blend(rawAccent, Colors.White, 0.32) : rawAccent;
         var selected = activity.Day(this.selectedDate!.Value) ?? activity.Days[^1];
         var week = activity.WeekContaining(selected.Date);
+        var month = activity.MonthContaining(this.selectedMonth!.Value);
         var root = new StackPanel { Orientation = Orientation.Vertical };
         root.Children.Add(this.BuildControlRow(allSeries));
-        root.Children.Add(this.BuildOverviewMetrics(activity, accent));
-        root.Children.Add(this.BuildCalendarCard(activity, selected, accent));
-        root.Children.Add(this.BuildWeekCard(week, selected, accent));
-        root.Children.Add(this.BuildDayCard(activity, selected, accent));
+        root.Children.Add(this.BuildTimeframeHeader(activity, selected, week, month));
+        switch (this.viewMode)
+        {
+            case ActivityViewMode.Overview:
+                root.Children.Add(this.BuildGeneralMetrics(activity, accent));
+                root.Children.Add(this.BuildOverviewCard(activity, selected, accent));
+                break;
+            case ActivityViewMode.Month:
+                root.Children.Add(this.BuildMonthMetrics(month, accent));
+                root.Children.Add(this.BuildMonthCard(month, accent));
+                break;
+            case ActivityViewMode.Week:
+                root.Children.Add(this.BuildWeekMetrics(activity, week, accent));
+                root.Children.Add(this.BuildWeekCard(activity, week, accent));
+                break;
+            case ActivityViewMode.Day:
+                root.Children.Add(this.BuildDayMetrics(activity, selected, accent));
+                root.Children.Add(this.BuildDayCard(selected, accent));
+                break;
+        }
+
         root.Children.Add(new TextBlock
         {
             Text = "Activity is derived from successful local refreshes. Quota points are new observed highs in the selected limit, not token counts. The first reading in each quota cycle is a baseline, so earlier usage is not assigned to an hour. Missing observations remain unfilled.",
@@ -305,6 +342,8 @@ public sealed class StatisticsWindow : Window
             {
                 this.selectedSeriesId = item.Id;
                 this.selectedDate = null;
+                this.selectedMonth = null;
+                this.viewMode = ActivityViewMode.Overview;
                 this.Refresh();
             };
             AutomationProperties.SetName(button, $"Show {item.Title} activity");
@@ -314,7 +353,160 @@ public sealed class StatisticsWindow : Window
         return tabs;
     }
 
-    private UIElement BuildOverviewMetrics(ActivityOverview activity, Color accent)
+    private UIElement BuildTimeframeHeader(
+        ActivityOverview activity,
+        ActivityDay selected,
+        ActivityWeek week,
+        ActivityMonth month)
+    {
+        var header = new Grid { Margin = new Thickness(0, 0, 0, 14) };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var copy = new StackPanel();
+        copy.Children.Add(this.BuildBreadcrumb(month, week));
+        var title = this.viewMode switch
+        {
+            ActivityViewMode.Overview => "Last 52 weeks",
+            ActivityViewMode.Month => month.StartsOn.ToString("MMMM yyyy", UiCulture),
+            ActivityViewMode.Week => $"{week.StartsOn.ToString("MMMM d", UiCulture)}–{week.StartsOn.AddDays(6).ToString("MMMM d", UiCulture)}",
+            _ => selected.Date.ToString("dddd, MMMM d", UiCulture),
+        };
+        var guidance = this.viewMode switch
+        {
+            ActivityViewMode.Overview => "Hover over a cube for details, or select it to open that month",
+            ActivityViewMode.Month => "Select a week to inspect its daily activity",
+            ActivityViewMode.Week => "Select a day to inspect its hourly activity",
+            _ => "Hourly activity observed during this day",
+        };
+        copy.Children.Add(new TextBlock
+        {
+            Text = title,
+            Margin = new Thickness(0, 5, 0, 2),
+            FontFamily = DisplayFont,
+            FontSize = 24,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = this.Brush("StatisticsForeground"),
+        });
+        copy.Children.Add(new TextBlock
+        {
+            Text = guidance,
+            FontSize = 12,
+            Foreground = this.Brush("StatisticsMutedForeground"),
+        });
+        header.Children.Add(copy);
+
+        if (this.viewMode == ActivityViewMode.Month)
+        {
+            var navigation = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Bottom,
+            };
+            var minimumMonth = new DateOnly(activity.StartsOn.Year, activity.StartsOn.Month, 1);
+            var maximumMonth = new DateOnly(activity.EndsOn.Year, activity.EndsOn.Month, 1);
+            var previous = this.CreateTabButton(new TextBlock { Text = "‹ Previous" }, selected: false, compact: true);
+            previous.IsEnabled = month.StartsOn > minimumMonth;
+            previous.Click += (_, _) => this.NavigateMonth(month.StartsOn.AddMonths(-1));
+            navigation.Children.Add(previous);
+            var next = this.CreateTabButton(new TextBlock { Text = "Next ›" }, selected: false, compact: true);
+            next.IsEnabled = month.StartsOn < maximumMonth;
+            next.Click += (_, _) => this.NavigateMonth(month.StartsOn.AddMonths(1));
+            navigation.Children.Add(next);
+            Grid.SetColumn(navigation, 1);
+            header.Children.Add(navigation);
+        }
+
+        return header;
+    }
+
+    private StackPanel BuildBreadcrumb(ActivityMonth month, ActivityWeek week)
+    {
+        var breadcrumb = new StackPanel { Orientation = Orientation.Horizontal };
+        if (this.viewMode == ActivityViewMode.Overview)
+        {
+            breadcrumb.Children.Add(this.BreadcrumbLabel("OVERVIEW"));
+            return breadcrumb;
+        }
+
+        var overviewButton = this.BreadcrumbButton("Overview");
+        overviewButton.Click += (_, _) =>
+        {
+            this.viewMode = ActivityViewMode.Overview;
+            this.Refresh();
+        };
+        breadcrumb.Children.Add(overviewButton);
+        breadcrumb.Children.Add(this.BreadcrumbLabel("  ›  "));
+        if (this.viewMode == ActivityViewMode.Month)
+        {
+            breadcrumb.Children.Add(this.BreadcrumbLabel("MONTH"));
+            return breadcrumb;
+        }
+
+        var monthButton = this.BreadcrumbButton(month.StartsOn.ToString("MMMM yyyy", UiCulture));
+        monthButton.Click += (_, _) =>
+        {
+            this.viewMode = ActivityViewMode.Month;
+            this.Refresh();
+        };
+        breadcrumb.Children.Add(monthButton);
+        breadcrumb.Children.Add(this.BreadcrumbLabel("  ›  "));
+        if (this.viewMode == ActivityViewMode.Week)
+        {
+            breadcrumb.Children.Add(this.BreadcrumbLabel("WEEK"));
+            return breadcrumb;
+        }
+
+        var weekButton = this.BreadcrumbButton(
+            $"{week.StartsOn.ToString("MMM d", UiCulture)}–{week.StartsOn.AddDays(6).ToString("MMM d", UiCulture)}");
+        weekButton.Click += (_, _) =>
+        {
+            this.viewMode = ActivityViewMode.Week;
+            this.Refresh();
+        };
+        breadcrumb.Children.Add(weekButton);
+        breadcrumb.Children.Add(this.BreadcrumbLabel("  ›  DAY"));
+        return breadcrumb;
+    }
+
+    private UIElement BuildGeneralMetrics(ActivityOverview activity, Color accent) => this.BuildOverviewMetrics(
+        accent,
+        ("OBSERVED", Quota(activity.Total), $"{activity.CoveredDays} observed days"),
+        ("ACTIVE DAYS", activity.ActiveDays.ToString(UiCulture), "during the last 52 weeks"),
+        ("DAILY AVG", Quota(activity.DailyAverage), "per observed day"),
+        ("BUSIEST DAY", activity.BusiestDay is { } day ? day.Date.ToString("MMM d", UiCulture) : "—", activity.BusiestDay is { } busiest ? Quota(busiest.Value) : "no activity yet"));
+
+    private UIElement BuildMonthMetrics(ActivityMonth month, Color accent) => this.BuildOverviewMetrics(
+        accent,
+        ("MONTH TOTAL", Quota(month.Total), $"{month.CoveredDays} observed days"),
+        ("ACTIVE DAYS", month.ActiveDays.ToString(UiCulture), $"of {month.Days.Count} elapsed days"),
+        ("DAILY AVG", Quota(month.DailyAverage), "per observed day"),
+        ("BUSIEST WEEK", month.BusiestWeek is { } week ? week.StartsOn.ToString("MMM d", UiCulture) : "—", month.BusiestWeek is { } busiest ? Quota(busiest.Total) : "no activity yet"));
+
+    private UIElement BuildWeekMetrics(ActivityOverview activity, ActivityWeek week, Color accent)
+    {
+        var previous = activity.WeekContaining(week.StartsOn.AddDays(-7));
+        return this.BuildOverviewMetrics(
+            accent,
+            ("WEEK TOTAL", Quota(week.Total), $"{week.CoveredDays} observed days"),
+            ("ACTIVE DAYS", week.ActiveDays.ToString(UiCulture), "of 7 days"),
+            ("VS PREV WEEK", previous.CoveredDays > 0 ? Difference(week.Total, previous.Total) : "No comparison", "observed quota points"),
+            ("BUSIEST DAY", week.BusiestDay is { } day ? day.Date.ToString("ddd", UiCulture) : "—", week.BusiestDay is { } busiest ? Quota(busiest.Value) : "no activity yet"));
+    }
+
+    private UIElement BuildDayMetrics(ActivityOverview activity, ActivityDay selected, Color accent)
+    {
+        var peak = selected.Hours.OrderByDescending(hour => hour.Value).FirstOrDefault();
+        return this.BuildOverviewMetrics(
+            accent,
+            ("DAY TOTAL", selected.HasCoverage ? Quota(selected.Value) : "—", selected.HasCoverage ? $"{selected.ObservationCount} observations" : "no observations"),
+            ("ACTIVE HOURS", selected.ActiveHours.ToString(UiCulture), "of 24 hours"),
+            ("VS PREV DAY", PreviousComparison(selected, activity.Day(selected.Date.AddDays(-1))), "observed quota points"),
+            ("BUSIEST HOUR", peak is { Value: > 0.001 } ? $"{peak.Hour:00}:00" : "—", peak is { Value: > 0.001 } ? Quota(peak.Value) : "no activity yet"));
+    }
+
+    private UIElement BuildOverviewMetrics(
+        Color accent,
+        params (string Label, string Value, string Detail)[] values)
     {
         var grid = new Grid { Margin = new Thickness(0, 0, 0, 14) };
         for (var index = 0; index < 4; index++)
@@ -322,13 +514,6 @@ public sealed class StatisticsWindow : Window
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         }
 
-        var values = new[]
-        {
-            ("OBSERVED", Quota(activity.Total), "quota activity"),
-            ("ACTIVE DAYS", activity.ActiveDays.ToString(UiCulture), $"of {activity.CoveredDays} observed"),
-            ("DAILY AVG", Quota(activity.DailyAverage), "per observed day"),
-            ("BUSIEST DAY", activity.BusiestDay is { } day ? day.Date.ToString("MMM d", UiCulture) : "—", activity.BusiestDay is { } busiest ? Quota(busiest.Value) : "no activity yet"),
-        };
         for (var index = 0; index < values.Length; index++)
         {
             var card = this.BuildMetricCard(values[index].Item1, values[index].Item2, values[index].Item3, accent);
@@ -340,7 +525,7 @@ public sealed class StatisticsWindow : Window
         return grid;
     }
 
-    private UIElement BuildCalendarCard(ActivityOverview activity, ActivityDay selected, Color accent)
+    private UIElement BuildOverviewCard(ActivityOverview activity, ActivityDay selected, Color accent)
     {
         var stack = new StackPanel();
         stack.Children.Add(this.CardHeader("Activity calendar", "Last 52 weeks"));
@@ -354,7 +539,7 @@ public sealed class StatisticsWindow : Window
         {
             Margin = new Thickness(18, 2, 18, 2),
         };
-        calendar.DateSelected += this.SelectDate;
+        calendar.DateSelected += this.SelectMonth;
         stack.Children.Add(calendar);
 
         var legend = new Grid { Margin = new Thickness(18, 2, 18, 15) };
@@ -386,74 +571,57 @@ public sealed class StatisticsWindow : Window
         Grid.SetColumn(scale, 1);
         legend.Children.Add(scale);
         stack.Children.Add(legend);
-        return this.Card(stack, new Thickness(0, 0, 0, 14));
+        return this.Card(stack, new Thickness(0));
     }
 
-    private UIElement BuildWeekCard(ActivityWeek week, ActivityDay selected, Color accent)
+    private UIElement BuildMonthCard(ActivityMonth month, Color accent)
     {
-        var layout = new Grid();
-        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(250) });
-        var chartStack = new StackPanel();
-        chartStack.Children.Add(this.CardHeader(
-            "Weekly view",
-            $"{week.StartsOn.ToString("MMM d", UiCulture)} – {week.StartsOn.AddDays(6).ToString("MMM d", UiCulture)}"));
+        var stack = new StackPanel();
+        stack.Children.Add(this.CardHeader("Weekly activity", "Select a week to see its days"));
+        var bars = month.Weeks.Select(week => new ActivityBar(
+            week.StartsOn.ToString("MMM d", UiCulture),
+            week.Total,
+            $"Week of {week.StartsOn.ToString("MMMM d", UiCulture)}: {Quota(week.Total)} · {week.ActiveDays} active days")).ToArray();
+        var chart = new ActivityBarChart(bars, accent, this.isDark, interactive: true)
+        {
+            Margin = new Thickness(18, 4, 18, 16),
+        };
+        chart.BarSelected += index => this.SelectWeek(month.Weeks[index].StartsOn);
+        stack.Children.Add(chart);
+        return this.Card(stack, new Thickness(0));
+    }
+
+    private UIElement BuildWeekCard(ActivityOverview activity, ActivityWeek week, Color accent)
+    {
+        var stack = new StackPanel();
+        stack.Children.Add(this.CardHeader("Daily activity", "Select a day to see its hours"));
         var bars = week.Days.Select(day => new ActivityBar(
             day.Date.ToString("ddd", UiCulture),
             day.Value,
-            $"{day.Date.ToString("dddd, MMM d", UiCulture)}: {Quota(day.Value)} · {day.ActiveHours} active hours")).ToArray();
-        var chart = new ActivityBarChart(bars, (int)selected.Date.DayOfWeek, accent, this.isDark)
+            $"{day.Date.ToString("dddd, MMM d", UiCulture)}: {Quota(day.Value)} · {day.ActiveHours} active hours",
+            day.Date <= activity.EndsOn)).ToArray();
+        var chart = new ActivityBarChart(bars, accent, this.isDark, interactive: true)
         {
-            Margin = new Thickness(14, 0, 12, 14),
+            Margin = new Thickness(18, 4, 18, 16),
         };
         chart.BarSelected += index => this.SelectDate(week.StartsOn.AddDays(index));
-        chartStack.Children.Add(chart);
-        layout.Children.Add(chartStack);
-
-        var stats = this.DetailStats(
-            "WEEK SUMMARY",
-            ("Total activity", Quota(week.Total)),
-            ("Active days", $"{week.ActiveDays} / 7"),
-            ("Observed days", $"{week.CoveredDays} / 7"),
-            ("Busiest day", week.BusiestDay is { } day ? $"{day.Date.ToString("ddd", UiCulture)} · {Quota(day.Value)}" : "—"));
-        stats.Margin = new Thickness(8, 48, 18, 18);
-        Grid.SetColumn(stats, 1);
-        layout.Children.Add(stats);
-        return this.Card(layout, new Thickness(0, 0, 0, 14));
+        stack.Children.Add(chart);
+        return this.Card(stack, new Thickness(0));
     }
 
-    private UIElement BuildDayCard(ActivityOverview activity, ActivityDay selected, Color accent)
+    private UIElement BuildDayCard(ActivityDay selected, Color accent)
     {
-        var layout = new Grid();
-        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(250) });
-        var chartStack = new StackPanel();
-        chartStack.Children.Add(this.CardHeader(
-            "Hourly detail",
-            selected.Date.ToString("dddd, MMMM d", UiCulture)));
+        var stack = new StackPanel();
+        stack.Children.Add(this.CardHeader("Hourly activity", "Local time"));
         var bars = selected.Hours.Select(hour => new ActivityBar(
             hour.Hour.ToString("00", UiCulture),
             hour.Value,
             $"{hour.Hour:00}:00–{hour.Hour:00}:59: {Quota(hour.Value)} · {hour.ObservationCount} observations")).ToArray();
-        var peak = selected.Hours.OrderByDescending(hour => hour.Value).FirstOrDefault();
-        chartStack.Children.Add(new ActivityBarChart(bars, peak?.Hour ?? 0, accent, this.isDark)
+        stack.Children.Add(new ActivityBarChart(bars, accent, this.isDark, interactive: false)
         {
-            Margin = new Thickness(14, 0, 12, 14),
+            Margin = new Thickness(18, 4, 18, 16),
         });
-        layout.Children.Add(chartStack);
-
-        var previous = activity.Day(selected.Date.AddDays(-1));
-        var comparison = PreviousComparison(selected, previous);
-        var stats = this.DetailStats(
-            "DAY SUMMARY",
-            ("Total activity", selected.HasCoverage ? Quota(selected.Value) : "No observations"),
-            ("Active hours", selected.ActiveHours.ToString(UiCulture)),
-            ("Busiest hour", peak is { Value: > 0.001 } ? $"{peak.Hour:00}:00 · {Quota(peak.Value)}" : "—"),
-            ("Previous day", comparison));
-        stats.Margin = new Thickness(8, 48, 18, 18);
-        Grid.SetColumn(stats, 1);
-        layout.Children.Add(stats);
-        return this.Card(layout, new Thickness(0));
+        return this.Card(stack, new Thickness(0));
     }
 
     private Border BuildMetricCard(string label, string value, string detail, Color accent)
@@ -484,52 +652,6 @@ public sealed class StatisticsWindow : Window
             Foreground = this.Brush("StatisticsMutedForeground"),
         });
         return this.Card(stack, new Thickness(0));
-    }
-
-    private Border DetailStats(string title, params (string Label, string Value)[] values)
-    {
-        var stack = new StackPanel();
-        stack.Children.Add(new TextBlock
-        {
-            Text = title,
-            Margin = new Thickness(0, 0, 0, 8),
-            FontSize = 11,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = this.Brush("StatisticsMutedForeground"),
-        });
-        foreach (var value in values)
-        {
-            var row = new Grid { Margin = new Thickness(0, 5, 0, 5) };
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            row.Children.Add(new TextBlock
-            {
-                Text = value.Label,
-                FontSize = 12,
-                Foreground = this.Brush("StatisticsMutedForeground"),
-            });
-            var text = new TextBlock
-            {
-                Text = value.Value,
-                FontSize = 12,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = this.Brush("StatisticsForeground"),
-            };
-            Typography.SetNumeralAlignment(text, FontNumeralAlignment.Tabular);
-            Grid.SetColumn(text, 1);
-            row.Children.Add(text);
-            stack.Children.Add(row);
-        }
-
-        return new Border
-        {
-            Padding = new Thickness(14),
-            CornerRadius = new CornerRadius(8),
-            Background = this.Brush("StatisticsInsetBackground"),
-            BorderBrush = this.Brush("StatisticsCardBorder"),
-            BorderThickness = new Thickness(1),
-            Child = stack,
-        };
     }
 
     private Grid CardHeader(string title, string detail)
@@ -668,6 +790,32 @@ public sealed class StatisticsWindow : Window
         Foreground = this.Brush("StatisticsMutedForeground"),
     };
 
+    private TextBlock BreadcrumbLabel(string text) => new()
+    {
+        Text = text,
+        FontSize = 10.5,
+        FontWeight = FontWeights.SemiBold,
+        Foreground = this.Brush("StatisticsMutedForeground"),
+        VerticalAlignment = VerticalAlignment.Center,
+    };
+
+    private Button BreadcrumbButton(string text)
+    {
+        var button = new Button
+        {
+            Content = text,
+            Padding = new Thickness(0),
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Foreground = this.Brush("StatisticsMutedForeground"),
+            FontSize = 10.5,
+            FontWeight = FontWeights.SemiBold,
+            Cursor = Cursors.Hand,
+        };
+        AutomationProperties.SetName(button, $"Back to {text}");
+        return button;
+    }
+
     private static System.Windows.Data.Binding TemplateBinding(string path) => new(path)
     {
         RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent),
@@ -676,6 +824,31 @@ public sealed class StatisticsWindow : Window
     private void SelectDate(DateOnly date)
     {
         this.selectedDate = date;
+        this.viewMode = ActivityViewMode.Day;
+        this.Refresh();
+    }
+
+    private void SelectMonth(DateOnly date)
+    {
+        this.selectedMonth = new DateOnly(date.Year, date.Month, 1);
+        this.selectedDate = date;
+        this.viewMode = ActivityViewMode.Month;
+        this.Refresh();
+    }
+
+    private void SelectWeek(DateOnly weekStart)
+    {
+        var monthStart = this.selectedMonth!.Value;
+        this.selectedDate = weekStart < monthStart ? monthStart : weekStart;
+        this.viewMode = ActivityViewMode.Week;
+        this.Refresh();
+    }
+
+    private void NavigateMonth(DateOnly month)
+    {
+        this.selectedMonth = new DateOnly(month.Year, month.Month, 1);
+        this.selectedDate = this.selectedMonth;
+        this.viewMode = ActivityViewMode.Month;
         this.Refresh();
     }
 
@@ -687,6 +860,17 @@ public sealed class StatisticsWindow : Window
     private SolidColorBrush Brush(string key) => (SolidColorBrush)this.Resources[key];
 
     private static string Quota(double value) => $"{value:0.#} pts";
+
+    private static string Difference(double current, double previous)
+    {
+        var difference = current - previous;
+        if (Math.Abs(difference) < 0.05)
+        {
+            return "About the same";
+        }
+
+        return difference > 0 ? $"+{difference:0.#} pts" : $"{difference:0.#} pts";
+    }
 
     private static string PreviousComparison(ActivityDay selected, ActivityDay? previous)
     {
@@ -750,7 +934,6 @@ internal static class StatisticsTheme
         Add(resources, "StatisticsForeground", dark ? "#F3F4F6" : "#17191D");
         Add(resources, "StatisticsMutedForeground", dark ? "#A7ADB8" : "#626874");
         Add(resources, "StatisticsCardBackground", dark ? "#991B1E24" : "#C8FFFFFF");
-        Add(resources, "StatisticsInsetBackground", dark ? "#52111419" : "#76F2F4F7");
         Add(resources, "StatisticsCardBorder", dark ? "#33FFFFFF" : "#1F121722");
         Add(resources, "StatisticsBadgeBackground", dark ? "#331D8FFF" : "#14126FE8");
         Add(resources, "StatisticsTabBackground", dark ? "#551B1E24" : "#80FFFFFF");

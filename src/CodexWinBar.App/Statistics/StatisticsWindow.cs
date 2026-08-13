@@ -31,7 +31,6 @@ public sealed class StatisticsWindow : Window
     private const string CalendarGlyph = "\uE787";
     private const string ClockGlyph = "\uE823";
     private const string HistoryGlyph = "\uE81C";
-    private const string ScaleGlyph = "\uE8AB";
     private static readonly FontFamily DisplayFont = new("Segoe UI Variable Display, Segoe UI");
     private static readonly FontFamily TextFont = new("Segoe UI Variable Text, Segoe UI");
     private static readonly CultureInfo UiCulture = CultureInfo.GetCultureInfo("en-US");
@@ -45,13 +44,7 @@ public sealed class StatisticsWindow : Window
     private string? selectedSeriesId;
     private DateOnly? selectedDate;
     private DateOnly? selectedMonth;
-    private ActivityScaleMode scaleMode = ActivityScaleMode.Personal;
     private ActivityViewMode viewMode = ActivityViewMode.Overview;
-    private bool providerTransitioning;
-    private bool dashboardTransitioning;
-    private bool dashboardInteractionPending;
-    private bool statisticsRefreshPending;
-    private Action? dashboardTransitionCompleted;
 
     private StatisticsWindow(
         IPlanStatisticsStore store,
@@ -123,12 +116,27 @@ public sealed class StatisticsWindow : Window
 
     private Grid BuildRoot()
     {
-        var root = new Grid { Margin = new Thickness(32, 26, 32, 24) };
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        var root = new Grid();
 
-        var header = new Grid { Margin = new Thickness(0, 0, 0, 20) };
+        var ledger = new Grid
+        {
+            MaxWidth = 1120,
+            Margin = new Thickness(32, 26, 32, 24),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
+        ledger.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        ledger.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        ledger.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        root.Children.Add(ledger);
+
+        root.SizeChanged += (_, e) =>
+        {
+            ledger.Margin = e.NewSize.Width < 960
+                ? new Thickness(24, 22, 24, 20)
+                : new Thickness(32, 26, 32, 24);
+        };
+
+        var header = new Grid { Margin = new Thickness(0, 0, 0, 22) };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var titleRow = new StackPanel { Orientation = Orientation.Horizontal };
@@ -148,7 +156,7 @@ public sealed class StatisticsWindow : Window
         heading.Children.Add(titleRow);
         heading.Children.Add(new TextBlock
         {
-            Text = "Your observed AI usage, from the month down to the hour",
+            Text = "Locally observed quota activity, from the year down to the hour",
             Margin = new Thickness(0, 5, 0, 0),
             FontSize = 13,
             Foreground = this.Brush("StatisticsMutedForeground"),
@@ -160,7 +168,7 @@ public sealed class StatisticsWindow : Window
         localHistory.ToolTip = "Built from successful local provider refreshes. Quota activity is observed locally and never estimated from token counts.";
         Grid.SetColumn(localHistory, 1);
         header.Children.Add(localHistory);
-        root.Children.Add(header);
+        ledger.Children.Add(header);
 
         var providers = new ScrollViewer
         {
@@ -168,11 +176,11 @@ public sealed class StatisticsWindow : Window
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalContentAlignment = VerticalAlignment.Center,
             Content = this.providerTabs,
-            Height = 48,
-            Margin = new Thickness(0, 0, 0, 18),
+            Height = 44,
+            Margin = new Thickness(0, 0, 0, 14),
         };
         Grid.SetRow(providers, 1);
-        root.Children.Add(providers);
+        ledger.Children.Add(providers);
 
         this.dashboardHost.HorizontalContentAlignment = HorizontalAlignment.Stretch;
         this.dashboardHost.VerticalContentAlignment = VerticalAlignment.Stretch;
@@ -184,7 +192,7 @@ public sealed class StatisticsWindow : Window
             Content = this.dashboardHost,
         };
         Grid.SetRow(scroller, 2);
-        root.Children.Add(scroller);
+        ledger.Children.Add(scroller);
         return root;
     }
 
@@ -244,11 +252,12 @@ public sealed class StatisticsWindow : Window
 
     private Button CreateProviderButton(ProviderDescriptor descriptor, bool selected)
     {
-        var content = new StackPanel
+        var content = new Grid
         {
-            Orientation = Orientation.Horizontal,
             VerticalAlignment = VerticalAlignment.Center,
         };
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(30) });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         FrameworkElement logo = LogoImages.Get(descriptor.Branding.GlyphKey, this.isDark) is { } source
             ? new Image { Source = source, Width = 27, Height = 27 }
             : LogoImages.IconGlyph(LogoImages.StatisticsGlyph, 24);
@@ -261,50 +270,44 @@ public sealed class StatisticsWindow : Window
             Color = this.isDark ? Colors.Black : Color.FromRgb(50, 55, 66),
         };
         logo.Effect = shadow;
-        logo.Opacity = selected ? 1 : 0.38;
-        logo.RenderTransformOrigin = new Point(0.5, 0.5);
-        var scale = new ScaleTransform(1, 1);
-        logo.RenderTransform = scale;
+        logo.Opacity = selected ? 1 : 0.58;
         content.Children.Add(logo);
 
         var name = new TextBlock
         {
             Text = descriptor.Metadata.DisplayName,
-            Margin = new Thickness(10, 0, 1, 0),
+            Margin = new Thickness(8, 0, 0, 0),
             FontSize = 13,
             FontWeight = FontWeights.SemiBold,
             Foreground = this.Brush("StatisticsForeground"),
             VerticalAlignment = VerticalAlignment.Center,
         };
-        name.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        var nameWidth = name.DesiredSize.Width;
         var nameHost = new Border
         {
-            Width = selected ? double.NaN : 0,
             Opacity = selected ? 1 : 0,
             ClipToBounds = true,
             Child = name,
         };
+        Grid.SetColumn(nameHost, 1);
         content.Children.Add(nameHost);
 
         var button = new Button
         {
             Content = content,
-            Padding = new Thickness(5, 5, selected ? 7 : 5, 7),
-            Margin = new Thickness(0, 0, 14, 0),
-            MinWidth = 37,
-            MinHeight = 39,
+            Padding = new Thickness(7, 5, 7, 5),
+            Margin = new Thickness(0, 0, 8, 0),
+            Width = 104,
+            Height = 40,
             Background = Brushes.Transparent,
             Cursor = Cursors.Hand,
             ToolTip = descriptor.Metadata.DisplayName,
             Template = CreateProviderButtonTemplate(),
         };
-        button.Tag = new ProviderButtonVisual(descriptor.Id, logo, nameHost, nameWidth, shadow);
+        button.Tag = descriptor.Id;
         ToolTipService.SetInitialShowDelay(button, 250);
         ToolTipService.SetBetweenShowDelay(button, 80);
         void AnimateLogo(
             double opacity,
-            double scaleValue,
             double blurRadius,
             double shadowOpacity,
             double shadowDepth,
@@ -313,8 +316,6 @@ public sealed class StatisticsWindow : Window
             if (!SystemParameters.ClientAreaAnimation)
             {
                 logo.Opacity = opacity;
-                scale.ScaleX = scaleValue;
-                scale.ScaleY = scaleValue;
                 shadow.BlurRadius = blurRadius;
                 shadow.Opacity = shadowOpacity;
                 shadow.ShadowDepth = shadowDepth;
@@ -324,15 +325,13 @@ public sealed class StatisticsWindow : Window
             var duration = TimeSpan.FromMilliseconds(milliseconds);
             var easing = new QuadraticEase { EasingMode = EasingMode.EaseOut };
             logo.BeginAnimation(OpacityProperty, new DoubleAnimation(logo.Opacity, opacity, duration) { EasingFunction = easing });
-            scale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(scale.ScaleX, scaleValue, duration) { EasingFunction = easing });
-            scale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(scale.ScaleY, scaleValue, duration) { EasingFunction = easing });
             shadow.BeginAnimation(DropShadowEffect.BlurRadiusProperty, new DoubleAnimation(shadow.BlurRadius, blurRadius, duration) { EasingFunction = easing });
             shadow.BeginAnimation(DropShadowEffect.OpacityProperty, new DoubleAnimation(shadow.Opacity, shadowOpacity, duration) { EasingFunction = easing });
             shadow.BeginAnimation(DropShadowEffect.ShadowDepthProperty, new DoubleAnimation(shadow.ShadowDepth, shadowDepth, duration) { EasingFunction = easing });
         }
 
-        void HighlightLogo() => AnimateLogo(1, 1.08, 13, 0.42, 3, 125);
-        void RestoreLogo() => AnimateLogo(selected ? 1 : 0.38, 1, selected ? 12 : 9, selected ? 0.38 : 0.24, selected ? 3 : 2, 150);
+        void HighlightLogo() => AnimateLogo(1, 13, 0.42, 3, 83);
+        void RestoreLogo() => AnimateLogo(selected ? 1 : 0.58, selected ? 12 : 9, selected ? 0.38 : 0.24, selected ? 3 : 2, 120);
 
         button.MouseEnter += (_, _) => HighlightLogo();
         button.MouseLeave += (_, _) =>
@@ -355,143 +354,26 @@ public sealed class StatisticsWindow : Window
 
     private void SelectProvider(ProviderId provider, Button targetButton)
     {
-        if (provider == this.selectedProvider || this.providerTransitioning)
+        if (provider == this.selectedProvider)
         {
             return;
         }
-
-        if (!SystemParameters.ClientAreaAnimation ||
-            targetButton.Tag is not ProviderButtonVisual target ||
-            this.providerTabs.Children.OfType<Button>()
-                .Select(button => button.Tag)
-                .OfType<ProviderButtonVisual>()
-                .FirstOrDefault(item => item.Provider == this.selectedProvider) is not { } current)
-        {
-            this.CommitProviderSelection(provider);
-            return;
-        }
-
-        this.providerTransitioning = true;
-        var duration = new Duration(TimeSpan.FromMilliseconds(180));
-        var easing = new QuadraticEase { EasingMode = EasingMode.EaseInOut };
-        current.NameHost.Width = current.NameHost.ActualWidth;
-        current.NameHost.BeginAnimation(
-            WidthProperty,
-            new DoubleAnimation(current.NameHost.ActualWidth, 0, duration) { EasingFunction = easing });
-        current.NameHost.BeginAnimation(
-            OpacityProperty,
-            new DoubleAnimation(1, 0, duration) { EasingFunction = easing });
-        current.Logo.BeginAnimation(
-            OpacityProperty,
-            new DoubleAnimation(1, 0.38, duration) { EasingFunction = easing });
-        current.Shadow.BeginAnimation(
-            DropShadowEffect.OpacityProperty,
-            new DoubleAnimation(0.38, 0.24, duration) { EasingFunction = easing });
-
-        target.NameHost.Width = 0;
-        target.NameHost.Opacity = 0;
-        target.NameHost.BeginAnimation(
-            OpacityProperty,
-            new DoubleAnimation(0, 1, duration) { EasingFunction = easing });
-        target.Logo.BeginAnimation(
-            OpacityProperty,
-            new DoubleAnimation(target.Logo.Opacity, 1, duration) { EasingFunction = easing });
-        target.Shadow.BeginAnimation(
-            DropShadowEffect.OpacityProperty,
-            new DoubleAnimation(target.Shadow.Opacity, 0.38, duration) { EasingFunction = easing });
-        var expand = new DoubleAnimation(0, target.NameWidth, duration) { EasingFunction = easing };
-        expand.Completed += (_, _) => this.CommitProviderSelection(provider);
-        target.NameHost.BeginAnimation(WidthProperty, expand);
-    }
-
-    private void CommitProviderSelection(ProviderId provider)
-    {
         this.SetProviderSelection(provider);
         this.Refresh();
-        this.providerTransitioning = false;
+        _ = targetButton.Focus();
     }
 
     private void SetProviderSelection(ProviderId provider)
     {
         this.selectedProvider = provider;
         this.selectedSeriesId = null;
-        this.selectedDate = null;
-        this.selectedMonth = null;
-        this.viewMode = ActivityViewMode.Overview;
     }
 
     private void TransitionDashboard(Action update, Action? completed = null)
     {
         update();
-        this.dashboardTransitionCompleted += completed;
-        if (this.dashboardTransitioning)
-        {
-            this.dashboardInteractionPending = true;
-            return;
-        }
-
-        if (!SystemParameters.ClientAreaAnimation)
-        {
-            this.Refresh();
-            var immediate = this.dashboardTransitionCompleted;
-            this.dashboardTransitionCompleted = null;
-            immediate?.Invoke();
-            return;
-        }
-
-        this.dashboardTransitioning = true;
-        var translate = (TranslateTransform)this.dashboardHost.RenderTransform;
-        var fadeOutDuration = TimeSpan.FromMilliseconds(85);
-        var fadeOut = new DoubleAnimation(this.dashboardHost.Opacity, 0, fadeOutDuration)
-        {
-            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn },
-        };
-        translate.BeginAnimation(
-            TranslateTransform.YProperty,
-            new DoubleAnimation(translate.Y, -3, fadeOutDuration)
-            {
-                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn },
-            });
-        fadeOut.Completed += (_, _) =>
-        {
-            this.dashboardHost.BeginAnimation(OpacityProperty, null);
-            translate.BeginAnimation(TranslateTransform.YProperty, null);
-            this.dashboardHost.Opacity = 0;
-            translate.Y = 5;
-            this.Refresh();
-            var fadeInDuration = TimeSpan.FromMilliseconds(165);
-            var fadeIn = new DoubleAnimation(0, 1, fadeInDuration)
-            {
-                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
-            };
-            fadeIn.Completed += (_, _) =>
-            {
-                this.dashboardTransitioning = false;
-                if (this.dashboardInteractionPending)
-                {
-                    this.dashboardInteractionPending = false;
-                    this.TransitionDashboard(() => { });
-                    return;
-                }
-
-                var callbacks = this.dashboardTransitionCompleted;
-                this.dashboardTransitionCompleted = null;
-                callbacks?.Invoke();
-                if (this.statisticsRefreshPending)
-                {
-                    this.statisticsRefreshPending = false;
-                    _ = this.Dispatcher.BeginInvoke(this.Refresh);
-                }
-            };
-            this.dashboardHost.BeginAnimation(OpacityProperty, fadeIn);
-            translate.BeginAnimation(
-                TranslateTransform.YProperty,
-                new DoubleAnimation(5, 0, fadeInDuration)
-                {
-                    EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
-                });
-        };
-        this.dashboardHost.BeginAnimation(OpacityProperty, fadeOut);
+        this.Refresh();
+        completed?.Invoke();
     }
 
     private UIElement BuildDashboard(
@@ -533,21 +415,28 @@ public sealed class StatisticsWindow : Window
 
     private UIElement BuildControlRow(IReadOnlyList<PlanUsageSeries> series)
     {
-        var row = new Grid { Margin = new Thickness(0, 0, 0, 16), MinHeight = 34 };
+        var row = new Grid { Margin = new Thickness(0, 0, 0, 18), MinHeight = 36 };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        row.Children.Add(this.BuildSeriesTabs(series));
+        var seriesGroup = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        seriesGroup.Children.Add(new TextBlock
+        {
+            Text = "Series",
+            Margin = new Thickness(0, 0, 10, 0),
+            FontSize = 12,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = this.Brush("StatisticsMutedForeground"),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        seriesGroup.Children.Add(this.BuildSeriesTabs(series));
+        row.Children.Add(seriesGroup);
 
-        var metrics = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(12, 0, 0, 0) };
-        metrics.Children.Add(this.CreateTabButton(this.IconLabel(LogoImages.StatisticsGlyph, "Quota", true), selected: true, compact: true));
-        var tokens = this.CreateTabButton(this.IconLabel("\uE8B7", "Tokens"), selected: false, compact: true);
-        tokens.IsEnabled = false;
-        tokens.Opacity = 0.42;
-        tokens.ToolTip = "Token history is not available yet. This view never estimates tokens from quota percentages.";
-        ToolTipService.SetShowOnDisabled(tokens, true);
-        metrics.Children.Add(tokens);
-        Grid.SetColumn(metrics, 1);
-        row.Children.Add(metrics);
+        var measure = this.IconLabel(ClockGlyph, "Quota points · Local time", iconSize: 12);
+        measure.Opacity = 0.82;
+        measure.VerticalAlignment = VerticalAlignment.Center;
+        measure.ToolTip = "Positive quota increases observed during successful local refreshes. The first reading in each reset cycle is a baseline.";
+        Grid.SetColumn(measure, 1);
+        row.Children.Add(measure);
         return row;
     }
 
@@ -566,9 +455,6 @@ public sealed class StatisticsWindow : Window
                 if (this.selectedSeriesId != item.Id)
                 {
                     this.selectedSeriesId = item.Id;
-                    this.selectedDate = null;
-                    this.selectedMonth = null;
-                    this.viewMode = ActivityViewMode.Overview;
                     this.Refresh();
                 }
             };
@@ -585,83 +471,93 @@ public sealed class StatisticsWindow : Window
         ActivityWeek week,
         ActivityMonth month)
     {
-        var header = new Grid { Margin = new Thickness(0, 0, 0, 12) };
-        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var header = new Grid { Margin = new Thickness(0, 0, 0, 14) };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var path = new StackPanel();
         if (this.viewMode != ActivityViewMode.Overview)
         {
-            var back = this.CreateTabButton(
-                this.IconLabel(BackGlyph, "Back", true),
-                selected: false,
-                compact: true);
-            back.Margin = new Thickness(0, 0, 14, 0);
-            back.VerticalAlignment = VerticalAlignment.Center;
-            back.Click += (_, _) => this.GoBack();
-            back.ToolTip = $"Back to {this.ParentViewName()}";
-            AutomationProperties.SetName(back, $"Back to {this.ParentViewName()}");
-            header.Children.Add(back);
-        }
-
-        var copy = new StackPanel();
-        copy.Children.Add(this.TimeframeLabel(
-            this.viewMode.ToString().ToUpperInvariant(),
-            this.viewMode is ActivityViewMode.Overview or ActivityViewMode.Month ? CalendarGlyph : ClockGlyph));
-        var title = this.viewMode switch
-        {
-            ActivityViewMode.Overview => null,
-            ActivityViewMode.Month => month.StartsOn.ToString("MMMM yyyy", UiCulture),
-            ActivityViewMode.Week => $"{week.StartsOn.ToString("MMMM d", UiCulture)}–{week.StartsOn.AddDays(6).ToString("MMMM d", UiCulture)}",
-            _ => selected.Date.ToString("dddd, MMMM d", UiCulture),
-        };
-        var guidance = this.viewMode switch
-        {
-            ActivityViewMode.Overview => "Hover over a cube for details, or select it to open that month",
-            ActivityViewMode.Month => "Select a week to inspect its daily activity",
-            ActivityViewMode.Week => "Select a day to inspect its hourly activity",
-            _ => "Hourly activity observed during this day",
-        };
-        if (title is not null)
-        {
-            copy.Children.Add(new TextBlock
+            var parentLabel = this.viewMode switch
             {
-                Text = title,
-                Margin = new Thickness(0, 5, 0, 2),
-                FontFamily = DisplayFont,
-                FontSize = 24,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = this.Brush("StatisticsForeground"),
-            });
+                ActivityViewMode.Month => "Last 52 weeks",
+                ActivityViewMode.Week => month.StartsOn.ToString("MMMM yyyy", UiCulture),
+                _ => FormatWeekRange(week.StartsOn),
+            };
+            var back = this.CreateTabButton(this.IconLabel(BackGlyph, parentLabel, true), selected: false, compact: true);
+            back.HorizontalAlignment = HorizontalAlignment.Left;
+            back.Margin = new Thickness(0, 0, 0, 9);
+            back.Click += (_, _) => this.GoBack();
+            AutomationProperties.SetName(back, $"Back to {parentLabel}");
+            path.Children.Add(back);
         }
 
-        copy.Children.Add(new TextBlock
+        var breadcrumb = this.viewMode switch
         {
-            Text = guidance,
-            Margin = this.viewMode == ActivityViewMode.Overview ? new Thickness(0, 4, 0, 0) : new Thickness(0),
+            ActivityViewMode.Overview => "All activity",
+            ActivityViewMode.Month => "All activity / Month",
+            ActivityViewMode.Week => $"All activity / {month.StartsOn.ToString("MMMM", UiCulture)} / Week",
+            _ => $"All activity / {month.StartsOn.ToString("MMMM", UiCulture)} / {FormatWeekRange(week.StartsOn)}",
+        };
+        path.Children.Add(new TextBlock
+        {
+            Text = breadcrumb,
             FontSize = 12,
             Foreground = this.Brush("StatisticsMutedForeground"),
         });
-        Grid.SetColumn(copy, 1);
-        header.Children.Add(copy);
+        path.Children.Add(new TextBlock
+        {
+            Text = this.viewMode switch
+            {
+                ActivityViewMode.Overview => "Last 52 weeks",
+                ActivityViewMode.Month => month.StartsOn.ToString("MMMM yyyy", UiCulture),
+                ActivityViewMode.Week => FormatWeekRange(week.StartsOn),
+                _ => selected.Date.ToString("dddd, MMMM d", UiCulture),
+            },
+            Margin = new Thickness(0, 3, 0, 0),
+            FontFamily = DisplayFont,
+            FontSize = 24,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = this.Brush("StatisticsForeground"),
+        });
+        header.Children.Add(path);
 
-        if (this.viewMode == ActivityViewMode.Month)
+        if (this.viewMode != ActivityViewMode.Overview)
         {
             var navigation = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
                 VerticalAlignment = VerticalAlignment.Bottom,
             };
-            var minimumMonth = new DateOnly(activity.StartsOn.Year, activity.StartsOn.Month, 1);
-            var maximumMonth = new DateOnly(activity.EndsOn.Year, activity.EndsOn.Month, 1);
             var previous = this.CreateTabButton(this.IconLabel(BackGlyph, "Previous"), selected: false, compact: true);
-            previous.IsEnabled = month.StartsOn > minimumMonth;
-            previous.Click += (_, _) => this.NavigateMonth(month.StartsOn.AddMonths(-1));
-            navigation.Children.Add(previous);
             var next = this.CreateTabButton(this.IconLabel("\uE72A", "Next"), selected: false, compact: true);
-            next.IsEnabled = month.StartsOn < maximumMonth;
-            next.Click += (_, _) => this.NavigateMonth(month.StartsOn.AddMonths(1));
+            switch (this.viewMode)
+            {
+                case ActivityViewMode.Month:
+                    var minimumMonth = new DateOnly(activity.StartsOn.Year, activity.StartsOn.Month, 1);
+                    var maximumMonth = new DateOnly(activity.EndsOn.Year, activity.EndsOn.Month, 1);
+                    previous.IsEnabled = month.StartsOn > minimumMonth;
+                    next.IsEnabled = month.StartsOn < maximumMonth;
+                    previous.Click += (_, _) => this.NavigateMonth(month.StartsOn.AddMonths(-1));
+                    next.Click += (_, _) => this.NavigateMonth(month.StartsOn.AddMonths(1));
+                    break;
+                case ActivityViewMode.Week:
+                    previous.IsEnabled = week.StartsOn.AddDays(-7) >= PlanStatisticsProjection.WeekStart(activity.StartsOn);
+                    next.IsEnabled = week.StartsOn.AddDays(7) <= PlanStatisticsProjection.WeekStart(activity.EndsOn);
+                    previous.Click += (_, _) => this.NavigateWeek(week.StartsOn.AddDays(-7));
+                    next.Click += (_, _) => this.NavigateWeek(week.StartsOn.AddDays(7));
+                    break;
+                case ActivityViewMode.Day:
+                    previous.IsEnabled = selected.Date > activity.StartsOn;
+                    next.IsEnabled = selected.Date < activity.EndsOn;
+                    previous.Click += (_, _) => this.NavigateDay(selected.Date.AddDays(-1));
+                    next.Click += (_, _) => this.NavigateDay(selected.Date.AddDays(1));
+                    break;
+            }
+
+            navigation.Children.Add(previous);
             navigation.Children.Add(next);
-            Grid.SetColumn(navigation, 2);
+            Grid.SetColumn(navigation, 1);
             header.Children.Add(navigation);
         }
 
@@ -724,67 +620,102 @@ public sealed class StatisticsWindow : Window
         string primaryDetail,
         params (string Icon, string Label, string Value, string Detail)[] facts)
     {
-        var grid = new Grid { Margin = new Thickness(0, 2, 0, 28), MinHeight = 96 };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(255) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.Children.Add(this.BuildProviderArtwork(descriptor, accent));
+        _ = descriptor;
+        _ = accent;
+        var shell = new Border
+        {
+            Margin = new Thickness(0, 2, 0, 26),
+            Padding = new Thickness(0, 15, 0, 15),
+            BorderBrush = this.Brush("StatisticsCardBorder"),
+            BorderThickness = new Thickness(0, 1, 0, 1),
+        };
+        var grid = new Grid { MinHeight = 58 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.55, GridUnitType.Star), MinWidth = 230 });
+        foreach (var _ in facts)
+        {
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 150 });
+        }
 
         var primary = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        primary.Children.Add(new TextBlock
-        {
-            Text = primaryLabel,
-            FontSize = 10.5,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = this.Brush("StatisticsMutedForeground"),
-        });
         var value = new TextBlock
         {
-            Text = primaryValue,
-            Margin = new Thickness(0, 1, 0, 0),
+            Text = primaryValue.Replace(" pts", " quota points", StringComparison.Ordinal),
             FontFamily = DisplayFont,
-            FontSize = 32,
+            FontSize = 27,
             FontWeight = FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(this.isDark ? Blend(accent, Colors.White, 0.18) : accent),
+            Foreground = this.Brush("StatisticsForeground"),
         };
         Typography.SetNumeralAlignment(value, FontNumeralAlignment.Tabular);
         primary.Children.Add(value);
         primary.Children.Add(new TextBlock
         {
             Text = primaryDetail,
-            FontSize = 11.5,
+            Margin = new Thickness(0, 3, 0, 0),
+            FontSize = 12,
             Foreground = this.Brush("StatisticsMutedForeground"),
         });
-        Grid.SetColumn(primary, 1);
         grid.Children.Add(primary);
 
-        var factList = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        foreach (var fact in facts)
+        for (var index = 0; index < facts.Length; index++)
         {
-            factList.Children.Add(this.BuildSummaryFact(fact.Icon, fact.Label, fact.Value, fact.Detail, accent));
+            var fact = facts[index];
+            var panel = new StackPanel
+            {
+                Margin = new Thickness(18, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            panel.Children.Add(new TextBlock
+            {
+                Text = fact.Label,
+                FontSize = 11.5,
+                Foreground = this.Brush("StatisticsMutedForeground"),
+            });
+            var factValue = new TextBlock
+            {
+                Text = fact.Value,
+                Margin = new Thickness(0, 3, 0, 0),
+                FontSize = 14,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = this.Brush("StatisticsForeground"),
+            };
+            Typography.SetNumeralAlignment(factValue, FontNumeralAlignment.Tabular);
+            panel.Children.Add(factValue);
+            panel.Children.Add(new TextBlock
+            {
+                Text = fact.Detail,
+                Margin = new Thickness(0, 1, 0, 0),
+                FontSize = 11,
+                Foreground = this.Brush("StatisticsMutedForeground"),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            });
+            Grid.SetColumn(panel, index + 1);
+            grid.Children.Add(panel);
         }
 
-        Grid.SetColumn(factList, 2);
-        grid.Children.Add(factList);
-
-        return grid;
+        AutomationProperties.SetName(grid, $"{primaryLabel}: {primaryValue}. {primaryDetail}");
+        shell.Child = grid;
+        return shell;
     }
 
     private UIElement BuildOverviewSection(ActivityOverview activity, ActivityDay selected, Color accent)
     {
         var stack = new StackPanel();
-        stack.Children.Add(this.SectionHeader(CalendarGlyph, "Activity calendar", null, accent, this.BuildScaleButtons()));
+        stack.Children.Add(this.SectionHeader(CalendarGlyph, "Observed quota activity", "Relative intensity · Local time", accent));
+        var detail = this.BuildInspectionLine(
+            $"{selected.Date.ToString("dddd, MMMM d", UiCulture)} · {QuotaLong(selected.Value)} · {selected.ActiveHours} active hours · {selected.ObservationCount} observations");
+        stack.Children.Add(detail);
         var calendar = new ActivityCalendarControl(
             activity.Days,
             selected.Date,
             activity.EndsOn,
             accent,
             this.isDark,
-            this.scaleMode)
+            ActivityScaleMode.Personal)
         {
-            Margin = new Thickness(0, 5, 0, 5),
+            Margin = new Thickness(0, 8, 0, 6),
         };
         calendar.DateSelected += this.SelectMonth;
+        calendar.DateInspected += day => detail.Text = CalendarInspection(activity, day);
         stack.Children.Add(calendar);
 
         var legend = new Grid { Margin = new Thickness(30, 2, 0, 4) };
@@ -792,9 +723,7 @@ public sealed class StatisticsWindow : Window
         legend.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         legend.Children.Add(new TextBlock
         {
-            Text = this.scaleMode == ActivityScaleMode.Personal
-                ? "Personal scale adapts to your active days"
-                : "Fixed scale: 5 · 15 · 30 quota points",
+            Text = "Relative scale adapts to your observed active days · pale cells have no local sample",
             FontSize = 11.5,
             Foreground = this.Brush("StatisticsMutedForeground"),
         });
@@ -822,11 +751,12 @@ public sealed class StatisticsWindow : Window
     private UIElement BuildMonthSection(ActivityMonth month, Color accent)
     {
         var stack = new StackPanel();
-        stack.Children.Add(this.SectionHeader(LogoImages.StatisticsGlyph, "Weekly activity", "Select a week to see its days", accent));
+        stack.Children.Add(this.SectionHeader(LogoImages.StatisticsGlyph, "Weekly activity", "Local time", accent));
         var bars = month.Weeks.Select(week => new ActivityBar(
             week.StartsOn.ToString("MMM d", UiCulture),
             week.Total,
-            $"Week of {week.StartsOn.ToString("MMMM d", UiCulture)}: {Quota(week.Total)} · {week.ActiveDays} active days")).ToArray();
+            $"Week of {week.StartsOn.ToString("MMMM d", UiCulture)}: {Quota(week.Total)} · {week.ActiveDays} active days",
+            week.Days.Count > 0)).ToArray();
         var chart = new ActivityBarChart(bars, accent, this.isDark, interactive: true, actionLabel: "Open week")
         {
             Margin = new Thickness(0, 8, 0, 12),
@@ -839,9 +769,9 @@ public sealed class StatisticsWindow : Window
     private UIElement BuildWeekSection(ActivityOverview activity, ActivityWeek week, Color accent)
     {
         var stack = new StackPanel();
-        stack.Children.Add(this.SectionHeader(LogoImages.StatisticsGlyph, "Daily activity", "Select a day to see its hours", accent));
+        stack.Children.Add(this.SectionHeader(LogoImages.StatisticsGlyph, "Daily activity", "Local time", accent));
         var bars = week.Days.Select(day => new ActivityBar(
-            day.Date.ToString("ddd", UiCulture),
+            day.Date.ToString("ddd d", UiCulture),
             day.Value,
             $"{day.Date.ToString("dddd, MMM d", UiCulture)}: {Quota(day.Value)} · {day.ActiveHours} active hours",
             day.Date <= activity.EndsOn)).ToArray();
@@ -867,87 +797,6 @@ public sealed class StatisticsWindow : Window
             Margin = new Thickness(0, 8, 0, 12),
         });
         return stack;
-    }
-
-    private UIElement BuildProviderArtwork(ProviderDescriptor descriptor, Color accent)
-    {
-        var artwork = new Grid { Width = 78, Height = 78, HorizontalAlignment = HorizontalAlignment.Left };
-        FrameworkElement logo = LogoImages.Get(descriptor.Branding.GlyphKey, this.isDark) is { } source
-            ? new Image { Source = source, Width = 46, Height = 46 }
-            : LogoImages.IconGlyph(LogoImages.StatisticsGlyph, 38);
-        logo.HorizontalAlignment = HorizontalAlignment.Center;
-        logo.VerticalAlignment = VerticalAlignment.Center;
-        logo.Effect = new DropShadowEffect
-        {
-            BlurRadius = 13,
-            Direction = 270,
-            ShadowDepth = 3,
-            Opacity = 0.34,
-            Color = this.isDark ? Colors.Black : Blend(accent, Colors.Black, 0.58),
-        };
-        artwork.Children.Add(logo);
-        return artwork;
-    }
-
-    private UIElement BuildSummaryFact(
-        string icon,
-        string label,
-        string value,
-        string detail,
-        Color accent)
-    {
-        var row = new Grid { Margin = new Thickness(0, 2, 0, 2) };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(25) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(108) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        var glyph = LogoImages.IconGlyph(icon, 13);
-        glyph.HorizontalAlignment = HorizontalAlignment.Left;
-        glyph.Foreground = new SolidColorBrush(accent);
-        row.Children.Add(glyph);
-        var labelText = new TextBlock
-        {
-            Text = label,
-            FontSize = 11.5,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = this.Brush("StatisticsMutedForeground"),
-        };
-        Grid.SetColumn(labelText, 1);
-        row.Children.Add(labelText);
-        var reading = new TextBlock { FontSize = 11.5, Foreground = this.Brush("StatisticsMutedForeground") };
-        reading.Inlines.Add(new Run(value) { FontWeight = FontWeights.SemiBold, Foreground = this.Brush("StatisticsForeground") });
-        reading.Inlines.Add(new Run($"  {detail}"));
-        Grid.SetColumn(reading, 2);
-        row.Children.Add(reading);
-        return row;
-    }
-
-    private StackPanel BuildScaleButtons()
-    {
-        var scales = new StackPanel { Orientation = Orientation.Horizontal };
-        foreach (var mode in new[] { ActivityScaleMode.Personal, ActivityScaleMode.Fixed })
-        {
-            var button = this.CreateTabButton(
-                this.IconLabel(
-                    mode == ActivityScaleMode.Personal ? ScaleGlyph : "\uE72E",
-                    mode == ActivityScaleMode.Personal ? "Personal" : "Fixed",
-                    mode == this.scaleMode),
-                mode == this.scaleMode,
-                compact: true);
-            button.Click += (_, _) =>
-            {
-                if (this.scaleMode != mode)
-                {
-                    this.scaleMode = mode;
-                    this.Refresh();
-                }
-            };
-            button.ToolTip = mode == ActivityScaleMode.Personal
-                ? "Levels follow your own active-day distribution. Best for seeing patterns."
-                : "Levels use 5, 15, and 30 observed quota-point thresholds. Best for comparison.";
-            scales.Children.Add(button);
-        }
-
-        return scales;
     }
 
     private Grid SectionHeader(string icon, string title, string? detail, Color accent, UIElement? trailing = null)
@@ -1105,15 +954,21 @@ public sealed class StatisticsWindow : Window
         Foreground = this.Brush("StatisticsMutedForeground"),
     };
 
-    private StackPanel TimeframeLabel(string text, string icon)
+    private TextBlock BuildInspectionLine(string text)
     {
-        var label = this.IconLabel(icon, text, true, iconSize: 11);
-        foreach (var child in label.Children.OfType<TextBlock>())
+        var line = new TextBlock
         {
-            child.Foreground = this.Brush("StatisticsMutedForeground");
-        }
-
-        return label;
+            Text = text,
+            MinHeight = 22,
+            Margin = new Thickness(30, 5, 0, 0),
+            FontSize = 12,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = this.Brush("StatisticsMutedForeground"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        };
+        Typography.SetNumeralAlignment(line, FontNumeralAlignment.Tabular);
+        AutomationProperties.SetLiveSetting(line, AutomationLiveSetting.Polite);
+        return line;
     }
 
     private StackPanel IconLabel(string glyph, string text, bool strong = false, double iconSize = 12)
@@ -1175,6 +1030,26 @@ public sealed class StatisticsWindow : Window
         });
     }
 
+    private void NavigateWeek(DateOnly weekStart)
+    {
+        this.TransitionDashboard(() =>
+        {
+            this.selectedDate = weekStart;
+            this.selectedMonth = new DateOnly(weekStart.Year, weekStart.Month, 1);
+            this.viewMode = ActivityViewMode.Week;
+        });
+    }
+
+    private void NavigateDay(DateOnly date)
+    {
+        this.TransitionDashboard(() =>
+        {
+            this.selectedDate = date;
+            this.selectedMonth = new DateOnly(date.Year, date.Month, 1);
+            this.viewMode = ActivityViewMode.Day;
+        });
+    }
+
     private void GoBack()
     {
         this.TransitionDashboard(() => this.viewMode = this.viewMode switch
@@ -1195,18 +1070,30 @@ public sealed class StatisticsWindow : Window
 
     private void OnStatisticsChanged()
     {
-        if (!this.dashboardTransitioning)
-        {
-            _ = this.Dispatcher.BeginInvoke(this.Refresh);
-            return;
-        }
-
-        this.statisticsRefreshPending = true;
+        _ = this.Dispatcher.BeginInvoke(this.Refresh);
     }
 
     private SolidColorBrush Brush(string key) => (SolidColorBrush)this.Resources[key];
 
-    private static string Quota(double value) => $"{value:0.#} pts";
+    private static string Quota(double value) => $"{value:0.#} quota points";
+
+    private static string QuotaLong(double value) => $"{value:0.#} quota points";
+
+    private static string FormatWeekRange(DateOnly weekStart)
+    {
+        var end = weekStart.AddDays(6);
+        return weekStart.Month == end.Month
+            ? $"{weekStart.ToString("MMM d", UiCulture)}–{end.Day}"
+            : $"{weekStart.ToString("MMM d", UiCulture)}–{end.ToString("MMM d", UiCulture)}";
+    }
+
+    private static string CalendarInspection(ActivityOverview activity, ActivityDay day)
+    {
+        var weekTotal = activity.WeekContaining(day.Date).Total;
+        return day.HasCoverage
+            ? $"{day.Date.ToString("dddd, MMMM d", UiCulture)} · {QuotaLong(day.Value)} · {day.ActiveHours} active hours · {day.ObservationCount} observations · Week {QuotaLong(weekTotal)}"
+            : $"{day.Date.ToString("dddd, MMMM d", UiCulture)} · No local observation · Week {QuotaLong(weekTotal)}";
+    }
 
     private static string Difference(double current, double previous)
     {
@@ -1216,7 +1103,7 @@ public sealed class StatisticsWindow : Window
             return "About the same";
         }
 
-        return difference > 0 ? $"+{difference:0.#} pts" : $"{difference:0.#} pts";
+        return difference > 0 ? $"+{difference:0.#} quota points" : $"{difference:0.#} quota points";
     }
 
     private static string PreviousComparison(ActivityDay selected, ActivityDay? previous)
@@ -1232,7 +1119,7 @@ public sealed class StatisticsWindow : Window
             return "About the same";
         }
 
-        return difference > 0 ? $"+{difference:0.#} pts" : $"{difference:0.#} pts";
+        return difference > 0 ? $"+{difference:0.#} quota points" : $"{difference:0.#} quota points";
     }
 
     private Color IntensityColor(Color accent, int level)
@@ -1251,13 +1138,6 @@ public sealed class StatisticsWindow : Window
         (byte)Math.Round(left.R + ((right.R - left.R) * amount)),
         (byte)Math.Round(left.G + ((right.G - left.G) * amount)),
         (byte)Math.Round(left.B + ((right.B - left.B) * amount)));
-
-    private sealed record ProviderButtonVisual(
-        ProviderId Provider,
-        FrameworkElement Logo,
-        Border NameHost,
-        double NameWidth,
-        DropShadowEffect Shadow);
 
     private static int ProviderOrder(ProviderId provider) => provider switch
     {

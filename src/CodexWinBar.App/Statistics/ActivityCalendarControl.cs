@@ -51,13 +51,13 @@ internal sealed class ActivityCalendarControl : FrameworkElement
         this.Focusable = true;
         this.Cursor = Cursors.Hand;
         this.MinHeight = 148;
-        ToolTipService.SetInitialShowDelay(this, 160);
-        ToolTipService.SetBetweenShowDelay(this, 0);
-        AutomationProperties.SetName(this, "Daily activity overview");
-        AutomationProperties.SetHelpText(this, "Use arrow keys to move by day or week, then press Enter to open that month.");
+        AutomationProperties.SetName(this, "Observed quota activity calendar");
+        AutomationProperties.SetHelpText(this, "Use arrow keys to inspect days, Home or End to jump, then press Enter to open the selected month.");
     }
 
     internal event Action<DateOnly>? DateSelected;
+
+    internal event Action<ActivityDay>? DateInspected;
 
     protected override void OnRender(DrawingContext drawingContext)
     {
@@ -148,23 +148,24 @@ internal sealed class ActivityCalendarControl : FrameworkElement
 
         if (date is null)
         {
-            this.ToolTip = null;
             this.FadeHoverOut();
             return;
         }
 
         this.hoverDate = date;
         this.AnimateHoverIn();
-        this.ToolTip = date is { } value && this.daysByDate.TryGetValue(value, out var day)
-            ? this.Tooltip(day)
-            : null;
+        if (this.daysByDate.TryGetValue(date.Value, out var day))
+        {
+            this.DateInspected?.Invoke(day);
+            AutomationProperties.SetItemStatus(this, this.AccessibleDescription(day));
+        }
+
         this.InvalidateVisual();
     }
 
     protected override void OnMouseLeave(MouseEventArgs e)
     {
         base.OnMouseLeave(e);
-        this.ToolTip = null;
         this.FadeHoverOut();
     }
 
@@ -186,13 +187,22 @@ internal sealed class ActivityCalendarControl : FrameworkElement
             Key.Right => this.selectedDate.AddDays(7),
             Key.Up => this.selectedDate.AddDays(-1),
             Key.Down => this.selectedDate.AddDays(1),
+            Key.Home => this.days.First().Date,
+            Key.End => this.lastSelectableDate,
             _ => this.selectedDate,
         };
-        if (e.Key is Key.Left or Key.Right or Key.Up or Key.Down)
+        if (e.Key is Key.Left or Key.Right or Key.Up or Key.Down or Key.Home or Key.End)
         {
             if (this.CanSelect(next))
             {
                 this.selectedDate = next;
+                this.hoverDate = next;
+                if (this.daysByDate.TryGetValue(next, out var day))
+                {
+                    this.DateInspected?.Invoke(day);
+                    AutomationProperties.SetItemStatus(this, this.AccessibleDescription(day));
+                }
+
                 this.InvalidateVisual();
             }
 
@@ -281,13 +291,6 @@ internal sealed class ActivityCalendarControl : FrameworkElement
             return null;
         }
 
-        var withinX = (point.X - layout.Left) - (week * layout.Step);
-        var withinY = (point.Y - layout.Top) - (row * layout.Step);
-        if (withinX > layout.CellSize || withinY > layout.CellSize)
-        {
-            return null;
-        }
-
         return layout.Start.AddDays((week * 7) + row);
     }
 
@@ -315,20 +318,20 @@ internal sealed class ActivityCalendarControl : FrameworkElement
         return new CalendarLayout(this.days[0].Date, weeks, left, top, cell, cell + gap);
     }
 
-    private string Tooltip(ActivityDay day)
+    private string AccessibleDescription(ActivityDay day)
     {
         var week = this.days.Where(item => item.Date >= PlanStatisticsProjection.WeekStart(day.Date) &&
             item.Date <= PlanStatisticsProjection.WeekStart(day.Date).AddDays(6));
         var weekTotal = week.Sum(item => item.Value);
         if (!day.HasCoverage)
         {
-            return $"{day.Date.ToString("dddd, MMMM d", UiCulture)}\nNo observation data\nWeek total: {weekTotal:0.#} quota points";
+            return $"{day.Date.ToString("dddd, MMMM d", UiCulture)}. No observation data. Week total {weekTotal:0.#} quota points.";
         }
 
-        return $"{day.Date.ToString("dddd, MMMM d", UiCulture)}\n" +
-            $"{day.Value:0.#} quota points observed\n" +
-            $"{day.ActiveHours} active hours · {day.ObservationCount} observations\n" +
-            $"{this.scaleMode} intensity {day.Intensity(this.scaleMode)}/4 · Week total {weekTotal:0.#} pts";
+        return $"{day.Date.ToString("dddd, MMMM d", UiCulture)}. " +
+            $"{day.Value:0.#} quota points observed. " +
+            $"{day.ActiveHours} active hours, {day.ObservationCount} observations. " +
+            $"Relative intensity {day.Intensity(this.scaleMode)} of 4. Week total {weekTotal:0.#} quota points.";
     }
 
     private bool CanSelect(DateOnly date) => date <= this.lastSelectableDate && this.daysByDate.ContainsKey(date);

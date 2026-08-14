@@ -129,6 +129,12 @@ internal static class PlanStatisticsProjection
 
         foreach (var cycle in GroupByEquivalentReset(series.Samples))
         {
+            if (series.WindowMinutes == 300)
+            {
+                AddSessionCycle(buckets, cycle, now);
+                continue;
+            }
+
             double? observedPeak = null;
             foreach (var sample in cycle
                 .Where(item => item.CapturedAt <= now)
@@ -147,7 +153,7 @@ internal static class PlanStatisticsProjection
                 // The first value is a baseline: attributing it to its capture hour would claim that
                 // all usage since the reset happened at the instant CodexWinBar started observing.
                 // Later activity is counted only when the cycle reaches a new high, so provider
-                // corrections and temporary dips cannot count the same quota points twice.
+                // corrections and temporary dips cannot count the same allowance increase twice.
                 var increment = observedPeak is null
                     ? 0
                     : Math.Max(0, sample.UsedPercent - observedPeak.Value);
@@ -184,6 +190,35 @@ internal static class PlanStatisticsProjection
             active.OrderByDescending(item => item.Value).FirstOrDefault(),
             calendarStart,
             end);
+    }
+
+    private static void AddSessionCycle(
+        IReadOnlyDictionary<DateOnly, DayAccumulator> buckets,
+        IReadOnlyList<PlanUsageSample> cycle,
+        DateTimeOffset now)
+    {
+        var observed = cycle
+            .Where(sample => sample.CapturedAt <= now)
+            .OrderBy(sample => sample.CapturedAt)
+            .ToArray();
+        if (observed.Length == 0)
+        {
+            return;
+        }
+
+        var resetsAt = observed[0].ResetsAt;
+        var completed = resetsAt is { } reset && reset <= now;
+        var attributionTime = completed
+            ? resetsAt!.Value.AddTicks(-1)
+            : observed[^1].CapturedAt;
+        var local = attributionTime.LocalDateTime;
+        var date = DateOnly.FromDateTime(local.Date);
+        if (!buckets.TryGetValue(date, out var day))
+        {
+            return;
+        }
+
+        day.Add(local.Hour, observed.Max(sample => sample.UsedPercent), observed.Length);
     }
 
     internal static DateOnly WeekStart(DateOnly date)
@@ -275,10 +310,10 @@ internal static class PlanStatisticsProjection
 
         internal DateOnly Date { get; } = date;
 
-        internal void Add(int hour, double increment)
+        internal void Add(int hour, double increment, int observations = 1)
         {
             this.hourlyValues[hour] += increment;
-            this.hourlyObservations[hour]++;
+            this.hourlyObservations[hour] += observations;
         }
 
         internal ActivityDay Build()

@@ -23,6 +23,7 @@ internal sealed class ActivityCalendarControl : FrameworkElement
     private readonly Color accent;
     private readonly bool isDark;
     private readonly ActivityScaleMode scaleMode;
+    private readonly Func<double, string> valueFormatter;
     private readonly DateOnly lastSelectableDate;
     private DateOnly selectedDate;
     private DateOnly? hoverDate;
@@ -39,7 +40,8 @@ internal sealed class ActivityCalendarControl : FrameworkElement
         DateOnly lastSelectableDate,
         Color accent,
         bool isDark,
-        ActivityScaleMode scaleMode)
+        ActivityScaleMode scaleMode,
+        Func<double, string> valueFormatter)
     {
         this.days = days;
         this.daysByDate = days.ToDictionary(day => day.Date);
@@ -48,10 +50,11 @@ internal sealed class ActivityCalendarControl : FrameworkElement
         this.accent = accent;
         this.isDark = isDark;
         this.scaleMode = scaleMode;
+        this.valueFormatter = valueFormatter;
         this.Focusable = true;
         this.Cursor = Cursors.Hand;
         this.MinHeight = 148;
-        AutomationProperties.SetName(this, "Observed quota activity calendar");
+        AutomationProperties.SetName(this, "Observed allowance activity calendar");
         AutomationProperties.SetHelpText(this, "Use arrow keys to inspect days, Home or End to jump, then press Enter to open the selected month.");
     }
 
@@ -325,13 +328,13 @@ internal sealed class ActivityCalendarControl : FrameworkElement
         var weekTotal = week.Sum(item => item.Value);
         if (!day.HasCoverage)
         {
-            return $"{day.Date.ToString("dddd, MMMM d", UiCulture)}. No observation data. Week total {weekTotal:0.#} quota points.";
+            return $"{day.Date.ToString("dddd, MMMM d", UiCulture)}. No observation data. Week total {this.valueFormatter(weekTotal)}.";
         }
 
         return $"{day.Date.ToString("dddd, MMMM d", UiCulture)}. " +
-            $"{day.Value:0.#} quota points observed. " +
+            $"{this.valueFormatter(day.Value)}. " +
             $"{day.ActiveHours} active hours, {day.ObservationCount} observations. " +
-            $"Relative intensity {day.Intensity(this.scaleMode)} of 4. Week total {weekTotal:0.#} quota points.";
+            $"Relative intensity {day.Intensity(this.scaleMode)} of 4. Week total {this.valueFormatter(weekTotal)}.";
     }
 
     private bool CanSelect(DateOnly date) => date <= this.lastSelectableDate && this.daysByDate.ContainsKey(date);

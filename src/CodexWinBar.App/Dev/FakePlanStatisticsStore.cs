@@ -18,9 +18,7 @@ internal sealed class FakePlanStatisticsStore : IPlanStatisticsStore
                 Provider = ProviderId.Codex,
                 Series =
                 [
-                    BuildSeries("session", "Session", 300, now, 1800, [42, 68, 31, 84, 0, 57, 74, 46, 92, 12, 63, 51, 78, 0, 39, 71]),
                     BuildSeries("weekly", "Weekly", 10080, now, 54, [64, 81, 73, 55, 89, 67, 77, 48, 83, 61, 72, 45, 58]),
-                    BuildSeries("extra:gpt-5-codex", "GPT-5.3-Codex", 10080, now, 54, [28, 46, 52, 39, 63, 49, 71, 32, 58, 44, 67, 36, 41]),
                 ],
             },
             [ProviderId.Claude] = new()

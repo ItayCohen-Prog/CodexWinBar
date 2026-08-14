@@ -157,7 +157,7 @@ public sealed class StatisticsWindow : Window
         heading.Children.Add(titleRow);
         heading.Children.Add(new TextBlock
         {
-            Text = "Locally observed quota activity, from the year down to the hour",
+            Text = "Locally observed allowance activity, from the year down to the hour",
             Margin = new Thickness(0, 5, 0, 0),
             FontSize = 13,
             Foreground = this.Brush("StatisticsMutedForeground"),
@@ -202,6 +202,7 @@ public sealed class StatisticsWindow : Window
         this.RefreshProviderTabs();
         var statistics = this.store.Get(this.selectedProvider);
         var series = statistics.Series.FirstOrDefault(item => item.Id == this.selectedSeriesId)
+            ?? statistics.Series.FirstOrDefault(item => item.Id == "weekly")
             ?? statistics.Series.FirstOrDefault();
         this.selectedSeriesId = series?.Id;
         if (series is null)
@@ -454,20 +455,20 @@ public sealed class StatisticsWindow : Window
         switch (this.viewMode)
         {
             case ActivityViewMode.Overview:
-                root.Children.Add(this.BuildGeneralSummary(descriptor, activity, accent));
-                root.Children.Add(this.BuildOverviewSection(activity, selected, accent));
+                root.Children.Add(this.BuildGeneralSummary(descriptor, series, activity, accent));
+                root.Children.Add(this.BuildOverviewSection(series, activity, selected, accent));
                 break;
             case ActivityViewMode.Month:
-                root.Children.Add(this.BuildMonthSummary(descriptor, month, accent));
-                root.Children.Add(this.BuildMonthSection(month, accent));
+                root.Children.Add(this.BuildMonthSummary(descriptor, series, month, accent));
+                root.Children.Add(this.BuildMonthSection(series, month, accent));
                 break;
             case ActivityViewMode.Week:
-                root.Children.Add(this.BuildWeekSummary(descriptor, activity, week, accent));
-                root.Children.Add(this.BuildWeekSection(activity, week, accent));
+                root.Children.Add(this.BuildWeekSummary(descriptor, series, activity, week, accent));
+                root.Children.Add(this.BuildWeekSection(series, activity, week, accent));
                 break;
             case ActivityViewMode.Day:
-                root.Children.Add(this.BuildDaySummary(descriptor, activity, selected, accent));
-                root.Children.Add(this.BuildDaySection(selected, accent));
+                root.Children.Add(this.BuildDaySummary(descriptor, series, activity, selected, accent));
+                root.Children.Add(this.BuildDaySection(series, selected, accent));
                 break;
         }
 
@@ -482,7 +483,7 @@ public sealed class StatisticsWindow : Window
         var seriesGroup = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         seriesGroup.Children.Add(new TextBlock
         {
-            Text = "Series",
+            Text = "Limit",
             Margin = new Thickness(0, 0, 10, 0),
             FontSize = 12,
             FontWeight = FontWeights.SemiBold,
@@ -492,10 +493,14 @@ public sealed class StatisticsWindow : Window
         seriesGroup.Children.Add(this.BuildSeriesTabs(series));
         row.Children.Add(seriesGroup);
 
-        var measure = this.IconLabel(ClockGlyph, "Quota points · Local time", iconSize: 12);
+        var selected = series.FirstOrDefault(item => item.Id == this.selectedSeriesId) ?? series.FirstOrDefault();
+        var measure = this.IconLabel(
+            selected?.WindowMinutes == 10080 ? CalendarGlyph : ClockGlyph,
+            selected is null ? "Local time" : $"{LimitName(selected)} · Local time",
+            iconSize: 12);
         measure.Opacity = 0.82;
         measure.VerticalAlignment = VerticalAlignment.Center;
-        measure.ToolTip = "Positive quota increases observed during successful local refreshes. The first reading in each reset cycle is a baseline.";
+        measure.ToolTip = "The selected allowance determines every summary, activity cell, and graph value below.";
         Grid.SetColumn(measure, 1);
         row.Children.Add(measure);
         return row;
@@ -508,7 +513,7 @@ public sealed class StatisticsWindow : Window
         {
             var selected = item.Id == this.selectedSeriesId;
             var button = this.CreateTabButton(
-                this.IconLabel(item.Title.Contains("Weekly", StringComparison.OrdinalIgnoreCase) ? CalendarGlyph : ClockGlyph, item.Title, selected),
+                this.IconLabel(item.WindowMinutes == 10080 ? CalendarGlyph : ClockGlyph, LimitName(item), selected),
                 selected,
                 compact: true);
             button.Click += (_, _) =>
@@ -519,7 +524,7 @@ public sealed class StatisticsWindow : Window
                     this.Refresh();
                 }
             };
-            AutomationProperties.SetName(button, $"Show {item.Title} activity");
+            AutomationProperties.SetName(button, $"Show {LimitName(item)} activity");
             tabs.Children.Add(button);
         }
 
@@ -625,52 +630,80 @@ public sealed class StatisticsWindow : Window
         return header;
     }
 
-    private UIElement BuildGeneralSummary(ProviderDescriptor descriptor, ActivityOverview activity, Color accent) => this.BuildSummary(
-        descriptor,
-        accent,
-        "OBSERVED",
-        Quota(activity.Total),
-        $"{activity.CoveredDays} days recorded locally",
-        (CalendarGlyph, "Active days", activity.ActiveDays.ToString(UiCulture), "in the last 52 weeks"),
-        (LogoImages.StatisticsGlyph, "Daily average", Quota(activity.DailyAverage), "per observed day"),
-        ("\uE9D9", "Busiest day", activity.BusiestDay is { } day ? day.Date.ToString("MMM d", UiCulture) : "—", activity.BusiestDay is { } busiest ? Quota(busiest.Value) : "no activity yet"));
-
-    private UIElement BuildMonthSummary(ProviderDescriptor descriptor, ActivityMonth month, Color accent) => this.BuildSummary(
-        descriptor,
-        accent,
-        "MONTH TOTAL",
-        Quota(month.Total),
-        $"{month.CoveredDays} days recorded locally",
-        (CalendarGlyph, "Active days", month.ActiveDays.ToString(UiCulture), $"of {month.Days.Count} elapsed days"),
-        (LogoImages.StatisticsGlyph, "Daily average", Quota(month.DailyAverage), "per observed day"),
-        ("\uE9D9", "Busiest week", month.BusiestWeek is { } week ? week.StartsOn.ToString("MMM d", UiCulture) : "—", month.BusiestWeek is { } busiest ? Quota(busiest.Total) : "no activity yet"));
-
-    private UIElement BuildWeekSummary(ProviderDescriptor descriptor, ActivityOverview activity, ActivityWeek week, Color accent)
+    private UIElement BuildGeneralSummary(
+        ProviderDescriptor descriptor,
+        PlanUsageSeries series,
+        ActivityOverview activity,
+        Color accent)
     {
+        var current = CurrentLimit(series);
+        return this.BuildSummary(
+            descriptor,
+            accent,
+            current.Label,
+            current.Value,
+            current.Detail,
+            (CalendarGlyph, "Active days", activity.ActiveDays.ToString(UiCulture), "in the last 52 weeks"),
+            (LogoImages.StatisticsGlyph, "Daily average", FormatActivity(series, activity.DailyAverage), "per observed day"),
+            ("\uE9D9", "Busiest day", activity.BusiestDay is { } day ? day.Date.ToString("MMM d", UiCulture) : "—", activity.BusiestDay is { } busiest ? FormatActivity(series, busiest.Value) : "no activity yet"));
+    }
+
+    private UIElement BuildMonthSummary(
+        ProviderDescriptor descriptor,
+        PlanUsageSeries series,
+        ActivityMonth month,
+        Color accent)
+    {
+        var current = CurrentLimit(series);
+        return this.BuildSummary(
+            descriptor,
+            accent,
+            current.Label,
+            current.Value,
+            current.Detail,
+            (CalendarGlyph, "Active days", month.ActiveDays.ToString(UiCulture), $"of {month.Days.Count} elapsed days"),
+            (LogoImages.StatisticsGlyph, "Daily average", FormatActivity(series, month.DailyAverage), "per observed day"),
+            ("\uE9D9", "Busiest week", month.BusiestWeek is { } week ? week.StartsOn.ToString("MMM d", UiCulture) : "—", month.BusiestWeek is { } busiest ? FormatActivity(series, busiest.Total) : "no activity yet"));
+    }
+
+    private UIElement BuildWeekSummary(
+        ProviderDescriptor descriptor,
+        PlanUsageSeries series,
+        ActivityOverview activity,
+        ActivityWeek week,
+        Color accent)
+    {
+        var current = CurrentLimit(series);
         var previous = activity.WeekContaining(week.StartsOn.AddDays(-7));
         return this.BuildSummary(
             descriptor,
             accent,
-            "WEEK TOTAL",
-            Quota(week.Total),
-            $"{week.CoveredDays} days recorded locally",
+            current.Label,
+            current.Value,
+            current.Detail,
             (CalendarGlyph, "Active days", week.ActiveDays.ToString(UiCulture), "of 7 days"),
-            ("\uE7BA", "Previous week", previous.CoveredDays > 0 ? Difference(week.Total, previous.Total) : "No comparison", "observed quota points"),
-            ("\uE9D9", "Busiest day", week.BusiestDay is { } day ? day.Date.ToString("ddd", UiCulture) : "—", week.BusiestDay is { } busiest ? Quota(busiest.Value) : "no activity yet"));
+            ("\uE7BA", "Previous week", previous.CoveredDays > 0 ? Difference(series, week.Total, previous.Total) : "No comparison", "allowance consumed"),
+            ("\uE9D9", "Busiest day", week.BusiestDay is { } day ? day.Date.ToString("ddd", UiCulture) : "—", week.BusiestDay is { } busiest ? FormatActivity(series, busiest.Value) : "no activity yet"));
     }
 
-    private UIElement BuildDaySummary(ProviderDescriptor descriptor, ActivityOverview activity, ActivityDay selected, Color accent)
+    private UIElement BuildDaySummary(
+        ProviderDescriptor descriptor,
+        PlanUsageSeries series,
+        ActivityOverview activity,
+        ActivityDay selected,
+        Color accent)
     {
+        var current = CurrentLimit(series);
         var peak = selected.Hours.OrderByDescending(hour => hour.Value).FirstOrDefault();
         return this.BuildSummary(
             descriptor,
             accent,
-            "DAY TOTAL",
-            selected.HasCoverage ? Quota(selected.Value) : "—",
-            selected.HasCoverage ? $"{selected.ObservationCount} local observations" : "no observations",
+            current.Label,
+            current.Value,
+            current.Detail,
             (ClockGlyph, "Active hours", selected.ActiveHours.ToString(UiCulture), "of 24 hours"),
-            ("\uE7BA", "Previous day", PreviousComparison(selected, activity.Day(selected.Date.AddDays(-1))), "observed quota points"),
-            ("\uE9D9", "Busiest hour", peak is { Value: > 0.001 } ? $"{peak.Hour:00}:00" : "—", peak is { Value: > 0.001 } ? Quota(peak.Value) : "no activity yet"));
+            ("\uE7BA", "Previous day", PreviousComparison(series, selected, activity.Day(selected.Date.AddDays(-1))), "allowance consumed"),
+            ("\uE9D9", "Busiest hour", peak is { Value: > 0.001 } ? $"{peak.Hour:00}:00" : "—", peak is { Value: > 0.001 } ? FormatActivity(series, peak.Value) : "no activity yet"));
     }
 
     private UIElement BuildSummary(
@@ -698,9 +731,17 @@ public sealed class StatisticsWindow : Window
         }
 
         var primary = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        primary.Children.Add(new TextBlock
+        {
+            Text = primaryLabel,
+            FontSize = 11.5,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = this.Brush("StatisticsMutedForeground"),
+        });
         var value = new TextBlock
         {
-            Text = primaryValue.Replace(" pts", " quota points", StringComparison.Ordinal),
+            Text = primaryValue,
+            Margin = new Thickness(0, 2, 0, 0),
             FontFamily = DisplayFont,
             FontSize = 27,
             FontWeight = FontWeights.SemiBold,
@@ -758,12 +799,20 @@ public sealed class StatisticsWindow : Window
         return shell;
     }
 
-    private UIElement BuildOverviewSection(ActivityOverview activity, ActivityDay selected, Color accent)
+    private UIElement BuildOverviewSection(
+        PlanUsageSeries series,
+        ActivityOverview activity,
+        ActivityDay selected,
+        Color accent)
     {
         var stack = new StackPanel();
-        stack.Children.Add(this.SectionHeader(CalendarGlyph, "Observed quota activity", "Relative intensity · Local time", accent));
+        stack.Children.Add(this.SectionHeader(
+            CalendarGlyph,
+            $"Observed {LimitName(series).ToLowerInvariant()} activity",
+            "Relative intensity · Local time",
+            accent));
         var detail = this.BuildInspectionLine(
-            $"{selected.Date.ToString("dddd, MMMM d", UiCulture)} · {QuotaLong(selected.Value)} · {selected.ActiveHours} active hours · {selected.ObservationCount} observations");
+            $"{selected.Date.ToString("dddd, MMMM d", UiCulture)} · {FormatActivity(series, selected.Value)} · {selected.ActiveHours} active hours · {selected.ObservationCount} observations");
         stack.Children.Add(detail);
         var calendar = new ActivityCalendarControl(
             activity.Days,
@@ -771,12 +820,13 @@ public sealed class StatisticsWindow : Window
             activity.EndsOn,
             accent,
             this.isDark,
-            ActivityScaleMode.Personal)
+            ActivityScaleMode.Personal,
+            value => FormatActivity(series, value))
         {
             Margin = new Thickness(0, 8, 0, 6),
         };
         calendar.DateSelected += this.SelectMonth;
-        calendar.DateInspected += day => detail.Text = CalendarInspection(activity, day);
+        calendar.DateInspected += day => detail.Text = CalendarInspection(series, activity, day);
         stack.Children.Add(calendar);
 
         var legend = new Grid { Margin = new Thickness(30, 2, 0, 4) };
@@ -809,16 +859,22 @@ public sealed class StatisticsWindow : Window
         return stack;
     }
 
-    private UIElement BuildMonthSection(ActivityMonth month, Color accent)
+    private UIElement BuildMonthSection(PlanUsageSeries series, ActivityMonth month, Color accent)
     {
         var stack = new StackPanel();
-        stack.Children.Add(this.SectionHeader(LogoImages.StatisticsGlyph, "Weekly activity", "Local time", accent));
+        stack.Children.Add(this.SectionHeader(LogoImages.StatisticsGlyph, "Weekly activity", LimitName(series), accent));
         var bars = month.Weeks.Select(week => new ActivityBar(
             week.StartsOn.ToString("MMM d", UiCulture),
             week.Total,
-            $"Week of {week.StartsOn.ToString("MMMM d", UiCulture)}: {Quota(week.Total)} · {week.ActiveDays} active days",
+            $"Week of {week.StartsOn.ToString("MMMM d", UiCulture)}: {FormatActivity(series, week.Total)} · {week.ActiveDays} active days",
             week.Days.Count > 0)).ToArray();
-        var chart = new ActivityBarChart(bars, accent, this.isDark, interactive: true, actionLabel: "Open week")
+        var chart = new ActivityBarChart(
+            bars,
+            accent,
+            this.isDark,
+            interactive: true,
+            valueFormatter: value => FormatActivityCompact(series, value),
+            actionLabel: "Open week")
         {
             Margin = new Thickness(0, 8, 0, 12),
         };
@@ -827,16 +883,26 @@ public sealed class StatisticsWindow : Window
         return stack;
     }
 
-    private UIElement BuildWeekSection(ActivityOverview activity, ActivityWeek week, Color accent)
+    private UIElement BuildWeekSection(
+        PlanUsageSeries series,
+        ActivityOverview activity,
+        ActivityWeek week,
+        Color accent)
     {
         var stack = new StackPanel();
-        stack.Children.Add(this.SectionHeader(LogoImages.StatisticsGlyph, "Daily activity", "Local time", accent));
+        stack.Children.Add(this.SectionHeader(LogoImages.StatisticsGlyph, "Daily activity", LimitName(series), accent));
         var bars = week.Days.Select(day => new ActivityBar(
             day.Date.ToString("ddd d", UiCulture),
             day.Value,
-            $"{day.Date.ToString("dddd, MMM d", UiCulture)}: {Quota(day.Value)} · {day.ActiveHours} active hours",
+            $"{day.Date.ToString("dddd, MMM d", UiCulture)}: {FormatActivity(series, day.Value)} · {day.ActiveHours} active hours",
             day.Date <= activity.EndsOn)).ToArray();
-        var chart = new ActivityBarChart(bars, accent, this.isDark, interactive: true, actionLabel: "Open day")
+        var chart = new ActivityBarChart(
+            bars,
+            accent,
+            this.isDark,
+            interactive: true,
+            valueFormatter: value => FormatActivityCompact(series, value),
+            actionLabel: "Open day")
         {
             Margin = new Thickness(0, 8, 0, 12),
         };
@@ -845,15 +911,20 @@ public sealed class StatisticsWindow : Window
         return stack;
     }
 
-    private UIElement BuildDaySection(ActivityDay selected, Color accent)
+    private UIElement BuildDaySection(PlanUsageSeries series, ActivityDay selected, Color accent)
     {
         var stack = new StackPanel();
-        stack.Children.Add(this.SectionHeader(ClockGlyph, "Hourly activity", "Local time", accent));
+        stack.Children.Add(this.SectionHeader(ClockGlyph, "Hourly activity", LimitName(series), accent));
         var bars = selected.Hours.Select(hour => new ActivityBar(
             hour.Hour.ToString("00", UiCulture),
             hour.Value,
-            $"{hour.Hour:00}:00–{hour.Hour:00}:59: {Quota(hour.Value)} · {hour.ObservationCount} observations")).ToArray();
-        stack.Children.Add(new ActivityBarChart(bars, accent, this.isDark, interactive: false)
+            $"{hour.Hour:00}:00–{hour.Hour:00}:59: {FormatActivity(series, hour.Value)} · {hour.ObservationCount} observations")).ToArray();
+        stack.Children.Add(new ActivityBarChart(
+            bars,
+            accent,
+            this.isDark,
+            interactive: false,
+            valueFormatter: value => FormatActivityCompact(series, value))
         {
             Margin = new Thickness(0, 8, 0, 12),
         });
@@ -1136,9 +1207,79 @@ public sealed class StatisticsWindow : Window
 
     private SolidColorBrush Brush(string key) => (SolidColorBrush)this.Resources[key];
 
-    private static string Quota(double value) => $"{value:0.#} quota points";
+    private static string FormatActivity(PlanUsageSeries series, double value)
+    {
+        if (series.WindowMinutes == 300)
+        {
+            var sessions = value / 100;
+            return $"{sessions:0.#} {(Math.Abs(sessions - 1) < 0.05 ? "session" : "sessions")} used";
+        }
 
-    private static string QuotaLong(double value) => $"{value:0.#} quota points";
+        return series.Id == "weekly"
+            ? $"{value:0.#}% of weekly limit"
+            : $"{value:0.#}% of {LimitName(series).ToLowerInvariant()}";
+    }
+
+    private static string FormatActivityCompact(PlanUsageSeries series, double value) => series.WindowMinutes == 300
+        ? $"{value / 100:0.#} sessions"
+        : $"{value:0.#}% used";
+
+    private static string LimitName(PlanUsageSeries series)
+    {
+        if (series.Id == "weekly" || series.WindowMinutes == 10080 && series.Title.Equals("Weekly", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Weekly limit";
+        }
+
+        if (series.Id == "session" || series.WindowMinutes == 300 && series.Title.Equals("Session", StringComparison.OrdinalIgnoreCase))
+        {
+            return "5-hour session";
+        }
+
+        return series.Title.Contains("limit", StringComparison.OrdinalIgnoreCase) ||
+            series.Title.Contains("weekly", StringComparison.OrdinalIgnoreCase)
+            ? series.Title
+            : $"{series.Title} limit";
+    }
+
+    private static (string Label, string Value, string Detail) CurrentLimit(PlanUsageSeries series)
+    {
+        var latest = series.Samples
+            .Where(sample => sample.CapturedAt <= DateTimeOffset.Now)
+            .OrderByDescending(sample => sample.CapturedAt)
+            .FirstOrDefault();
+        var label = $"CURRENT {LimitName(series).ToUpperInvariant()}";
+        if (latest is null)
+        {
+            return (label, "—", "No local reading yet");
+        }
+
+        return (label, $"{latest.UsedPercent:0.#}% used", ResetDescription(latest.ResetsAt));
+    }
+
+    private static string ResetDescription(DateTimeOffset? resetsAt)
+    {
+        if (resetsAt is not { } reset)
+        {
+            return "Latest successful local reading";
+        }
+
+        var remaining = reset - DateTimeOffset.Now;
+        if (remaining <= TimeSpan.Zero)
+        {
+            return "Waiting for the next refreshed cycle";
+        }
+
+        if (remaining.TotalHours < 24)
+        {
+            var hours = (int)remaining.TotalHours;
+            return hours > 0
+                ? $"Resets in {hours}h {remaining.Minutes}m"
+                : $"Resets in {Math.Max(1, remaining.Minutes)}m";
+        }
+
+        return $"Resets {reset.ToLocalTime().ToString("ddd 'at' h:mm tt", UiCulture)}";
+    }
 
     private static string FormatWeekRange(DateOnly weekStart)
     {
@@ -1148,15 +1289,15 @@ public sealed class StatisticsWindow : Window
             : $"{weekStart.ToString("MMM d", UiCulture)}–{end.ToString("MMM d", UiCulture)}";
     }
 
-    private static string CalendarInspection(ActivityOverview activity, ActivityDay day)
+    private static string CalendarInspection(PlanUsageSeries series, ActivityOverview activity, ActivityDay day)
     {
         var weekTotal = activity.WeekContaining(day.Date).Total;
         return day.HasCoverage
-            ? $"{day.Date.ToString("dddd, MMMM d", UiCulture)} · {QuotaLong(day.Value)} · {day.ActiveHours} active hours · {day.ObservationCount} observations · Week {QuotaLong(weekTotal)}"
-            : $"{day.Date.ToString("dddd, MMMM d", UiCulture)} · No local observation · Week {QuotaLong(weekTotal)}";
+            ? $"{day.Date.ToString("dddd, MMMM d", UiCulture)} · {FormatActivity(series, day.Value)} · {day.ActiveHours} active hours · {day.ObservationCount} observations · Week {FormatActivity(series, weekTotal)}"
+            : $"{day.Date.ToString("dddd, MMMM d", UiCulture)} · No local observation · Week {FormatActivity(series, weekTotal)}";
     }
 
-    private static string Difference(double current, double previous)
+    private static string Difference(PlanUsageSeries series, double current, double previous)
     {
         var difference = current - previous;
         if (Math.Abs(difference) < 0.05)
@@ -1164,10 +1305,13 @@ public sealed class StatisticsWindow : Window
             return "About the same";
         }
 
-        return difference > 0 ? $"+{difference:0.#} quota points" : $"{difference:0.#} quota points";
+        var magnitude = series.WindowMinutes == 300
+            ? $"{Math.Abs(difference) / 100:0.#} sessions"
+            : $"{Math.Abs(difference):0.#}%";
+        return difference > 0 ? $"+{magnitude}" : $"-{magnitude}";
     }
 
-    private static string PreviousComparison(ActivityDay selected, ActivityDay? previous)
+    private static string PreviousComparison(PlanUsageSeries series, ActivityDay selected, ActivityDay? previous)
     {
         if (previous is not { HasCoverage: true })
         {
@@ -1180,7 +1324,10 @@ public sealed class StatisticsWindow : Window
             return "About the same";
         }
 
-        return difference > 0 ? $"+{difference:0.#} quota points" : $"{difference:0.#} quota points";
+        var magnitude = series.WindowMinutes == 300
+            ? $"{Math.Abs(difference) / 100:0.#} sessions"
+            : $"{Math.Abs(difference):0.#}%";
+        return difference > 0 ? $"+{magnitude}" : $"-{magnitude}";
     }
 
     private Color IntensityColor(Color accent, int level)

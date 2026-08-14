@@ -136,6 +136,26 @@ public sealed class PlanStatisticsProjectionTests
     }
 
     [Fact]
+    public void BuildActivity_session_mode_sums_each_observed_session_peak()
+    {
+        var now = new DateTimeOffset(2026, 8, 13, 18, 0, 0, TimeSpan.Zero);
+        var firstReset = new DateTimeOffset(2026, 8, 13, 12, 0, 0, TimeSpan.Zero);
+        var secondReset = new DateTimeOffset(2026, 8, 13, 17, 0, 0, TimeSpan.Zero);
+        var series = SessionSeries(
+            Sample(firstReset.AddHours(-4), 20, firstReset),
+            Sample(firstReset.AddMinutes(-10), 100, firstReset),
+            Sample(secondReset.AddHours(-4), 35, secondReset),
+            Sample(secondReset.AddMinutes(-10), 100, secondReset));
+
+        var day = Assert.IsType<ActivityDay>(PlanStatisticsProjection.BuildActivity(series, now)
+            .Day(new DateOnly(2026, 8, 13)));
+
+        Assert.Equal(200, day.Value);
+        Assert.Equal(2, day.ActiveHours);
+        Assert.Equal(4, day.ObservationCount);
+    }
+
+    [Fact]
     public void MonthContaining_clips_week_totals_to_the_selected_month()
     {
         var now = new DateTimeOffset(2026, 8, 13, 12, 0, 0, TimeSpan.Zero);
@@ -156,6 +176,14 @@ public sealed class PlanStatisticsProjectionTests
     }
 
     private static PlanUsageSeries Series(params PlanUsageSample[] samples) => new()
+    {
+        Id = "weekly",
+        Title = "Weekly",
+        WindowMinutes = 10080,
+        Samples = samples,
+    };
+
+    private static PlanUsageSeries SessionSeries(params PlanUsageSample[] samples) => new()
     {
         Id = "session",
         Title = "Session",

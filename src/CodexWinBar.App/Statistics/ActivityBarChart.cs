@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -18,11 +17,11 @@ internal sealed class ActivityBarChart : Grid
 {
     private const double AxisWidth = 108;
     private const double PlotHeight = 176;
-    private static readonly CultureInfo UiCulture = CultureInfo.GetCultureInfo("en-US");
     private readonly IReadOnlyList<ActivityBar> bars;
     private readonly Color accent;
     private readonly bool isDark;
     private readonly bool interactive;
+    private readonly Func<double, string> valueFormatter;
     private readonly string? actionLabel;
     private readonly List<Button> lanes = [];
 
@@ -31,15 +30,17 @@ internal sealed class ActivityBarChart : Grid
         Color accent,
         bool isDark,
         bool interactive,
+        Func<double, string> valueFormatter,
         string? actionLabel = null)
     {
         this.bars = bars;
         this.accent = accent;
         this.isDark = isDark;
         this.interactive = interactive;
+        this.valueFormatter = valueFormatter;
         this.actionLabel = actionLabel;
         this.MinHeight = 238;
-        AutomationProperties.SetName(this, "Observed quota activity chart");
+        AutomationProperties.SetName(this, "Observed allowance activity chart");
         AutomationProperties.SetHelpText(this, "Use Left and Right to inspect periods. Press Enter to open the selected period.");
         this.Build();
     }
@@ -78,9 +79,9 @@ internal sealed class ActivityBarChart : Grid
         this.Children.Add(detail);
 
         var axis = new Canvas { Width = AxisWidth, Height = PlotHeight };
-        this.AddAxisLabel(axis, max.ToString("0.#", UiCulture), 0);
-        this.AddAxisLabel(axis, (max / 2).ToString("0.#", UiCulture), (PlotHeight / 2) - 8);
-        this.AddAxisLabel(axis, "0", PlotHeight - 18);
+        this.AddAxisLabel(axis, this.valueFormatter(max), 0);
+        this.AddAxisLabel(axis, this.valueFormatter(max / 2), (PlotHeight / 2) - 8);
+        this.AddAxisLabel(axis, this.valueFormatter(0), PlotHeight - 18);
         var valueText = new TextBlock
         {
             FontSize = 10.5,
@@ -197,7 +198,7 @@ internal sealed class ActivityBarChart : Grid
                 laneBrush.Color = Color.FromArgb(14, this.accent.R, this.accent.G, this.accent.B);
                 barBrush.Color = Color.FromArgb(244, this.accent.R, this.accent.G, this.accent.B);
                 detail.Text = bar.Description;
-                valueText.Text = $"{bar.Value.ToString("0.#", UiCulture)} quota points";
+                valueText.Text = this.valueFormatter(bar.Value);
                 var y = Math.Max(0, PlotHeight - height);
                 var barNearEdge = (itemIndex * laneWidth) + ((laneWidth - visualBarWidth) / 2);
                 guide.X1 = 0;

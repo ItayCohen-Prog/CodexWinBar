@@ -253,12 +253,11 @@ public sealed class StatisticsWindow : Window
 
     private Button CreateProviderButton(ProviderDescriptor descriptor, bool selected)
     {
-        var content = new Grid
+        var content = new StackPanel
         {
+            Orientation = Orientation.Horizontal,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(30) });
-        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         FrameworkElement logo = LogoImages.Get(descriptor.Branding.GlyphKey, this.isDark) is { } source
             ? new Image { Source = source, Width = 27, Height = 27 }
             : LogoImages.IconGlyph(LogoImages.StatisticsGlyph, 24);
@@ -277,36 +276,38 @@ public sealed class StatisticsWindow : Window
         var name = new TextBlock
         {
             Text = descriptor.Metadata.DisplayName,
-            Margin = new Thickness(8, 0, 0, 0),
+            Margin = new Thickness(8, 0, 1, 0),
             FontSize = 13,
             FontWeight = FontWeights.SemiBold,
             Foreground = this.Brush("StatisticsForeground"),
             VerticalAlignment = VerticalAlignment.Center,
         };
+        name.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var nameWidth = name.DesiredSize.Width;
         var nameHost = new Border
         {
+            Width = selected ? nameWidth : 0,
             Opacity = selected ? 1 : 0,
             ClipToBounds = true,
             Child = name,
         };
         var nameTranslate = new TranslateTransform(selected ? 0 : -3, 0);
         nameHost.RenderTransform = nameTranslate;
-        Grid.SetColumn(nameHost, 1);
         content.Children.Add(nameHost);
 
         var button = new Button
         {
             Content = content,
-            Padding = new Thickness(7, 5, 7, 5),
-            Margin = new Thickness(0, 0, 8, 0),
-            Width = 104,
+            Padding = new Thickness(6, 5, 6, 5),
+            Margin = new Thickness(0, 0, 5, 0),
+            MinWidth = 39,
             Height = 40,
             Background = Brushes.Transparent,
             Cursor = Cursors.Hand,
             ToolTip = descriptor.Metadata.DisplayName,
             Template = CreateProviderButtonTemplate(),
         };
-        button.Tag = new ProviderButtonVisual(descriptor.Id, logo, nameHost, nameTranslate, shadow);
+        button.Tag = new ProviderButtonVisual(descriptor.Id, logo, nameHost, nameWidth, nameTranslate, shadow);
         ToolTipService.SetInitialShowDelay(button, 250);
         ToolTipService.SetBetweenShowDelay(button, 80);
         void AnimateLogo(
@@ -375,8 +376,12 @@ public sealed class StatisticsWindow : Window
         }
 
         this.providerTransitioning = true;
-        var duration = TimeSpan.FromMilliseconds(167);
-        var easing = new QuadraticEase { EasingMode = EasingMode.EaseOut };
+        var duration = TimeSpan.FromMilliseconds(190);
+        var easing = new QuadraticEase { EasingMode = EasingMode.EaseInOut };
+        current.NameHost.Width = current.NameHost.ActualWidth;
+        current.NameHost.BeginAnimation(
+            WidthProperty,
+            new DoubleAnimation(current.NameHost.ActualWidth, 0, duration) { EasingFunction = easing });
         current.NameHost.BeginAnimation(
             OpacityProperty,
             new DoubleAnimation(current.NameHost.Opacity, 0, duration) { EasingFunction = easing });
@@ -390,6 +395,8 @@ public sealed class StatisticsWindow : Window
             DropShadowEffect.OpacityProperty,
             new DoubleAnimation(current.Shadow.Opacity, 0.24, duration) { EasingFunction = easing });
 
+        target.NameHost.Width = 0;
+        target.NameHost.Opacity = 0;
         target.NameTranslate.BeginAnimation(
             TranslateTransform.XProperty,
             new DoubleAnimation(target.NameTranslate.X, 0, duration) { EasingFunction = easing });
@@ -399,9 +406,12 @@ public sealed class StatisticsWindow : Window
         target.Shadow.BeginAnimation(
             DropShadowEffect.OpacityProperty,
             new DoubleAnimation(target.Shadow.Opacity, 0.38, duration) { EasingFunction = easing });
-        var finish = new DoubleAnimation(target.NameHost.Opacity, 1, duration) { EasingFunction = easing };
-        finish.Completed += (_, _) => this.CommitProviderSelection(provider);
-        target.NameHost.BeginAnimation(OpacityProperty, finish);
+        target.NameHost.BeginAnimation(
+            OpacityProperty,
+            new DoubleAnimation(0, 1, duration) { EasingFunction = easing });
+        var expand = new DoubleAnimation(0, target.NameWidth, duration) { EasingFunction = easing };
+        expand.Completed += (_, _) => this.CommitProviderSelection(provider);
+        target.NameHost.BeginAnimation(WidthProperty, expand);
     }
 
     private void CommitProviderSelection(ProviderId provider)
@@ -1194,6 +1204,7 @@ public sealed class StatisticsWindow : Window
         ProviderId Provider,
         FrameworkElement Logo,
         Border NameHost,
+        double NameWidth,
         TranslateTransform NameTranslate,
         DropShadowEffect Shadow);
 

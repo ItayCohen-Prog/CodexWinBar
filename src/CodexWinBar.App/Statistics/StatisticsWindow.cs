@@ -45,6 +45,7 @@ public sealed class StatisticsWindow : Window
     private DateOnly? selectedDate;
     private DateOnly? selectedMonth;
     private ActivityViewMode viewMode = ActivityViewMode.Overview;
+    private bool providerTransitioning;
 
     private StatisticsWindow(
         IPlanStatisticsStore store,
@@ -288,6 +289,8 @@ public sealed class StatisticsWindow : Window
             ClipToBounds = true,
             Child = name,
         };
+        var nameTranslate = new TranslateTransform(selected ? 0 : -3, 0);
+        nameHost.RenderTransform = nameTranslate;
         Grid.SetColumn(nameHost, 1);
         content.Children.Add(nameHost);
 
@@ -303,7 +306,7 @@ public sealed class StatisticsWindow : Window
             ToolTip = descriptor.Metadata.DisplayName,
             Template = CreateProviderButtonTemplate(),
         };
-        button.Tag = descriptor.Id;
+        button.Tag = new ProviderButtonVisual(descriptor.Id, logo, nameHost, nameTranslate, shadow);
         ToolTipService.SetInitialShowDelay(button, 250);
         ToolTipService.SetBetweenShowDelay(button, 80);
         void AnimateLogo(
@@ -336,7 +339,7 @@ public sealed class StatisticsWindow : Window
         button.MouseEnter += (_, _) => HighlightLogo();
         button.MouseLeave += (_, _) =>
         {
-            if (!button.IsKeyboardFocused)
+            if (!button.IsKeyboardFocused && !this.providerTransitioning)
             {
                 RestoreLogo();
             }
@@ -344,7 +347,7 @@ public sealed class StatisticsWindow : Window
         button.GotKeyboardFocus += (_, _) => HighlightLogo();
         button.LostKeyboardFocus += (_, _) =>
         {
-            if (!button.IsMouseOver)
+            if (!button.IsMouseOver && !this.providerTransitioning)
             {
                 RestoreLogo();
             }
@@ -354,13 +357,61 @@ public sealed class StatisticsWindow : Window
 
     private void SelectProvider(ProviderId provider, Button targetButton)
     {
-        if (provider == this.selectedProvider)
+        if (provider == this.selectedProvider || this.providerTransitioning)
         {
             return;
         }
+
+        var current = this.providerTabs.Children.OfType<Button>()
+            .Select(button => button.Tag)
+            .OfType<ProviderButtonVisual>()
+            .FirstOrDefault(visual => visual.Provider == this.selectedProvider);
+        if (!SystemParameters.ClientAreaAnimation ||
+            targetButton.Tag is not ProviderButtonVisual target ||
+            current is null)
+        {
+            this.CommitProviderSelection(provider);
+            return;
+        }
+
+        this.providerTransitioning = true;
+        var duration = TimeSpan.FromMilliseconds(167);
+        var easing = new QuadraticEase { EasingMode = EasingMode.EaseOut };
+        current.NameHost.BeginAnimation(
+            OpacityProperty,
+            new DoubleAnimation(current.NameHost.Opacity, 0, duration) { EasingFunction = easing });
+        current.NameTranslate.BeginAnimation(
+            TranslateTransform.XProperty,
+            new DoubleAnimation(current.NameTranslate.X, -2, duration) { EasingFunction = easing });
+        current.Logo.BeginAnimation(
+            OpacityProperty,
+            new DoubleAnimation(current.Logo.Opacity, 0.58, duration) { EasingFunction = easing });
+        current.Shadow.BeginAnimation(
+            DropShadowEffect.OpacityProperty,
+            new DoubleAnimation(current.Shadow.Opacity, 0.24, duration) { EasingFunction = easing });
+
+        target.NameTranslate.BeginAnimation(
+            TranslateTransform.XProperty,
+            new DoubleAnimation(target.NameTranslate.X, 0, duration) { EasingFunction = easing });
+        target.Logo.BeginAnimation(
+            OpacityProperty,
+            new DoubleAnimation(target.Logo.Opacity, 1, duration) { EasingFunction = easing });
+        target.Shadow.BeginAnimation(
+            DropShadowEffect.OpacityProperty,
+            new DoubleAnimation(target.Shadow.Opacity, 0.38, duration) { EasingFunction = easing });
+        var finish = new DoubleAnimation(target.NameHost.Opacity, 1, duration) { EasingFunction = easing };
+        finish.Completed += (_, _) => this.CommitProviderSelection(provider);
+        target.NameHost.BeginAnimation(OpacityProperty, finish);
+    }
+
+    private void CommitProviderSelection(ProviderId provider)
+    {
         this.SetProviderSelection(provider);
         this.Refresh();
-        _ = targetButton.Focus();
+        this.providerTransitioning = false;
+        var selected = this.providerTabs.Children.OfType<Button>()
+            .FirstOrDefault(button => button.Tag is ProviderButtonVisual visual && visual.Provider == provider);
+        _ = selected?.Focus();
     }
 
     private void SetProviderSelection(ProviderId provider)
@@ -1138,6 +1189,13 @@ public sealed class StatisticsWindow : Window
         (byte)Math.Round(left.R + ((right.R - left.R) * amount)),
         (byte)Math.Round(left.G + ((right.G - left.G) * amount)),
         (byte)Math.Round(left.B + ((right.B - left.B) * amount)));
+
+    private sealed record ProviderButtonVisual(
+        ProviderId Provider,
+        FrameworkElement Logo,
+        Border NameHost,
+        TranslateTransform NameTranslate,
+        DropShadowEffect Shadow);
 
     private static int ProviderOrder(ProviderId provider) => provider switch
     {

@@ -47,6 +47,8 @@ internal sealed class ActivityBarChart : Grid
 
     internal event Action<int>? BarSelected;
 
+    internal event Action<int>? BarInspected;
+
     private void Build()
     {
         var laneWidth = this.bars.Count > 12 ? 30d : 64d;
@@ -209,6 +211,7 @@ internal sealed class ActivityBarChart : Grid
                 this.Reveal(valuePill);
                 this.Reveal(guide);
                 AutomationProperties.SetItemStatus(this, bar.Description);
+                this.BarInspected?.Invoke(itemIndex);
             }
 
             lane.MouseEnter += (_, _) => Inspect();

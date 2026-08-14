@@ -460,7 +460,7 @@ public sealed class StatisticsWindow : Window
                 break;
             case ActivityViewMode.Month:
                 root.Children.Add(this.BuildMonthSummary(descriptor, series, month, accent));
-                root.Children.Add(this.BuildMonthSection(series, month, accent));
+                root.Children.Add(this.BuildMonthSection(series, month, selected.Date, accent));
                 break;
             case ActivityViewMode.Week:
                 root.Children.Add(this.BuildWeekSummary(descriptor, series, activity, week, accent));
@@ -859,7 +859,11 @@ public sealed class StatisticsWindow : Window
         return stack;
     }
 
-    private UIElement BuildMonthSection(PlanUsageSeries series, ActivityMonth month, Color accent)
+    private UIElement BuildMonthSection(
+        PlanUsageSeries series,
+        ActivityMonth month,
+        DateOnly selectedDate,
+        Color accent)
     {
         var stack = new StackPanel();
         stack.Children.Add(this.SectionHeader(LogoImages.StatisticsGlyph, "Weekly activity", LimitName(series), accent));
@@ -879,7 +883,103 @@ public sealed class StatisticsWindow : Window
             Margin = new Thickness(0, 8, 0, 12),
         };
         chart.BarSelected += index => this.SelectWeek(month.Weeks[index].StartsOn);
-        stack.Children.Add(chart);
+
+        var inspector = new Border
+        {
+            MinWidth = 280,
+            Margin = new Thickness(28, 38, 0, 20),
+            Padding = new Thickness(26, 2, 0, 0),
+            BorderBrush = this.Brush("StatisticsCardBorder"),
+            BorderThickness = new Thickness(1, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Stretch,
+        };
+        var inspectorContent = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        var weekLabel = new TextBlock
+        {
+            FontSize = 11.5,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = this.Brush("StatisticsMutedForeground"),
+        };
+        var weekValue = new TextBlock
+        {
+            Margin = new Thickness(0, 4, 0, 0),
+            FontFamily = DisplayFont,
+            FontSize = 25,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = this.Brush("StatisticsForeground"),
+        };
+        Typography.SetNumeralAlignment(weekValue, FontNumeralAlignment.Tabular);
+        var weekDetail = new TextBlock
+        {
+            Margin = new Thickness(0, 3, 0, 12),
+            FontSize = 11.5,
+            Foreground = this.Brush("StatisticsMutedForeground"),
+        };
+        inspectorContent.Children.Add(weekLabel);
+        inspectorContent.Children.Add(weekValue);
+        inspectorContent.Children.Add(weekDetail);
+
+        var activeDaysValue = new TextBlock();
+        var averageValue = new TextBlock();
+        var busiestValue = new TextBlock();
+        var comparisonValue = new TextBlock();
+        AddInspectorFact(inspectorContent, CalendarGlyph, "Active days", activeDaysValue);
+        AddInspectorFact(inspectorContent, LogoImages.StatisticsGlyph, "Daily average", averageValue);
+        AddInspectorFact(inspectorContent, "\uE9D9", "Busiest day", busiestValue);
+        AddInspectorFact(inspectorContent, "\uE7BA", "Previous week", comparisonValue);
+        inspector.Child = inspectorContent;
+
+        void InspectWeek(int index, bool animate)
+        {
+            if (index < 0 || index >= month.Weeks.Count)
+            {
+                return;
+            }
+
+            var week = month.Weeks[index];
+            var previous = index > 0 ? month.Weeks[index - 1] : null;
+            weekLabel.Text = FormatWeekRange(week.StartsOn).ToUpperInvariant();
+            weekValue.Text = FormatActivity(series, week.Total);
+            weekDetail.Text = $"Week of {week.StartsOn.ToString("MMMM d", UiCulture)}";
+            activeDaysValue.Text = $"{week.ActiveDays} of {Math.Max(1, week.Days.Count)}";
+            averageValue.Text = week.CoveredDays > 0
+                ? FormatActivity(series, week.Total / week.CoveredDays)
+                : "No observations";
+            busiestValue.Text = week.BusiestDay is { } busiest
+                ? $"{busiest.Date.ToString("ddd", UiCulture)} · {FormatActivity(series, busiest.Value)}"
+                : "No activity";
+            comparisonValue.Text = previous is { CoveredDays: > 0 }
+                ? Difference(series, week.Total, previous.Total)
+                : "No comparison";
+            AutomationProperties.SetName(
+                inspector,
+                $"{FormatWeekRange(week.StartsOn)}. {weekValue.Text}. {activeDaysValue.Text} active days. " +
+                $"Daily average {averageValue.Text}. Busiest day {busiestValue.Text}. Previous week {comparisonValue.Text}.");
+            if (animate && SystemParameters.ClientAreaAnimation)
+            {
+                inspector.BeginAnimation(
+                    OpacityProperty,
+                    new DoubleAnimation(0.72, 1, TimeSpan.FromMilliseconds(135))
+                    {
+                        EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+                    });
+            }
+        }
+
+        var initialIndex = month.Weeks
+            .Select((week, index) => (week, index))
+            .FirstOrDefault(item => selectedDate >= item.week.StartsOn && selectedDate <= item.week.StartsOn.AddDays(6))
+            .index;
+        InspectWeek(initialIndex, animate: false);
+        chart.BarInspected += index => InspectWeek(index, animate: true);
+
+        var body = new Grid();
+        body.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        body.Children.Add(chart);
+        Grid.SetColumn(inspector, 1);
+        body.Children.Add(inspector);
+        stack.Children.Add(body);
         return stack;
     }
 
@@ -960,6 +1060,36 @@ public sealed class StatisticsWindow : Window
         Grid.SetColumn(right, 2);
         header.Children.Add(right);
         return header;
+    }
+
+    private void AddInspectorFact(Panel parent, string icon, string label, TextBlock value)
+    {
+        var row = new Grid { Margin = new Thickness(0, 5, 0, 5) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(25) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(106) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var glyph = LogoImages.IconGlyph(icon, 12);
+        glyph.Foreground = this.Brush("StatisticsMutedForeground");
+        glyph.VerticalAlignment = VerticalAlignment.Center;
+        row.Children.Add(glyph);
+        var name = new TextBlock
+        {
+            Text = label,
+            FontSize = 11.5,
+            Foreground = this.Brush("StatisticsMutedForeground"),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(name, 1);
+        row.Children.Add(name);
+        value.FontSize = 12.5;
+        value.FontWeight = FontWeights.SemiBold;
+        value.Foreground = this.Brush("StatisticsForeground");
+        value.TextTrimming = TextTrimming.CharacterEllipsis;
+        value.VerticalAlignment = VerticalAlignment.Center;
+        Typography.SetNumeralAlignment(value, FontNumeralAlignment.Tabular);
+        Grid.SetColumn(value, 2);
+        row.Children.Add(value);
+        parent.Children.Add(row);
     }
 
     private UIElement BuildEmptyState()

@@ -129,12 +129,6 @@ internal static class PlanStatisticsProjection
 
         foreach (var cycle in GroupByEquivalentReset(series.Samples))
         {
-            if (series.WindowMinutes == 300)
-            {
-                AddSessionCycle(buckets, cycle, now);
-                continue;
-            }
-
             double? observedPeak = null;
             foreach (var sample in cycle
                 .Where(item => item.CapturedAt <= now)
@@ -190,35 +184,6 @@ internal static class PlanStatisticsProjection
             active.OrderByDescending(item => item.Value).FirstOrDefault(),
             calendarStart,
             end);
-    }
-
-    private static void AddSessionCycle(
-        IReadOnlyDictionary<DateOnly, DayAccumulator> buckets,
-        IReadOnlyList<PlanUsageSample> cycle,
-        DateTimeOffset now)
-    {
-        var observed = cycle
-            .Where(sample => sample.CapturedAt <= now)
-            .OrderBy(sample => sample.CapturedAt)
-            .ToArray();
-        if (observed.Length == 0)
-        {
-            return;
-        }
-
-        var resetsAt = observed[0].ResetsAt;
-        var completed = resetsAt is { } reset && reset <= now;
-        var attributionTime = completed
-            ? resetsAt!.Value.AddTicks(-1)
-            : observed[^1].CapturedAt;
-        var local = attributionTime.LocalDateTime;
-        var date = DateOnly.FromDateTime(local.Date);
-        if (!buckets.TryGetValue(date, out var day))
-        {
-            return;
-        }
-
-        day.Add(local.Hour, observed.Max(sample => sample.UsedPercent), observed.Length);
     }
 
     internal static DateOnly WeekStart(DateOnly date)
@@ -310,10 +275,10 @@ internal static class PlanStatisticsProjection
 
         internal DateOnly Date { get; } = date;
 
-        internal void Add(int hour, double increment, int observations = 1)
+        internal void Add(int hour, double increment)
         {
             this.hourlyValues[hour] += increment;
-            this.hourlyObservations[hour] += observations;
+            this.hourlyObservations[hour]++;
         }
 
         internal ActivityDay Build()

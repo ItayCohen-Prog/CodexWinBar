@@ -1,4 +1,6 @@
 using CodexWinBar.App.Statistics;
+using CodexWinBar.App.Dev;
+using CodexWinBar.Core.Providers;
 using CodexWinBar.Core.Statistics;
 using Xunit;
 
@@ -136,15 +138,15 @@ public sealed class PlanStatisticsProjectionTests
     }
 
     [Fact]
-    public void BuildActivity_session_mode_sums_each_observed_session_peak()
+    public void BuildActivity_session_mode_sums_observed_usage_across_session_cycles()
     {
         var now = new DateTimeOffset(2026, 8, 13, 18, 0, 0, TimeSpan.Zero);
         var firstReset = new DateTimeOffset(2026, 8, 13, 12, 0, 0, TimeSpan.Zero);
         var secondReset = new DateTimeOffset(2026, 8, 13, 17, 0, 0, TimeSpan.Zero);
         var series = SessionSeries(
-            Sample(firstReset.AddHours(-4), 20, firstReset),
+            Sample(firstReset.AddHours(-4), 0, firstReset),
             Sample(firstReset.AddMinutes(-10), 100, firstReset),
-            Sample(secondReset.AddHours(-4), 35, secondReset),
+            Sample(secondReset.AddHours(-4), 0, secondReset),
             Sample(secondReset.AddMinutes(-10), 100, secondReset));
 
         var day = Assert.IsType<ActivityDay>(PlanStatisticsProjection.BuildActivity(series, now)
@@ -173,6 +175,25 @@ public sealed class PlanStatisticsProjectionTests
         Assert.Equal(20, month.Total);
         Assert.Equal(20, month.Weeks[0].Total);
         Assert.DoesNotContain(month.Weeks[0].Days, day => day.Date.Month == 7);
+    }
+
+    [Fact]
+    public void Fake_history_spreads_weekly_and_session_activity_across_a_work_week()
+    {
+        using var store = new FakePlanStatisticsStore();
+        var now = DateTimeOffset.Now;
+        var previousWeek = PlanStatisticsProjection.WeekStart(DateOnly.FromDateTime(now.LocalDateTime.Date)).AddDays(-7);
+        var workday = previousWeek.AddDays(3);
+
+        foreach (var series in store.Get(ProviderId.Claude).Series.Where(item => item.Id is "session" or "weekly"))
+        {
+            var activity = PlanStatisticsProjection.BuildActivity(series, now);
+            var day = Assert.IsType<ActivityDay>(activity.Day(workday));
+            var week = activity.WeekContaining(workday);
+
+            Assert.Equal(8, day.ActiveHours);
+            Assert.Equal(5, week.ActiveDays);
+        }
     }
 
     private static PlanUsageSeries Series(params PlanUsageSample[] samples) => new()

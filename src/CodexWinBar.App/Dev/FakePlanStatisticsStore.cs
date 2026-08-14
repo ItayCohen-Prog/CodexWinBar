@@ -18,7 +18,7 @@ internal sealed class FakePlanStatisticsStore : IPlanStatisticsStore
                 Provider = ProviderId.Codex,
                 Series =
                 [
-                    BuildSeries("weekly", "Weekly", 10080, now, 54, [64, 81, 73, 55, 89, 67, 77, 48, 83, 61, 72, 45, 58]),
+                    BuildWeeklySeries("weekly", "Weekly", now, 54, [64, 81, 73, 55, 89, 67, 77, 48, 83, 61, 72, 45, 58]),
                 ],
             },
             [ProviderId.Claude] = new()
@@ -26,9 +26,9 @@ internal sealed class FakePlanStatisticsStore : IPlanStatisticsStore
                 Provider = ProviderId.Claude,
                 Series =
                 [
-                    BuildSeries("session", "Session", 300, now, 1800, [76, 54, 89, 0, 67, 82, 48, 93, 18, 71, 64, 86, 0, 59, 79, 72]),
-                    BuildSeries("weekly", "Weekly", 10080, now, 54, [71, 62, 88, 79, 56, 91, 73, 68, 84, 77, 59, 86, 52]),
-                    BuildSeries("tertiary", "Opus weekly", 10080, now, 54, [31, 49, 44, 72, 38, 65, 53, 47, 69, 42, 58, 36, 20]),
+                    BuildSessionSeries("session", "Session", now, [76, 54, 89, 67, 82, 48, 93, 71, 64, 86, 59, 79, 72]),
+                    BuildWeeklySeries("weekly", "Weekly", now, 54, [71, 62, 88, 79, 56, 91, 73, 68, 84, 77, 59, 86, 52]),
+                    BuildWeeklySeries("tertiary", "Opus weekly", now, 54, [31, 49, 44, 72, 38, 65, 53, 47, 69, 42, 58, 36, 20]),
                 ],
             },
         };
@@ -52,42 +52,95 @@ internal sealed class FakePlanStatisticsStore : IPlanStatisticsStore
     {
     }
 
-    private static PlanUsageSeries BuildSeries(
+    private static PlanUsageSeries BuildWeeklySeries(
         string id,
         string title,
-        int windowMinutes,
         DateTimeOffset now,
         int cycles,
         IReadOnlyList<double> peaks)
     {
-        var duration = TimeSpan.FromMinutes(windowMinutes);
-        var currentReset = now.Add(duration - TimeSpan.FromTicks(now.UtcTicks % duration.Ticks));
+        var today = DateOnly.FromDateTime(now.LocalDateTime.Date);
+        var currentWeek = today.AddDays(-(int)today.DayOfWeek);
         var samples = new List<PlanUsageSample>();
         for (var index = 0; index < cycles; index++)
         {
-            var reverseIndex = cycles - index - 1;
-            var reset = currentReset - (duration * reverseIndex);
+            var weekStart = currentWeek.AddDays(-7 * (cycles - index - 1));
+            var reset = LocalTime(weekStart.AddDays(7), 0);
             var peak = peaks[index % peaks.Count];
             samples.Add(new PlanUsageSample
             {
-                CapturedAt = reset - TimeSpan.FromTicks((long)(duration.Ticks * 0.72)),
-                UsedPercent = peak <= 0 ? 0 : Math.Max(2, peak * 0.34),
+                CapturedAt = LocalTime(weekStart, 8),
+                UsedPercent = 0,
                 ResetsAt = reset,
             });
-            samples.Add(new PlanUsageSample
+
+            const int workHoursPerWeek = 5 * 8;
+            var observation = 0;
+            for (var day = 1; day <= 5; day++)
             {
-                CapturedAt = reset - TimeSpan.FromTicks((long)(duration.Ticks * 0.08)),
-                UsedPercent = peak,
-                ResetsAt = reset,
-            });
+                for (var hour = 9; hour <= 16; hour++)
+                {
+                    observation++;
+                    samples.Add(new PlanUsageSample
+                    {
+                        CapturedAt = LocalTime(weekStart.AddDays(day), hour, 45),
+                        UsedPercent = peak * observation / workHoursPerWeek,
+                        ResetsAt = reset,
+                    });
+                }
+            }
         }
 
         return new PlanUsageSeries
         {
             Id = id,
             Title = title,
-            WindowMinutes = windowMinutes,
+            WindowMinutes = 10080,
             Samples = samples,
         };
     }
+
+    private static PlanUsageSeries BuildSessionSeries(
+        string id,
+        string title,
+        DateTimeOffset now,
+        IReadOnlyList<double> peaks)
+    {
+        var today = DateOnly.FromDateTime(now.LocalDateTime.Date);
+        var samples = new List<PlanUsageSample>();
+        var peakIndex = 0;
+        for (var date = today.AddDays(-(52 * 7)); date <= today; date = date.AddDays(1))
+        {
+            if (date.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
+            {
+                continue;
+            }
+
+            foreach (var (startsAt, resetsAt) in new[] { (8, 13), (13, 18) })
+            {
+                var reset = LocalTime(date, resetsAt);
+                var peak = peaks[peakIndex++ % peaks.Count];
+                for (var offset = 0; offset <= 4; offset++)
+                {
+                    samples.Add(new PlanUsageSample
+                    {
+                        CapturedAt = LocalTime(date, startsAt + offset, offset == 4 ? 45 : 5),
+                        UsedPercent = peak * offset / 4,
+                        ResetsAt = reset,
+                    });
+                }
+            }
+        }
+
+        return new PlanUsageSeries
+        {
+            Id = id,
+            Title = title,
+            WindowMinutes = 300,
+            Samples = samples,
+        };
+    }
+
+    private static DateTimeOffset LocalTime(DateOnly date, int hour, int minute = 0) =>
+        new(date.ToDateTime(new TimeOnly(hour, minute), DateTimeKind.Local));
 }

@@ -64,24 +64,17 @@ public sealed class PlanStatisticsProjectionTests
     }
 
     [Fact]
-    public void BuildActivity_personal_scale_uses_distribution_and_fixed_scale_uses_defined_limits()
+    public void BuildActivity_uses_fixed_weekly_and_session_reference_scales()
     {
-        var now = new DateTimeOffset(2026, 8, 13, 12, 0, 0, TimeSpan.Zero);
-        var samples = new List<PlanUsageSample>();
-        var values = new[] { 2d, 8d, 20d, 44d };
-        for (var index = 0; index < values.Length; index++)
-        {
-            var captured = now.AddDays(index - values.Length + 1);
-            var reset = captured.AddHours(5);
-            samples.Add(Sample(captured.AddMinutes(-1), 0, reset));
-            samples.Add(Sample(captured, values[index], reset));
-        }
+        var weeklyValues = new[] { 0d, 25d, 50d, 75d, 100d, 125d };
+        var sessionValues = new[] { 0d, 200d, 400d, 600d, 800d, 1000d };
 
-        var activity = PlanStatisticsProjection.BuildActivity(Series([.. samples]), now);
-        var active = activity.Days.Where(day => day.Value > 0).ToArray();
-
-        Assert.Equal([1, 2, 3, 4], active.Select(day => day.PersonalIntensity));
-        Assert.Equal([1, 2, 3, 4], active.Select(day => day.FixedIntensity));
+        Assert.Equal(
+            [0, 1, 2, 3, 4, 4],
+            weeklyValues.Select(value => PlanStatisticsProjection.FixedIntensity(Series(), value)));
+        Assert.Equal(
+            [0, 1, 2, 3, 4, 4],
+            sessionValues.Select(value => PlanStatisticsProjection.FixedIntensity(SessionSeries(), value)));
     }
 
     [Fact]

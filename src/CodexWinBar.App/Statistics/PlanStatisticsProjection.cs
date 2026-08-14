@@ -2,12 +2,6 @@ using CodexWinBar.Core.Statistics;
 
 namespace CodexWinBar.App.Statistics;
 
-internal enum ActivityScaleMode
-{
-    Personal,
-    Fixed,
-}
-
 internal sealed record ActivityHour(int Hour, double Value, int ObservationCount);
 
 internal sealed record ActivityDay(
@@ -16,14 +10,9 @@ internal sealed record ActivityDay(
     int ActiveHours,
     int ObservationCount,
     IReadOnlyList<ActivityHour> Hours,
-    int PersonalIntensity,
-    int FixedIntensity)
+    int Intensity)
 {
     internal bool HasCoverage => this.ObservationCount > 0;
-
-    internal int Intensity(ActivityScaleMode mode) => mode == ActivityScaleMode.Personal
-        ? this.PersonalIntensity
-        : this.FixedIntensity;
 }
 
 internal sealed record ActivityWeek(
@@ -114,6 +103,9 @@ internal sealed record ActivityOverview(
 internal static class PlanStatisticsProjection
 {
     private const double ActivityEpsilon = 0.001;
+    // Anthropic exposes the five-hour and weekly meters independently and publishes no conversion.
+    // Observed full-window reports cluster around 7–10 per week, so eight is a visual reference only.
+    private const double FullSessionWeeklyReference = 8;
     private static readonly TimeSpan ResetEquivalenceTolerance = TimeSpan.FromMinutes(2);
 
     internal static ActivityOverview BuildActivity(PlanUsageSeries series, DateTimeOffset now, int? calendarYear = null)
@@ -170,16 +162,9 @@ internal static class PlanStatisticsProjection
         var summaryDays = preliminary
             .Where(day => day.Date >= yearStart && day.Date <= selectableEnd)
             .ToArray();
-        var activeValues = summaryDays
-            .Where(item => item.Value > ActivityEpsilon)
-            .Select(item => item.Value)
-            .OrderBy(value => value)
-            .ToArray();
-        var personalThresholds = PersonalThresholds(activeValues);
         var days = preliminary.Select(day => day with
         {
-            PersonalIntensity = Intensity(day.Value, personalThresholds),
-            FixedIntensity = FixedIntensity(day.Value),
+            Intensity = FixedIntensity(series, day.Value),
         }).ToArray();
         var active = days
             .Where(item => item.Date >= yearStart && item.Date <= selectableEnd && item.Value > ActivityEpsilon)
@@ -229,57 +214,18 @@ internal static class PlanStatisticsProjection
         return groups;
     }
 
-    private static double[] PersonalThresholds(IReadOnlyList<double> sorted)
-    {
-        if (sorted.Count == 0)
-        {
-            return [0, 0, 0];
-        }
-
-        return [Percentile(sorted, 0.25), Percentile(sorted, 0.50), Percentile(sorted, 0.75)];
-    }
-
-    private static double Percentile(IReadOnlyList<double> sorted, double percentile)
-    {
-        var position = (sorted.Count - 1) * percentile;
-        var lower = (int)Math.Floor(position);
-        var upper = (int)Math.Ceiling(position);
-        if (lower == upper)
-        {
-            return sorted[lower];
-        }
-
-        return sorted[lower] + ((sorted[upper] - sorted[lower]) * (position - lower));
-    }
-
-    private static int Intensity(double value, IReadOnlyList<double> thresholds)
+    internal static int FixedIntensity(PlanUsageSeries series, double value)
     {
         if (value <= ActivityEpsilon)
         {
             return 0;
         }
 
-        if (value <= thresholds[0])
-        {
-            return 1;
-        }
-
-        if (value <= thresholds[1])
-        {
-            return 2;
-        }
-
-        return value <= thresholds[2] ? 3 : 4;
+        var maximum = series.WindowMinutes == 300
+            ? FullSessionWeeklyReference * 100
+            : 100;
+        return Math.Clamp((int)Math.Ceiling((value / maximum) * 4), 1, 4);
     }
-
-    private static int FixedIntensity(double value) => value switch
-    {
-        <= ActivityEpsilon => 0,
-        <= 5 => 1,
-        <= 15 => 2,
-        <= 30 => 3,
-        _ => 4,
-    };
 
     private sealed class DayAccumulator(DateOnly date)
     {
@@ -305,8 +251,7 @@ internal static class PlanStatisticsProjection
                 this.hourlyValues.Count(value => value > ActivityEpsilon),
                 this.hourlyObservations.Sum(),
                 hours,
-                PersonalIntensity: 0,
-                FixedIntensity: 0);
+                Intensity: 0);
         }
     }
 }

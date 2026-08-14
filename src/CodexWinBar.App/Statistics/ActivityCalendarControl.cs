@@ -22,7 +22,6 @@ internal sealed class ActivityCalendarControl : FrameworkElement
     private readonly IReadOnlyDictionary<DateOnly, ActivityDay> daysByDate;
     private readonly Color accent;
     private readonly bool isDark;
-    private readonly ActivityScaleMode scaleMode;
     private readonly Func<double, string> valueFormatter;
     private readonly DateOnly firstSelectableDate;
     private readonly DateOnly lastSelectableDate;
@@ -42,7 +41,6 @@ internal sealed class ActivityCalendarControl : FrameworkElement
         DateOnly lastSelectableDate,
         Color accent,
         bool isDark,
-        ActivityScaleMode scaleMode,
         Func<double, string> valueFormatter)
     {
         this.days = days;
@@ -52,7 +50,6 @@ internal sealed class ActivityCalendarControl : FrameworkElement
         this.lastSelectableDate = lastSelectableDate;
         this.accent = accent;
         this.isDark = isDark;
-        this.scaleMode = scaleMode;
         this.valueFormatter = valueFormatter;
         this.Focusable = true;
         this.Cursor = Cursors.Hand;
@@ -76,7 +73,7 @@ internal sealed class ActivityCalendarControl : FrameworkElement
 
         var muted = this.isDark ? Color.FromRgb(167, 173, 184) : Color.FromRgb(98, 104, 116);
         var unavailable = this.isDark ? Color.FromArgb(18, 255, 255, 255) : Color.FromArgb(10, 23, 25, 29);
-        var noActivity = this.isDark ? Color.FromArgb(44, 255, 255, 255) : Color.FromArgb(28, 23, 25, 29);
+        var noActivity = Colors.Transparent;
         var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
 
         foreach (var row in new[] { 1, 3, 5 })
@@ -113,7 +110,7 @@ internal sealed class ActivityCalendarControl : FrameworkElement
                 : day.HasCoverage
                     ? day.Value <= 0.001
                         ? noActivity
-                        : IntensityColor(this.accent, day.Intensity(this.scaleMode), this.isDark)
+                        : IntensityColor(day.Intensity, this.isDark)
                     : unavailable;
             drawingContext.DrawRoundedRectangle(new SolidColorBrush(fill), null, rect.Value, 2.5, 2.5);
             if (day.Date == this.selectedDate)
@@ -341,28 +338,24 @@ internal sealed class ActivityCalendarControl : FrameworkElement
         return $"{day.Date.ToString("dddd, MMMM d", UiCulture)}. " +
             $"{this.valueFormatter(day.Value)}. " +
             $"{day.ActiveHours} active hours, {day.ObservationCount} observations. " +
-            $"Relative intensity {day.Intensity(this.scaleMode)} of 4. Week total {this.valueFormatter(weekTotal)}.";
+            $"Fixed intensity {day.Intensity} of 4. Week total {this.valueFormatter(weekTotal)}.";
     }
 
     private bool CanSelect(DateOnly date) => date >= this.firstSelectableDate &&
         date <= this.lastSelectableDate &&
         this.daysByDate.ContainsKey(date);
 
-    private static Color IntensityColor(Color accent, int level, bool isDark)
+    private static Color IntensityColor(int level, bool isDark)
     {
         var alpha = level switch
         {
-            1 => 74,
-            2 => 124,
+            1 => 64,
+            2 => 118,
             3 => 184,
-            _ => 242,
+            _ => 255,
         };
-        if (isDark && level == 1)
-        {
-            alpha += 20;
-        }
-
-        return Color.FromArgb((byte)alpha, accent.R, accent.G, accent.B);
+        var ink = isDark ? Color.FromRgb(238, 240, 244) : Color.FromRgb(18, 20, 23);
+        return Color.FromArgb((byte)alpha, ink.R, ink.G, ink.B);
     }
 
     private void DrawText(DrawingContext context, string text, Color color, double size, Point origin, double dpi)

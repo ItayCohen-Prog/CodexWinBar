@@ -836,7 +836,7 @@ public sealed class StatisticsWindow : Window
         stack.Children.Add(this.SectionHeader(
             CalendarGlyph,
             $"Observed {LimitName(series).ToLowerInvariant()} activity",
-            "Relative intensity · Local time",
+            "Fixed weekly scale · Local time",
             accent));
         var detail = this.BuildInspectionLine(
             $"{selected.Date.ToString("dddd, MMMM d", UiCulture)} · {FormatActivity(series, selected.Value)} · {selected.ActiveHours} active hours · {selected.ObservationCount} observations");
@@ -848,7 +848,6 @@ public sealed class StatisticsWindow : Window
             activity.EndsOn,
             accent,
             this.isDark,
-            ActivityScaleMode.Personal,
             value => FormatActivity(series, value))
         {
             Margin = new Thickness(0, 8, 0, 6),
@@ -862,12 +861,14 @@ public sealed class StatisticsWindow : Window
         legend.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         legend.Children.Add(new TextBlock
         {
-            Text = "Relative scale adapts to your observed active days · pale cells have no local sample",
+            Text = series.WindowMinutes == 300
+                ? "Fixed scale · 0–8 full sessions (weekly-equivalent reference)"
+                : "Fixed scale · 0–100% of the weekly limit",
             FontSize = 11.5,
             Foreground = this.Brush("StatisticsMutedForeground"),
         });
         var scale = new StackPanel { Orientation = Orientation.Horizontal };
-        scale.Children.Add(this.LegendText("Less"));
+        scale.Children.Add(this.LegendText("0"));
         for (var level = 1; level <= 4; level++)
         {
             scale.Children.Add(new Border
@@ -876,11 +877,13 @@ public sealed class StatisticsWindow : Window
                 Height = 12,
                 CornerRadius = new CornerRadius(2),
                 Margin = new Thickness(4, 1, 0, 0),
-                Background = new SolidColorBrush(IntensityColor(accent, level)),
+                Background = new SolidColorBrush(this.IntensityColor(level)),
             });
         }
 
-        scale.Children.Add(this.LegendText("More", new Thickness(6, 0, 0, 0)));
+        scale.Children.Add(this.LegendText(
+            series.WindowMinutes == 300 ? "8 sessions" : "100%",
+            new Thickness(6, 0, 0, 0)));
         Grid.SetColumn(scale, 1);
         legend.Children.Add(scale);
         stack.Children.Add(legend);
@@ -1519,16 +1522,17 @@ public sealed class StatisticsWindow : Window
         return difference > 0 ? $"+{magnitude}" : $"-{magnitude}";
     }
 
-    private Color IntensityColor(Color accent, int level)
+    private Color IntensityColor(int level)
     {
         var alpha = level switch
         {
-            1 => 74,
-            2 => 124,
+            1 => 64,
+            2 => 118,
             3 => 184,
-            _ => 242,
+            _ => 255,
         };
-        return Color.FromArgb((byte)alpha, accent.R, accent.G, accent.B);
+        var ink = this.isDark ? Color.FromRgb(238, 240, 244) : Color.FromRgb(18, 20, 23);
+        return Color.FromArgb((byte)alpha, ink.R, ink.G, ink.B);
     }
 
     private static Color Blend(Color left, Color right, double amount) => Color.FromRgb(

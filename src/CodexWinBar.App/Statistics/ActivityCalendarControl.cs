@@ -338,24 +338,19 @@ internal sealed class ActivityCalendarControl : FrameworkElement
         return $"{day.Date.ToString("dddd, MMMM d", UiCulture)}. " +
             $"{this.valueFormatter(day.Value)}. " +
             $"{day.ActiveHours} active hours, {day.ObservationCount} observations. " +
-            $"Fixed intensity {day.Intensity} of 4. Week total {this.valueFormatter(weekTotal)}.";
+            $"Fixed intensity {day.Intensity.ToString("P0", UiCulture)}. Week total {this.valueFormatter(weekTotal)}.";
     }
 
     private bool CanSelect(DateOnly date) => date >= this.firstSelectableDate &&
         date <= this.lastSelectableDate &&
         this.daysByDate.ContainsKey(date);
 
-    private static Color IntensityColor(int level, bool isDark)
+    private static Color IntensityColor(double intensity, bool isDark)
     {
-        var alpha = level switch
-        {
-            1 => 64,
-            2 => 118,
-            3 => 184,
-            _ => 255,
-        };
+        // Preserve the fixed 0–100% endpoints while keeping typical low daily usage distinguishable.
+        var alpha = (byte)Math.Round(255 * Math.Sqrt(Math.Clamp(intensity, 0, 1)));
         var ink = isDark ? Color.FromRgb(238, 240, 244) : Color.FromRgb(18, 20, 23);
-        return Color.FromArgb((byte)alpha, ink.R, ink.G, ink.B);
+        return Color.FromArgb(alpha, ink.R, ink.G, ink.B);
     }
 
     private void DrawText(DrawingContext context, string text, Color color, double size, Point origin, double dpi)

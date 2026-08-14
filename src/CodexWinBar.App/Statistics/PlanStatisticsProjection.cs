@@ -10,7 +10,7 @@ internal sealed record ActivityDay(
     int ActiveHours,
     int ObservationCount,
     IReadOnlyList<ActivityHour> Hours,
-    int Intensity)
+    double Intensity)
 {
     internal bool HasCoverage => this.ObservationCount > 0;
 }
@@ -214,7 +214,7 @@ internal static class PlanStatisticsProjection
         return groups;
     }
 
-    internal static int FixedIntensity(PlanUsageSeries series, double value)
+    internal static double FixedIntensity(PlanUsageSeries series, double value)
     {
         if (value <= ActivityEpsilon)
         {
@@ -224,7 +224,7 @@ internal static class PlanStatisticsProjection
         var maximum = series.WindowMinutes == 300
             ? FullSessionWeeklyReference * 100
             : 100;
-        return Math.Clamp((int)Math.Ceiling((value / maximum) * 4), 1, 4);
+        return Math.Clamp(value / maximum, 0, 1);
     }
 
     private sealed class DayAccumulator(DateOnly date)

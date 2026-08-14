@@ -70,10 +70,10 @@ public sealed class PlanStatisticsProjectionTests
         var sessionValues = new[] { 0d, 200d, 400d, 600d, 800d, 1000d };
 
         Assert.Equal(
-            [0, 1, 2, 3, 4, 4],
+            [0, 0.25, 0.5, 0.75, 1, 1],
             weeklyValues.Select(value => PlanStatisticsProjection.FixedIntensity(Series(), value)));
         Assert.Equal(
-            [0, 1, 2, 3, 4, 4],
+            [0, 0.25, 0.5, 0.75, 1, 1],
             sessionValues.Select(value => PlanStatisticsProjection.FixedIntensity(SessionSeries(), value)));
     }
 
@@ -187,6 +187,22 @@ public sealed class PlanStatisticsProjectionTests
             Assert.Equal(8, day.ActiveHours);
             Assert.Equal(5, week.ActiveDays);
         }
+    }
+
+    [Fact]
+    public void Fake_history_preserves_visible_continuous_intensity_variation()
+    {
+        using var store = new FakePlanStatisticsStore();
+        var now = DateTimeOffset.Now;
+        var series = Assert.Single(store.Get(ProviderId.Codex).Series);
+
+        var intensities = PlanStatisticsProjection.BuildActivity(series, now).Days
+            .Where(day => day.Value > 0)
+            .Select(day => Math.Round(day.Intensity, 3))
+            .Distinct()
+            .ToArray();
+
+        Assert.True(intensities.Length >= 5);
     }
 
     [Fact]

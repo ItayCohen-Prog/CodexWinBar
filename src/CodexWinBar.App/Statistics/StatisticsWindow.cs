@@ -877,7 +877,7 @@ public sealed class StatisticsWindow : Window
                 Height = 12,
                 CornerRadius = new CornerRadius(2),
                 Margin = new Thickness(4, 1, 0, 0),
-                Background = new SolidColorBrush(this.IntensityColor(level)),
+                Background = new SolidColorBrush(this.IntensityColor(level / 4d)),
             });
         }
 
@@ -1522,17 +1522,11 @@ public sealed class StatisticsWindow : Window
         return difference > 0 ? $"+{magnitude}" : $"-{magnitude}";
     }
 
-    private Color IntensityColor(int level)
+    private Color IntensityColor(double intensity)
     {
-        var alpha = level switch
-        {
-            1 => 64,
-            2 => 118,
-            3 => 184,
-            _ => 255,
-        };
+        var alpha = (byte)Math.Round(255 * Math.Sqrt(Math.Clamp(intensity, 0, 1)));
         var ink = this.isDark ? Color.FromRgb(238, 240, 244) : Color.FromRgb(18, 20, 23);
-        return Color.FromArgb((byte)alpha, ink.R, ink.G, ink.B);
+        return Color.FromArgb(alpha, ink.R, ink.G, ink.B);
     }
 
     private static Color Blend(Color left, Color right, double amount) => Color.FromRgb(

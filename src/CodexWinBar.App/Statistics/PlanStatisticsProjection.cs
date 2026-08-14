@@ -113,15 +113,20 @@ internal sealed record ActivityOverview(
 
 internal static class PlanStatisticsProjection
 {
-    private const int CalendarWeeks = 52;
     private const double ActivityEpsilon = 0.001;
     private static readonly TimeSpan ResetEquivalenceTolerance = TimeSpan.FromMinutes(2);
 
-    internal static ActivityOverview BuildActivity(PlanUsageSeries series, DateTimeOffset now)
+    internal static ActivityOverview BuildActivity(PlanUsageSeries series, DateTimeOffset now, int? calendarYear = null)
     {
-        var end = DateOnly.FromDateTime(now.LocalDateTime.Date);
-        var calendarStart = WeekStart(end).AddDays(-7 * (CalendarWeeks - 1));
-        var buckets = Enumerable.Range(0, CalendarWeeks * 7)
+        var today = DateOnly.FromDateTime(now.LocalDateTime.Date);
+        var year = calendarYear ?? today.Year;
+        var yearStart = new DateOnly(year, 1, 1);
+        var yearEnd = new DateOnly(year, 12, 31);
+        var selectableEnd = year == today.Year && today < yearEnd ? today : yearEnd;
+        var calendarStart = WeekStart(yearStart);
+        var calendarEnd = WeekStart(yearEnd).AddDays(6);
+        var calendarDays = calendarEnd.DayNumber - calendarStart.DayNumber + 1;
+        var buckets = Enumerable.Range(0, calendarDays)
             .Select(offset => calendarStart.AddDays(offset))
             .ToDictionary(
                 date => date,
@@ -136,7 +141,7 @@ internal static class PlanStatisticsProjection
             {
                 var local = sample.CapturedAt.LocalDateTime;
                 var date = DateOnly.FromDateTime(local.Date);
-                if (!buckets.TryGetValue(date, out var day))
+                if (date < yearStart || date > selectableEnd || !buckets.TryGetValue(date, out var day))
                 {
                     observedPeak = observedPeak is null
                         ? sample.UsedPercent
@@ -162,7 +167,10 @@ internal static class PlanStatisticsProjection
             .OrderBy(item => item.Date)
             .Select(item => item.Build())
             .ToArray();
-        var activeValues = preliminary
+        var summaryDays = preliminary
+            .Where(day => day.Date >= yearStart && day.Date <= selectableEnd)
+            .ToArray();
+        var activeValues = summaryDays
             .Where(item => item.Value > ActivityEpsilon)
             .Select(item => item.Value)
             .OrderBy(value => value)
@@ -173,17 +181,22 @@ internal static class PlanStatisticsProjection
             PersonalIntensity = Intensity(day.Value, personalThresholds),
             FixedIntensity = FixedIntensity(day.Value),
         }).ToArray();
-        var active = days.Where(item => item.Value > ActivityEpsilon).ToArray();
-        var covered = days.Where(item => item.HasCoverage).ToArray();
+        var active = days
+            .Where(item => item.Date >= yearStart && item.Date <= selectableEnd && item.Value > ActivityEpsilon)
+            .ToArray();
+        var covered = days
+            .Where(item => item.Date >= yearStart && item.Date <= selectableEnd && item.HasCoverage)
+            .ToArray();
+        var total = summaryDays.Sum(item => item.Value);
         return new ActivityOverview(
             days,
-            days.Sum(item => item.Value),
+            total,
             active.Length,
             covered.Length,
-            covered.Length == 0 ? 0 : days.Sum(item => item.Value) / covered.Length,
+            covered.Length == 0 ? 0 : total / covered.Length,
             active.OrderByDescending(item => item.Value).FirstOrDefault(),
-            calendarStart,
-            end);
+            yearStart,
+            selectableEnd);
     }
 
     internal static DateOnly WeekStart(DateOnly date)

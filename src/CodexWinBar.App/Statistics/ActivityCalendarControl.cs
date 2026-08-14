@@ -24,6 +24,7 @@ internal sealed class ActivityCalendarControl : FrameworkElement
     private readonly bool isDark;
     private readonly ActivityScaleMode scaleMode;
     private readonly Func<double, string> valueFormatter;
+    private readonly DateOnly firstSelectableDate;
     private readonly DateOnly lastSelectableDate;
     private DateOnly selectedDate;
     private DateOnly? hoverDate;
@@ -37,6 +38,7 @@ internal sealed class ActivityCalendarControl : FrameworkElement
     internal ActivityCalendarControl(
         IReadOnlyList<ActivityDay> days,
         DateOnly selectedDate,
+        DateOnly firstSelectableDate,
         DateOnly lastSelectableDate,
         Color accent,
         bool isDark,
@@ -46,6 +48,7 @@ internal sealed class ActivityCalendarControl : FrameworkElement
         this.days = days;
         this.daysByDate = days.ToDictionary(day => day.Date);
         this.selectedDate = selectedDate;
+        this.firstSelectableDate = firstSelectableDate;
         this.lastSelectableDate = lastSelectableDate;
         this.accent = accent;
         this.isDark = isDark;
@@ -86,11 +89,14 @@ internal sealed class ActivityCalendarControl : FrameworkElement
         for (var week = 0; week < layout.Weeks; week++)
         {
             var first = layout.Start.AddDays(week * 7);
-            if (first.Month != lastMonth && (week == 0 || first.Day <= 7))
+            var labelDate = first < this.firstSelectableDate ? this.firstSelectableDate : first;
+            if (labelDate.Year == this.firstSelectableDate.Year &&
+                labelDate.Month != lastMonth &&
+                (week == 0 || labelDate.Day <= 7))
             {
-                var label = first.ToDateTime(TimeOnly.MinValue).ToString("MMM", UiCulture);
+                var label = labelDate.ToDateTime(TimeOnly.MinValue).ToString("MMM", UiCulture);
                 this.DrawText(drawingContext, label, muted, 10.5, new Point(layout.Left + (week * layout.Step), 0), dpi);
-                lastMonth = first.Month;
+                lastMonth = labelDate.Month;
             }
         }
 
@@ -102,7 +108,7 @@ internal sealed class ActivityCalendarControl : FrameworkElement
                 continue;
             }
 
-            var fill = day.Date > this.lastSelectableDate
+            var fill = day.Date < this.firstSelectableDate || day.Date > this.lastSelectableDate
                 ? unavailable
                 : day.HasCoverage
                     ? day.Value <= 0.001
@@ -190,7 +196,7 @@ internal sealed class ActivityCalendarControl : FrameworkElement
             Key.Right => this.selectedDate.AddDays(7),
             Key.Up => this.selectedDate.AddDays(-1),
             Key.Down => this.selectedDate.AddDays(1),
-            Key.Home => this.days.First().Date,
+            Key.Home => this.firstSelectableDate,
             Key.End => this.lastSelectableDate,
             _ => this.selectedDate,
         };
@@ -294,7 +300,8 @@ internal sealed class ActivityCalendarControl : FrameworkElement
             return null;
         }
 
-        return layout.Start.AddDays((week * 7) + row);
+        var date = layout.Start.AddDays((week * 7) + row);
+        return this.CanSelect(date) ? date : null;
     }
 
     private Rect? CellRect(DateOnly date, CalendarLayout layout)
@@ -337,7 +344,9 @@ internal sealed class ActivityCalendarControl : FrameworkElement
             $"Relative intensity {day.Intensity(this.scaleMode)} of 4. Week total {this.valueFormatter(weekTotal)}.";
     }
 
-    private bool CanSelect(DateOnly date) => date <= this.lastSelectableDate && this.daysByDate.ContainsKey(date);
+    private bool CanSelect(DateOnly date) => date >= this.firstSelectableDate &&
+        date <= this.lastSelectableDate &&
+        this.daysByDate.ContainsKey(date);
 
     private static Color IntensityColor(Color accent, int level, bool isDark)
     {

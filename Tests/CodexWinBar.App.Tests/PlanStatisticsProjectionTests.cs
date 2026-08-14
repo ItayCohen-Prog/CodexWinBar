@@ -196,6 +196,38 @@ public sealed class PlanStatisticsProjectionTests
         }
     }
 
+    [Fact]
+    public void BuildActivity_uses_the_selected_calendar_year_with_unavailable_padding()
+    {
+        var now = new DateTimeOffset(2026, 8, 13, 12, 0, 0, TimeSpan.Zero);
+        var reset = new DateTimeOffset(2026, 1, 2, 0, 0, 0, TimeSpan.Zero);
+        var series = Series(
+            Sample(new DateTimeOffset(2025, 12, 31, 22, 0, 0, TimeSpan.Zero), 10, reset),
+            Sample(new DateTimeOffset(2026, 1, 1, 10, 0, 0, TimeSpan.Zero), 30, reset));
+
+        var activity = PlanStatisticsProjection.BuildActivity(series, now, 2026);
+
+        Assert.Equal(new DateOnly(2026, 1, 1), activity.StartsOn);
+        Assert.Equal(new DateOnly(2026, 8, 13), activity.EndsOn);
+        Assert.Equal(DayOfWeek.Sunday, activity.Days[0].Date.DayOfWeek);
+        Assert.Equal(DayOfWeek.Saturday, activity.Days[^1].Date.DayOfWeek);
+        Assert.Equal(20, activity.Day(new DateOnly(2026, 1, 1))?.Value);
+        Assert.All(
+            activity.Days.Where(day => day.Date.Year != 2026),
+            day => Assert.False(day.HasCoverage));
+    }
+
+    [Fact]
+    public void BuildActivity_shows_a_complete_past_calendar_year()
+    {
+        var now = new DateTimeOffset(2026, 8, 13, 12, 0, 0, TimeSpan.Zero);
+
+        var activity = PlanStatisticsProjection.BuildActivity(Series(), now, 2025);
+
+        Assert.Equal(new DateOnly(2025, 1, 1), activity.StartsOn);
+        Assert.Equal(new DateOnly(2025, 12, 31), activity.EndsOn);
+    }
+
     private static PlanUsageSeries Series(params PlanUsageSample[] samples) => new()
     {
         Id = "weekly",

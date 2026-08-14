@@ -44,6 +44,7 @@ public sealed class StatisticsWindow : Window
     private string? selectedSeriesId;
     private DateOnly? selectedDate;
     private DateOnly? selectedMonth;
+    private int selectedYear = DateTime.Now.Year;
     private ActivityViewMode viewMode = ActivityViewMode.Overview;
     private bool providerTransitioning;
 
@@ -211,8 +212,20 @@ public sealed class StatisticsWindow : Window
             return;
         }
 
-        var activity = PlanStatisticsProjection.BuildActivity(series, DateTimeOffset.Now);
-        var latestCovered = activity.Days.LastOrDefault(day => day.HasCoverage)?.Date ?? activity.EndsOn;
+        var now = DateTimeOffset.Now;
+        var availableYears = AvailableYears(series, now);
+        if (!availableYears.Contains(this.selectedYear))
+        {
+            this.selectedYear = availableYears.Contains(now.LocalDateTime.Year)
+                ? now.LocalDateTime.Year
+                : availableYears[^1];
+        }
+
+        var activity = PlanStatisticsProjection.BuildActivity(series, now, this.selectedYear);
+        var latestCovered = activity.Days.LastOrDefault(day =>
+            day.Date >= activity.StartsOn &&
+            day.Date <= activity.EndsOn &&
+            day.HasCoverage)?.Date ?? activity.EndsOn;
         var earliestMonth = new DateOnly(activity.StartsOn.Year, activity.StartsOn.Month, 1);
         var latestMonth = new DateOnly(activity.EndsOn.Year, activity.EndsOn.Month, 1);
         if (this.selectedMonth is null || this.selectedMonth.Value < earliestMonth || this.selectedMonth.Value > latestMonth)
@@ -220,12 +233,14 @@ public sealed class StatisticsWindow : Window
             this.selectedMonth = new DateOnly(latestCovered.Year, latestCovered.Month, 1);
         }
 
-        if (this.selectedDate is null || activity.Day(this.selectedDate.Value) is null)
+        if (this.selectedDate is null ||
+            this.selectedDate.Value < activity.StartsOn ||
+            this.selectedDate.Value > activity.EndsOn)
         {
             this.selectedDate = latestCovered;
         }
 
-        this.dashboardHost.Content = this.BuildDashboard(series, statistics.Series, activity);
+        this.dashboardHost.Content = this.BuildDashboard(series, statistics.Series, availableYears, activity);
     }
 
     private void RefreshProviderTabs()
@@ -441,6 +456,7 @@ public sealed class StatisticsWindow : Window
     private UIElement BuildDashboard(
         PlanUsageSeries series,
         IReadOnlyList<PlanUsageSeries> allSeries,
+        IReadOnlyList<int> availableYears,
         ActivityOverview activity)
     {
         var descriptor = this.descriptors[this.selectedProvider];
@@ -451,7 +467,7 @@ public sealed class StatisticsWindow : Window
         var month = activity.MonthContaining(this.selectedMonth!.Value);
         var root = new StackPanel { Orientation = Orientation.Vertical };
         root.Children.Add(this.BuildControlRow(allSeries));
-        root.Children.Add(this.BuildTimeframeHeader(activity, selected, week, month));
+        root.Children.Add(this.BuildTimeframeHeader(availableYears, activity, selected, week, month));
         switch (this.viewMode)
         {
             case ActivityViewMode.Overview:
@@ -532,6 +548,7 @@ public sealed class StatisticsWindow : Window
     }
 
     private UIElement BuildTimeframeHeader(
+        IReadOnlyList<int> availableYears,
         ActivityOverview activity,
         ActivityDay selected,
         ActivityWeek week,
@@ -546,7 +563,7 @@ public sealed class StatisticsWindow : Window
         {
             var parentLabel = this.viewMode switch
             {
-                ActivityViewMode.Month => "Last 52 weeks",
+                ActivityViewMode.Month => this.selectedYear.ToString(UiCulture),
                 ActivityViewMode.Week => month.StartsOn.ToString("MMMM yyyy", UiCulture),
                 _ => FormatWeekRange(week.StartsOn),
             };
@@ -575,7 +592,7 @@ public sealed class StatisticsWindow : Window
         {
             Text = this.viewMode switch
             {
-                ActivityViewMode.Overview => "Last 52 weeks",
+                ActivityViewMode.Overview => this.selectedYear.ToString(UiCulture),
                 ActivityViewMode.Month => month.StartsOn.ToString("MMMM yyyy", UiCulture),
                 ActivityViewMode.Week => FormatWeekRange(week.StartsOn),
                 _ => selected.Date.ToString("dddd, MMMM d", UiCulture),
@@ -588,7 +605,7 @@ public sealed class StatisticsWindow : Window
         });
         header.Children.Add(path);
 
-        if (this.viewMode != ActivityViewMode.Overview)
+        if (this.viewMode != ActivityViewMode.Overview || availableYears.Count > 1)
         {
             var navigation = new StackPanel
             {
@@ -599,6 +616,16 @@ public sealed class StatisticsWindow : Window
             var next = this.CreateTabButton(this.IconLabel("\uE72A", "Next"), selected: false, compact: true);
             switch (this.viewMode)
             {
+                case ActivityViewMode.Overview:
+                    var previousYear = availableYears.LastOrDefault(year => year < this.selectedYear);
+                    var nextYear = availableYears.FirstOrDefault(year => year > this.selectedYear);
+                    previous.IsEnabled = previousYear != 0;
+                    next.IsEnabled = nextYear != 0;
+                    previous.Click += (_, _) => this.NavigateYear(previousYear);
+                    next.Click += (_, _) => this.NavigateYear(nextYear);
+                    AutomationProperties.SetName(previous, previous.IsEnabled ? $"Show {previousYear}" : "No earlier recorded year");
+                    AutomationProperties.SetName(next, next.IsEnabled ? $"Show {nextYear}" : "No later recorded year");
+                    break;
                 case ActivityViewMode.Month:
                     var minimumMonth = new DateOnly(activity.StartsOn.Year, activity.StartsOn.Month, 1);
                     var maximumMonth = new DateOnly(activity.EndsOn.Year, activity.EndsOn.Month, 1);
@@ -643,7 +670,7 @@ public sealed class StatisticsWindow : Window
             current.Label,
             current.Value,
             current.Detail,
-            (CalendarGlyph, "Active days", activity.ActiveDays.ToString(UiCulture), "in the last 52 weeks"),
+            (CalendarGlyph, "Active days", activity.ActiveDays.ToString(UiCulture), $"in {this.selectedYear}"),
             (LogoImages.StatisticsGlyph, "Daily average", FormatActivity(series, activity.DailyAverage), "per observed day"),
             ("\uE9D9", "Busiest day", activity.BusiestDay is { } day ? day.Date.ToString("MMM d", UiCulture) : "—", activity.BusiestDay is { } busiest ? FormatActivity(series, busiest.Value) : "no activity yet"));
     }
@@ -817,6 +844,7 @@ public sealed class StatisticsWindow : Window
         var calendar = new ActivityCalendarControl(
             activity.Days,
             selected.Date,
+            activity.StartsOn,
             activity.EndsOn,
             accent,
             this.isDark,
@@ -1257,6 +1285,7 @@ public sealed class StatisticsWindow : Window
     {
         this.TransitionDashboard(() =>
         {
+            this.selectedYear = date.Year;
             this.selectedDate = date;
             this.viewMode = ActivityViewMode.Day;
         });
@@ -1266,6 +1295,7 @@ public sealed class StatisticsWindow : Window
     {
         this.TransitionDashboard(() =>
         {
+            this.selectedYear = date.Year;
             this.selectedMonth = new DateOnly(date.Year, date.Month, 1);
             this.selectedDate = date;
             this.viewMode = ActivityViewMode.Month;
@@ -1286,6 +1316,7 @@ public sealed class StatisticsWindow : Window
     {
         this.TransitionDashboard(() =>
         {
+            this.selectedYear = month.Year;
             this.selectedMonth = new DateOnly(month.Year, month.Month, 1);
             this.selectedDate = this.selectedMonth;
             this.viewMode = ActivityViewMode.Month;
@@ -1306,6 +1337,7 @@ public sealed class StatisticsWindow : Window
     {
         this.TransitionDashboard(() =>
         {
+            this.selectedYear = date.Year;
             this.selectedDate = date;
             this.selectedMonth = new DateOnly(date.Year, date.Month, 1);
             this.viewMode = ActivityViewMode.Day;
@@ -1323,6 +1355,22 @@ public sealed class StatisticsWindow : Window
         });
     }
 
+    private void NavigateYear(int year)
+    {
+        if (year == 0 || year == this.selectedYear)
+        {
+            return;
+        }
+
+        this.TransitionDashboard(() =>
+        {
+            this.selectedYear = year;
+            this.selectedMonth = null;
+            this.selectedDate = null;
+            this.viewMode = ActivityViewMode.Overview;
+        });
+    }
+
     private string ParentViewName() => this.viewMode switch
     {
         ActivityViewMode.Day => "week",
@@ -1336,6 +1384,17 @@ public sealed class StatisticsWindow : Window
     }
 
     private SolidColorBrush Brush(string key) => (SolidColorBrush)this.Resources[key];
+
+    private static IReadOnlyList<int> AvailableYears(PlanUsageSeries series, DateTimeOffset now)
+    {
+        var years = series.Samples
+            .Where(sample => sample.CapturedAt <= now)
+            .Select(sample => sample.CapturedAt.LocalDateTime.Year)
+            .Distinct()
+            .OrderBy(year => year)
+            .ToArray();
+        return years.Length == 0 ? [now.LocalDateTime.Year] : years;
+    }
 
     private static string FormatActivity(PlanUsageSeries series, double value)
     {

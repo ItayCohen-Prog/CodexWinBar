@@ -2,7 +2,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: ItayCohen.CodexWinBar
-PackageVersion: 1.1.21
+PackageVersion: 1.1.22
 PackageLocale: en-US
 Publisher: Itay Cohen
 PublisherUrl: https://github.com/ItayCohen-Prog
@@ -23,6 +23,6 @@ Tags:
 - claude
 - cursor
 - developer-tools
-ReleaseNotesUrl: https://github.com/ItayCohen-Prog/CodexWinBar/releases/tag/v1.1.21
+ReleaseNotesUrl: https://github.com/ItayCohen-Prog/CodexWinBar/releases/tag/v1.1.22
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0

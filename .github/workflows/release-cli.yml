@@ -402,6 +402,7 @@ jobs:
           path: |
             ${{ steps.pkg.outputs.out_dir }}/${{ steps.pkg.outputs.asset }}
             ${{ steps.pkg.outputs.out_dir }}/${{ steps.pkg.outputs.asset }}.sha256
+          retention-days: 1
 
   update-homebrew-tap:
     runs-on: ubuntu-latest

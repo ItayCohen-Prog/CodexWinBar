@@ -53,6 +53,19 @@ public sealed record CreditsSnapshot
     public bool SupportsDepletionSemantics => this.Kind == CreditsSnapshotKind.Credits;
 }
 
+/// <summary>
+/// A provider-supplied historical activity bucket. Unlike a quota window, the value is already the
+/// activity that belongs to <see cref="CapturedAt"/> and must not be reconstructed from meter deltas.
+/// </summary>
+public sealed record HistoricalUsageSample
+{
+    public required string SeriesId { get; init; }
+    public required string SeriesTitle { get; init; }
+    public required DateTimeOffset CapturedAt { get; init; }
+    public required double Value { get; init; }
+    public required string Unit { get; init; }
+}
+
 /// <summary>The normalized usage envelope handed to the UI — the Windows port of upstream UsageSnapshot.</summary>
 public sealed record UsageSnapshot
 {
@@ -64,6 +77,8 @@ public sealed record UsageSnapshot
     /// <summary>Model-specific weekly window (e.g. Opus) when reported.</summary>
     public RateWindow? Tertiary { get; init; }
     public IReadOnlyList<NamedRateWindow> ExtraWindows { get; init; } = [];
+    /// <summary>Provider-reported historical buckets, such as OpenAI Admin daily cost data.</summary>
+    public IReadOnlyList<HistoricalUsageSample> HistoricalUsage { get; init; } = [];
     public CreditsSnapshot? Credits { get; init; }
     public ProviderIdentity? Identity { get; init; }
     public required DateTimeOffset UpdatedAt { get; init; }

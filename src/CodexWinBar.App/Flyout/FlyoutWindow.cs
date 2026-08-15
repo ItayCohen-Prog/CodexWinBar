@@ -61,6 +61,7 @@ public sealed class FlyoutWindow : Window
     private static readonly IntPtr HwndTop = IntPtr.Zero;
     private readonly IUsageStore store;
     private readonly UiSettingsStore uiStore;
+    private readonly Action openStatistics;
     private readonly Action openSettings;
     private readonly Action quit;
     private readonly Action onStartUpdateDownload;
@@ -120,10 +121,11 @@ public sealed class FlyoutWindow : Window
     /// download in progress, a staged update ready to restart into, or a failed attempt.</summary>
     private enum UpdateStage { None, Available, Downloading, Ready, Error }
 
-    public FlyoutWindow(IUsageStore store, UiSettingsStore uiStore, Action openSettings, Action quit, Action onStartUpdateDownload, Action onApplyUpdate, Action<string>? log = null)
+    public FlyoutWindow(IUsageStore store, UiSettingsStore uiStore, Action openStatistics, Action openSettings, Action quit, Action onStartUpdateDownload, Action onApplyUpdate, Action<string>? log = null)
     {
         this.store = store;
         this.uiStore = uiStore;
+        this.openStatistics = openStatistics;
         this.openSettings = openSettings;
         this.quit = quit;
         this.onStartUpdateDownload = onStartUpdateDownload;
@@ -1309,6 +1311,7 @@ public sealed class FlyoutWindow : Window
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                       // refresh
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });  // spacer
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                       // update (only when staged)
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                       // statistics
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                       // settings
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                       // close
         var refresh = this.CreateIconButton(this.CreateRefreshGlyph(), "Refresh");
@@ -1324,14 +1327,19 @@ public sealed class FlyoutWindow : Window
         footer.Children.Add(this.updateButton);
         this.RenderUpdateButton();
 
+        var statisticsButton = this.CreateIconButton(LogoImages.IconGlyph(LogoImages.StatisticsGlyph, 13), "Statistics");
+        statisticsButton.Click += (_, _) => { this.HideFlyout("close: statistics"); this.openStatistics(); };
+        Grid.SetColumn(statisticsButton, 3);
+        footer.Children.Add(statisticsButton);
+
         var settingsButton = this.CreateIconButton(LogoImages.IconGlyph(LogoImages.SettingsGlyph, 13), "Settings");
         settingsButton.Click += (_, _) => { this.HideFlyout("close: settings"); this.openSettings(); };
-        Grid.SetColumn(settingsButton, 3);
+        Grid.SetColumn(settingsButton, 4);
         footer.Children.Add(settingsButton);
         // The X only closes the flyout, never the app — quitting is reserved for the tray menu.
         var closeButton = this.CreateIconButton(LogoImages.IconGlyph(LogoImages.CloseGlyph, 10), "Close");
         closeButton.Click += (_, _) => this.HideFlyout("close: x-button");
-        Grid.SetColumn(closeButton, 4);
+        Grid.SetColumn(closeButton, 5);
         footer.Children.Add(closeButton);
         return footer;
     }

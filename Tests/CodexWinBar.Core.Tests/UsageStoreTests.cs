@@ -17,14 +17,14 @@ public sealed class UsageStoreTests
         var store = CreateStore(temp, strategy, _ => throw new InvalidOperationException("log failed"));
         var successfulSubscriberCalls = 0;
         store.StateChanged += () => throw new InvalidOperationException("subscriber failed");
-        store.StateChanged += () => successfulSubscriberCalls++;
+        store.StateChanged += () => Interlocked.Increment(ref successfulSubscriberCalls);
 
         await store.RefreshProviderAsync(ProviderId.Codex);
 
         var state = Assert.Single(store.States);
         Assert.NotNull(state.Snapshot);
         Assert.False(state.IsRefreshing);
-        Assert.True(successfulSubscriberCalls >= 2);
+        Assert.True(Volatile.Read(ref successfulSubscriberCalls) >= 2);
         store.Dispose();
     }
 
@@ -156,17 +156,17 @@ public sealed class UsageStoreTests
     private static UsageSnapshot Snapshot(
         DateTimeOffset? primaryReset = null,
         DateTimeOffset? secondaryReset = null) => new()
-    {
-        Provider = ProviderId.Codex,
-        Primary = primaryReset is null
-            ? null
-            : new RateWindow { UsedPercent = 25, ResetsAt = primaryReset },
-        Secondary = secondaryReset is null
-            ? null
-            : new RateWindow { UsedPercent = 30, ResetsAt = secondaryReset },
-        UpdatedAt = DateTimeOffset.UtcNow,
-        Confidence = DataConfidence.Exact,
-    };
+        {
+            Provider = ProviderId.Codex,
+            Primary = primaryReset is null
+                ? null
+                : new RateWindow { UsedPercent = 25, ResetsAt = primaryReset },
+            Secondary = secondaryReset is null
+                ? null
+                : new RateWindow { UsedPercent = 30, ResetsAt = secondaryReset },
+            UpdatedAt = DateTimeOffset.UtcNow,
+            Confidence = DataConfidence.Exact,
+        };
 
     private static (object Key, long Generation) ReadScheduledBoundary(UsageStore store)
     {

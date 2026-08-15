@@ -95,12 +95,25 @@ internal static class OpenAIAdminParser
         var spend30Days = 0d;
         var todaySpend = 0d;
         var today = now.UtcDateTime.Date;
+        var historicalUsage = new List<HistoricalUsageSample>();
 
         foreach (var bucket in ReadBuckets(document.RootElement))
         {
             var amount = SumBucketAmount(bucket);
             spend30Days += amount;
             var start = ReadBucketStart(bucket);
+            if (start is not null && amount >= 0 && double.IsFinite(amount))
+            {
+                historicalUsage.Add(new HistoricalUsageSample
+                {
+                    SeriesId = "api-spend",
+                    SeriesTitle = "API spend",
+                    CapturedAt = start.Value,
+                    Value = amount,
+                    Unit = "USD",
+                });
+            }
+
             if (start?.UtcDateTime.Date == today)
             {
                 todaySpend += amount;
@@ -132,6 +145,7 @@ internal static class OpenAIAdminParser
                     },
                 },
             ],
+            HistoricalUsage = historicalUsage,
             Identity = new ProviderIdentity { LoginMethod = "Admin API key" },
             UpdatedAt = now,
             Confidence = DataConfidence.Estimated,

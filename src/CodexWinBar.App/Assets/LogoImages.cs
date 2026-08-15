@@ -21,6 +21,7 @@ internal static class LogoImages
 
     private static readonly FontFamily IconFontFamily = new("Segoe Fluent Icons, Segoe MDL2 Assets");
     private static readonly Dictionary<(string GlyphKey, bool Dark), BitmapImage> Cache = [];
+    private static readonly Dictionary<string, bool> DarkMarkCache = [];
 
     internal static TextBlock IconGlyph(string glyph, double size) => new()
     {
@@ -61,5 +62,48 @@ internal static class LogoImages
         image.Freeze();
         Cache[key] = image;
         return image;
+    }
+
+    /// <summary>
+    /// True when the light-background logo is a near-black mark (mean luminance of its opaque
+    /// pixels below a quarter), i.e. one that disappears when drawn directly on a dark surface.
+    /// </summary>
+    internal static bool IsDarkMark(string glyphKey)
+    {
+        if (string.IsNullOrWhiteSpace(glyphKey))
+        {
+            return false;
+        }
+
+        if (DarkMarkCache.TryGetValue(glyphKey, out var cached))
+        {
+            return cached;
+        }
+
+        var result = Get(glyphKey, darkBackground: false) is { } image && MeanOpaqueLuminance(image) < 0.25;
+        DarkMarkCache[glyphKey] = result;
+        return result;
+    }
+
+    private static double MeanOpaqueLuminance(BitmapSource image)
+    {
+        var source = new FormatConvertedBitmap(image, PixelFormats.Bgra32, null, 0);
+        var stride = source.PixelWidth * 4;
+        var pixels = new byte[stride * source.PixelHeight];
+        source.CopyPixels(pixels, stride, 0);
+        double total = 0;
+        var count = 0;
+        for (var offset = 0; offset < pixels.Length; offset += 4)
+        {
+            if (pixels[offset + 3] < 128)
+            {
+                continue;
+            }
+
+            total += ((0.2126 * pixels[offset + 2]) + (0.7152 * pixels[offset + 1]) + (0.0722 * pixels[offset])) / 255;
+            count++;
+        }
+
+        return count == 0 ? 1 : total / count;
     }
 }

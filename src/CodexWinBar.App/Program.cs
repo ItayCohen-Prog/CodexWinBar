@@ -550,7 +550,10 @@ internal sealed class AppShell : IDisposable
 
     private void OpenStatistics()
     {
-        StatisticsWindow.ShowOrActivate(this.planStatisticsStore, this.descriptors);
+        StatisticsWindow.ShowOrActivate(
+            this.planStatisticsStore,
+            this.descriptors,
+            () => this.usageStore.States.Select(state => state.Provider).ToArray());
     }
 
     private void RecordStatistics()

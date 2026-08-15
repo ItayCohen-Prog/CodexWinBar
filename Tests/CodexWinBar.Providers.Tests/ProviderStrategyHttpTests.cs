@@ -26,14 +26,19 @@ public sealed class ProviderStrategyHttpTests
     [Fact]
     public async Task OpenAIAdmin_strategy_sends_through_fetch_context_http()
     {
-        using var handler = new RecordingHandler(_ => Json("""{"data":[]}"""));
+        using var handler = new RecordingHandler(_ => Json(
+            """{"data":[{"start_time":1783209600,"results":[{"amount":{"value":12.5}}]}]}"""));
         using var http = new HttpClient(handler);
         var context = CreateContext(http, "openai-admin", apiKey: "sk-admin-test");
 
         var snapshot = await CodexWinBar.Providers.OpenAIAdmin.OpenAIAdminProvider.Create().Strategies.Single()
             .FetchAsync(context, CancellationToken.None);
 
-        Assert.Equal(0, snapshot.Credits?.Remaining);
+        Assert.Equal(12.5, snapshot.Credits?.Remaining);
+        var history = Assert.Single(snapshot.HistoricalUsage);
+        Assert.Equal("api-spend", history.SeriesId);
+        Assert.Equal(12.5, history.Value);
+        Assert.Equal("USD", history.Unit);
         Assert.Single(handler.RequestUris);
         Assert.StartsWith("https://api.openai.com/v1/organization/costs?", handler.RequestUris[0], StringComparison.Ordinal);
     }

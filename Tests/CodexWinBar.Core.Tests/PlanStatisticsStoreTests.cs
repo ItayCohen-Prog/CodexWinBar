@@ -99,7 +99,36 @@ public sealed class PlanStatisticsStoreTests
     }
 
     [Fact]
-    public void Record_skips_windows_without_reset_boundaries()
+    public void Record_preserves_claude_fable_weekly_series_from_scoped_limit()
+    {
+        using var temp = TempDir.Create();
+        using var store = new PlanStatisticsStore(_ => { }, temp.Path);
+        var capturedAt = new DateTimeOffset(2026, 8, 14, 10, 0, 0, TimeSpan.Zero);
+        store.Record(new UsageSnapshot
+        {
+            Provider = ProviderId.Claude,
+            ExtraWindows =
+            [
+                new NamedRateWindow
+                {
+                    Id = "claude-weekly-fable",
+                    Title = "Fable 5",
+                    Window = Window(47, capturedAt.AddDays(4), 10080),
+                },
+            ],
+            UpdatedAt = capturedAt,
+            Confidence = DataConfidence.Exact,
+        });
+
+        var fable = Assert.Single(store.Get(ProviderId.Claude).Series);
+        Assert.Equal("extra:claude-weekly-fable", fable.Id);
+        Assert.Equal("Fable 5", fable.Title);
+        Assert.Equal(10080, fable.WindowMinutes);
+        Assert.Equal(47, Assert.Single(fable.Samples).UsedPercent);
+    }
+
+    [Fact]
+    public void Record_keeps_valid_windows_without_reset_boundaries()
     {
         using var temp = TempDir.Create();
         using var store = new PlanStatisticsStore(_ => { }, temp.Path);
@@ -110,7 +139,99 @@ public sealed class PlanStatisticsStoreTests
             UpdatedAt = DateTimeOffset.UtcNow,
         });
 
-        Assert.Empty(store.Get(ProviderId.Codex).Series);
+        var series = Assert.Single(store.Get(ProviderId.Codex).Series);
+        Assert.Equal("session", series.Id);
+        Assert.Equal(300, series.WindowMinutes);
+        Assert.Null(Assert.Single(series.Samples).ResetsAt);
+    }
+
+    [Fact]
+    public void Record_uses_provider_specific_lane_names_and_default_durations()
+    {
+        using var temp = TempDir.Create();
+        using var store = new PlanStatisticsStore(_ => { }, temp.Path);
+        var capturedAt = new DateTimeOffset(2026, 8, 15, 10, 0, 0, TimeSpan.Zero);
+        store.Record(new UsageSnapshot
+        {
+            Provider = ProviderId.Copilot,
+            Primary = new RateWindow { UsedPercent = 28, ResetsAt = capturedAt.AddDays(10) },
+            Secondary = new RateWindow { UsedPercent = 14, ResetsAt = capturedAt.AddDays(10) },
+            UpdatedAt = capturedAt,
+        });
+
+        Assert.Collection(
+            store.Get(ProviderId.Copilot).Series,
+            premium =>
+            {
+                Assert.Equal("premium-interactions", premium.Id);
+                Assert.Equal("Premium interactions", premium.Title);
+                Assert.Equal(43200, premium.WindowMinutes);
+            },
+            chat =>
+            {
+                Assert.Equal("chat", chat.Id);
+                Assert.Equal("Chat", chat.Title);
+                Assert.Equal(43200, chat.WindowMinutes);
+            });
+    }
+
+    [Fact]
+    public void Record_persists_provider_supplied_activity_buckets_without_percent_semantics()
+    {
+        using var temp = TempDir.Create();
+        var capturedAt = new DateTimeOffset(2026, 8, 14, 0, 0, 0, TimeSpan.Zero);
+        using (var store = new PlanStatisticsStore(_ => { }, temp.Path))
+        {
+            store.Record(new UsageSnapshot
+            {
+                Provider = ProviderId.OpenAIAdmin,
+                HistoricalUsage =
+                [
+                    new HistoricalUsageSample
+                    {
+                        SeriesId = "api-spend",
+                        SeriesTitle = "API spend",
+                        CapturedAt = capturedAt,
+                        Value = 12.45,
+                        Unit = "USD",
+                    },
+                ],
+                UpdatedAt = capturedAt.AddHours(1),
+            });
+        }
+
+        using var reloaded = new PlanStatisticsStore(_ => { }, temp.Path);
+        var series = Assert.Single(reloaded.Get(ProviderId.OpenAIAdmin).Series);
+        Assert.Equal("history:api-spend", series.Id);
+        Assert.Equal(PlanUsageMetricKind.ActivityValue, series.MetricKind);
+        Assert.Equal("USD", series.Unit);
+        Assert.Equal(100, series.ScaleMaximum);
+        Assert.Equal(12.45, Assert.Single(series.Samples).UsedPercent);
+    }
+
+    [Fact]
+    public void Record_keeps_credit_depletion_when_provider_has_no_timed_quota_window()
+    {
+        using var temp = TempDir.Create();
+        using var store = new PlanStatisticsStore(_ => { }, temp.Path);
+        var capturedAt = new DateTimeOffset(2026, 8, 15, 10, 0, 0, TimeSpan.Zero);
+        store.Record(new UsageSnapshot
+        {
+            Provider = ProviderId.OpenRouter,
+            Credits = new CreditsSnapshot
+            {
+                Remaining = 15,
+                Limit = 20,
+                Unit = "credits",
+                UpdatedAt = capturedAt,
+            },
+            UpdatedAt = capturedAt,
+        });
+
+        var series = Assert.Single(store.Get(ProviderId.OpenRouter).Series);
+        Assert.Equal("credits", series.Id);
+        Assert.Equal("Credit balance", series.Title);
+        Assert.Equal(25, Assert.Single(series.Samples).UsedPercent);
     }
 
     private static UsageSnapshot Snapshot(

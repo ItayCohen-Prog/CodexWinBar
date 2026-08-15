@@ -73,10 +73,10 @@ internal sealed class FakeUsageStore : IUsageStore
         [
             Codex(now),
             Claude(now),
-            OpenRouter(now),
-            OpenAIAdmin(now),
             Copilot(now),
             Gemini(now),
+            OpenRouter(now),
+            OpenAIAdmin(now),
             Zai(now),
             Cursor(now),
         ];
@@ -110,7 +110,8 @@ internal sealed class FakeUsageStore : IUsageStore
         },
     };
 
-    // Claude — session + weekly, an Opus weekly tertiary, two extra percent windows, and a real
+    // Claude — session + weekly, the current Fable model-scoped weekly limit, two extra percent
+    // windows, and a real
     // dollar credit balance with a limit.
     private static ProviderState Claude(DateTimeOffset now) => new()
     {
@@ -120,9 +121,9 @@ internal sealed class FakeUsageStore : IUsageStore
             Provider = ProviderId.Claude,
             Primary = Window(72, now.AddHours(3).AddMinutes(23), 300),
             Secondary = Window(52, now.AddDays(5).AddHours(3), 10080),
-            Tertiary = Window(20, now.AddDays(5).AddHours(3), 10080),
             ExtraWindows =
             [
+                new NamedRateWindow { Id = "claude-weekly-fable", Title = "Fable 5", Window = Window(20, now.AddDays(5).AddHours(3), 10080) },
                 new NamedRateWindow { Id = "claude-sonnet-weekly", Title = "Sonnet weekly", Window = Window(40, now.AddDays(5).AddHours(3), 10080) },
                 new NamedRateWindow { Id = "claude-routines", Title = "Routines", Window = Window(12, now.AddDays(5).AddHours(3), 10080) },
             ],
@@ -171,9 +172,9 @@ internal sealed class FakeUsageStore : IUsageStore
         {
             Provider = ProviderId.Copilot,
             Primary = Window(22, now.AddDays(9), 43200),
+            Secondary = Window(30, now.AddDays(9), 43200),
             ExtraWindows =
             [
-                new NamedRateWindow { Id = "chat", Title = "Chat", Window = Window(30, now.AddDays(9), 43200) },
                 new NamedRateWindow { Id = "completions", Title = "Completions", Window = Window(12, now.AddDays(9), 43200) },
             ],
             Identity = new ProviderIdentity { Plan = "business", LoginMethod = "Device flow" },
@@ -200,8 +201,7 @@ internal sealed class FakeUsageStore : IUsageStore
             Secondary = Window(25, now.AddHours(9), 1440),
             ExtraWindows =
             [
-                new NamedRateWindow { Id = "gemini-2.5-pro", Title = "gemini-2.5-pro", Window = Window(45, now.AddHours(9), 1440) },
-                new NamedRateWindow { Id = "gemini-2.5-flash", Title = "gemini-2.5-flash", Window = Window(25, now.AddHours(9), 1440) },
+                new NamedRateWindow { Id = "gemini-2.5-flash-lite", Title = "gemini-2.5-flash-lite", Window = Window(18, now.AddHours(9), 1440) },
             ],
             Identity = new ProviderIdentity { AccountEmail = "dev@example.com", LoginMethod = "OAuth" },
             UpdatedAt = now,

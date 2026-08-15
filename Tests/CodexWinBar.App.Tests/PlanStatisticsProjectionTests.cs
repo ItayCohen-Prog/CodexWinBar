@@ -48,6 +48,86 @@ public sealed class PlanStatisticsProjectionTests
     }
 
     [Fact]
+    public void BuildActivity_detects_observable_resets_for_resetless_provider_meters()
+    {
+        var now = new DateTimeOffset(2026, 8, 13, 18, 0, 0, TimeSpan.Zero);
+        var series = Series(
+            ResetlessSample(now.AddHours(-4), 20),
+            ResetlessSample(now.AddHours(-3), 45),
+            ResetlessSample(now.AddHours(-2), 4),
+            ResetlessSample(now.AddHours(-1), 19));
+
+        var day = Assert.IsType<ActivityDay>(PlanStatisticsProjection.BuildActivity(series, now)
+            .Day(DateOnly.FromDateTime(now.LocalDateTime)));
+
+        Assert.Equal(40, day.Value);
+        Assert.Equal(4, day.ObservationCount);
+    }
+
+    [Fact]
+    public void BuildActivity_adds_provider_supplied_activity_values_directly()
+    {
+        var now = new DateTimeOffset(2026, 8, 13, 18, 0, 0, TimeSpan.Zero);
+        var series = new PlanUsageSeries
+        {
+            Id = "history:api-spend",
+            Title = "API spend",
+            WindowMinutes = 1440,
+            MetricKind = PlanUsageMetricKind.ActivityValue,
+            Unit = "USD",
+            ScaleMaximum = 100,
+            Samples = [ResetlessSample(now.AddDays(-1), 12.5), ResetlessSample(now, 8.25)],
+        };
+
+        var activity = PlanStatisticsProjection.BuildActivity(series, now);
+
+        Assert.Equal(20.75, activity.Total);
+        Assert.Equal(8.25, activity.Day(DateOnly.FromDateTime(now.UtcDateTime))?.Value);
+        Assert.Equal(0.0825, PlanStatisticsProjection.FixedIntensity(series, 8.25), 4);
+    }
+
+    [Fact]
+    public void BuildActivity_files_provider_activity_buckets_under_their_utc_day()
+    {
+        // Pick an instant whose UTC date differs from this machine's local date, so the test fails
+        // in either direction if buckets are ever converted to local time again.
+        var bucketDay = new DateOnly(2026, 8, 12);
+        var offset = TimeZoneInfo.Local.GetUtcOffset(new DateTime(2026, 8, 12, 12, 0, 0, DateTimeKind.Utc));
+        var bucketStart = offset > TimeSpan.Zero
+            ? new DateTimeOffset(2026, 8, 12, 23, 30, 0, TimeSpan.Zero)
+            : new DateTimeOffset(2026, 8, 12, 0, 30, 0, TimeSpan.Zero);
+        var now = new DateTimeOffset(2026, 8, 13, 18, 0, 0, TimeSpan.Zero);
+        var series = new PlanUsageSeries
+        {
+            Id = "history:api-spend",
+            Title = "API spend",
+            WindowMinutes = 1440,
+            MetricKind = PlanUsageMetricKind.ActivityValue,
+            Unit = "USD",
+            ScaleMaximum = 100,
+            Samples = [ResetlessSample(bucketStart, 12.5)],
+        };
+
+        var activity = PlanStatisticsProjection.BuildActivity(series, now);
+
+        Assert.Equal(bucketDay, PlanStatisticsProjection.BucketDate(series, series.Samples[0]));
+        Assert.Equal(12.5, activity.Day(bucketDay)?.Value);
+        Assert.Equal(12.5, activity.Total);
+        Assert.Equal(12.5, activity.Day(bucketDay)?.Hours[bucketStart.UtcDateTime.Hour].Value);
+    }
+
+    [Fact]
+    public void Quota_meter_samples_keep_following_local_time()
+    {
+        var series = Series();
+        var sample = Sample(new DateTimeOffset(2026, 8, 12, 23, 30, 0, TimeSpan.Zero), 10, new DateTimeOffset(2026, 8, 13, 5, 0, 0, TimeSpan.Zero));
+
+        Assert.Equal(
+            DateOnly.FromDateTime(sample.CapturedAt.LocalDateTime),
+            PlanStatisticsProjection.BucketDate(series, sample));
+    }
+
+    [Fact]
     public void BuildActivity_groups_reset_times_across_two_minute_boundary()
     {
         var now = new DateTimeOffset(2026, 8, 13, 12, 0, 0, TimeSpan.Zero);
@@ -206,6 +286,17 @@ public sealed class PlanStatisticsProjectionTests
     }
 
     [Fact]
+    public void Fake_history_populates_every_shipping_provider()
+    {
+        using var store = new FakePlanStatisticsStore();
+
+        Assert.All(ProviderIds.All, provider => Assert.NotEmpty(store.Get(provider).Series));
+        Assert.Equal(
+            PlanUsageMetricKind.ActivityValue,
+            Assert.Single(store.Get(ProviderId.OpenAIAdmin).Series).MetricKind);
+    }
+
+    [Fact]
     public void BuildActivity_uses_the_selected_calendar_year_with_unavailable_padding()
     {
         var now = new DateTimeOffset(2026, 8, 13, 12, 0, 0, TimeSpan.Zero);
@@ -258,5 +349,11 @@ public sealed class PlanStatisticsProjectionTests
         CapturedAt = captured,
         UsedPercent = used,
         ResetsAt = reset,
+    };
+
+    private static PlanUsageSample ResetlessSample(DateTimeOffset captured, double used) => new()
+    {
+        CapturedAt = captured,
+        UsedPercent = used,
     };
 }

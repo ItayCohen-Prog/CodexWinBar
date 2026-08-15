@@ -31,29 +31,61 @@ public sealed class StatisticsWindow : Window
     private const string CalendarGlyph = "\uE787";
     private const string ClockGlyph = "\uE823";
     private const string HistoryGlyph = "\uE81C";
+    private const double LogoHoverScale = 1.045;
+    // Drives the provider-switch commit. Logo scale/opacity animations are replaced by hover and
+    // focus handlers, so a completion callback attached to them can be discarded mid-transition
+    // and leave the rail stuck; this property is animated by the transition alone.
+    private static readonly DependencyProperty ProviderTransitionProperty = DependencyProperty.Register(
+        "ProviderTransition",
+        typeof(double),
+        typeof(StatisticsWindow),
+        new PropertyMetadata(0d));
     private static readonly FontFamily DisplayFont = new("Segoe UI Variable Display, Segoe UI");
     private static readonly FontFamily TextFont = new("Segoe UI Variable Text, Segoe UI");
     private static readonly CultureInfo UiCulture = CultureInfo.GetCultureInfo("en-US");
     private static StatisticsWindow? current;
     private readonly IPlanStatisticsStore store;
     private readonly IReadOnlyDictionary<ProviderId, ProviderDescriptor> descriptors;
+    private readonly IReadOnlyDictionary<ProviderId, int> providerOrder;
+    private readonly Func<IReadOnlyList<ProviderId>> visibleProviderIds;
     private readonly StackPanel providerTabs = new() { Orientation = Orientation.Horizontal };
     private readonly ContentControl dashboardHost = new();
+    private readonly ScrollViewer dashboardScroller = new()
+    {
+        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+    };
     private readonly bool isDark;
+    private int refreshQueued;
+    private bool refreshDeferred;
     private ProviderId selectedProvider = ProviderId.Codex;
     private string? selectedSeriesId;
     private DateOnly? selectedDate;
     private DateOnly? selectedMonth;
     private int selectedYear = DateTime.Now.Year;
+    private int yearTransitionDirection;
     private ActivityViewMode viewMode = ActivityViewMode.Overview;
     private bool providerTransitioning;
+    private ProviderId? pendingProvider;
 
     private StatisticsWindow(
         IPlanStatisticsStore store,
         IReadOnlyList<ProviderDescriptor> descriptors)
+        : this(store, descriptors, () => descriptors.Select(item => item.Id).ToArray())
+    {
+    }
+
+    private StatisticsWindow(
+        IPlanStatisticsStore store,
+        IReadOnlyList<ProviderDescriptor> descriptors,
+        Func<IReadOnlyList<ProviderId>> visibleProviderIds)
     {
         this.store = store;
         this.descriptors = descriptors.ToDictionary(item => item.Id);
+        this.providerOrder = descriptors
+            .Select((descriptor, index) => (descriptor.Id, index))
+            .ToDictionary(item => item.Id, item => item.index);
+        this.visibleProviderIds = visibleProviderIds;
         this.isDark = !SystemAppsUseLightTheme();
 
         this.Title = "CodexWinBar Statistics";
@@ -98,7 +130,8 @@ public sealed class StatisticsWindow : Window
     /// <summary>Shows the singleton statistics window, or activates the existing instance.</summary>
     internal static void ShowOrActivate(
         IPlanStatisticsStore store,
-        IReadOnlyList<ProviderDescriptor> descriptors)
+        IReadOnlyList<ProviderDescriptor> descriptors,
+        Func<IReadOnlyList<ProviderId>> visibleProviderIds)
     {
         if (current is { IsVisible: true })
         {
@@ -111,7 +144,7 @@ public sealed class StatisticsWindow : Window
             return;
         }
 
-        current = new StatisticsWindow(store, descriptors);
+        current = new StatisticsWindow(store, descriptors, visibleProviderIds);
         current.Show();
         current.Activate();
     }
@@ -179,7 +212,7 @@ public sealed class StatisticsWindow : Window
             VerticalContentAlignment = VerticalAlignment.Center,
             Content = this.providerTabs,
             Height = 44,
-            Margin = new Thickness(0, 0, 0, 14),
+            Margin = new Thickness(0, 0, 0, 10),
         };
         Grid.SetRow(providers, 1);
         ledger.Children.Add(providers);
@@ -187,19 +220,37 @@ public sealed class StatisticsWindow : Window
         this.dashboardHost.HorizontalContentAlignment = HorizontalAlignment.Stretch;
         this.dashboardHost.VerticalContentAlignment = VerticalAlignment.Stretch;
         this.dashboardHost.RenderTransform = new TranslateTransform();
-        var scroller = new ScrollViewer
-        {
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Content = this.dashboardHost,
-        };
+        var scroller = this.dashboardScroller;
+        scroller.Content = this.dashboardHost;
+        // At short window sizes the vertical scrollbar appears inside the ledger, leaving the
+        // right-aligned metadata and the calendar's last column flush against the bar. Inset the
+        // dashboard only while the bar is visible so the scrollbar-free layout stays untouched.
+        scroller.ScrollChanged += (_, _) =>
+            this.dashboardHost.Margin = DashboardScrollInset(scroller.ComputedVerticalScrollBarVisibility);
+        // A store update that arrives while the pointer or keyboard focus is inside the dashboard
+        // would rebuild the tree under the user, dropping focus and the inspected bar; apply it once
+        // they step away instead.
+        this.dashboardHost.MouseLeave += (_, _) => this.FlushDeferredRefresh();
+        this.dashboardHost.IsKeyboardFocusWithinChanged += (_, _) => this.FlushDeferredRefresh();
         Grid.SetRow(scroller, 2);
         ledger.Children.Add(scroller);
         return root;
     }
 
+    private void FlushDeferredRefresh()
+    {
+        if (this.refreshDeferred && !this.IsDashboardInteractive())
+        {
+            this.Refresh();
+        }
+    }
+
+    private bool IsDashboardInteractive() =>
+        this.dashboardHost.IsMouseOver || this.dashboardHost.IsKeyboardFocusWithin;
+
     private void Refresh()
     {
+        this.refreshDeferred = false;
         this.RefreshProviderTabs();
         var statistics = this.store.Get(this.selectedProvider);
         var series = statistics.Series.FirstOrDefault(item => item.Id == this.selectedSeriesId)
@@ -245,16 +296,44 @@ public sealed class StatisticsWindow : Window
 
     private void RefreshProviderTabs()
     {
-        this.providerTabs.Children.Clear();
-        var providerIds = this.descriptors.Keys
-            .Where(id => id is ProviderId.Codex or ProviderId.Claude || this.store.Get(id).Series.Count > 0)
-            .OrderBy(ProviderOrder)
-            .ThenBy(id => this.descriptors[id].Metadata.DisplayName, StringComparer.OrdinalIgnoreCase)
+        var providerIds = this.visibleProviderIds()
+            .Where(this.descriptors.ContainsKey)
+            .Distinct()
+            .OrderBy(id => this.providerOrder.GetValueOrDefault(id, int.MaxValue))
             .ToArray();
+        if (providerIds.Length == 0)
+        {
+            providerIds = this.descriptors.Keys
+                .Where(id => this.store.Get(id).Series.Count > 0)
+                .OrderBy(id => this.providerOrder.GetValueOrDefault(id, int.MaxValue))
+                .ToArray();
+        }
+
         if (!providerIds.Contains(this.selectedProvider))
         {
-            this.selectedProvider = providerIds.FirstOrDefault(ProviderId.Codex);
+            this.selectedProvider = providerIds.FirstOrDefault();
         }
+
+        var existing = this.providerTabs.Children
+            .OfType<Button>()
+            .Select(button => (Button: button, Visual: button.Tag as ProviderButtonVisual))
+            .Where(item => item.Visual is not null)
+            .Select(item => (item.Button, Visual: item.Visual!))
+            .ToArray();
+        if (existing.Select(item => item.Visual.Provider).SequenceEqual(providerIds))
+        {
+            if (!this.providerTransitioning)
+            {
+                foreach (var item in existing)
+                {
+                    ApplyProviderButtonState(item.Button, item.Visual, item.Visual.Provider == this.selectedProvider);
+                }
+            }
+
+            return;
+        }
+
+        this.providerTabs.Children.Clear();
 
         foreach (var provider in providerIds)
         {
@@ -274,7 +353,13 @@ public sealed class StatisticsWindow : Window
             Orientation = Orientation.Horizontal,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        FrameworkElement logo = LogoImages.Get(descriptor.Branding.GlyphKey, this.isDark) is { } source
+        // The rail identifies unselected providers by mark alone, so both themes use the
+        // brand-colored logo: the monochrome "-dark" variants would leave Codex a white
+        // outline next to a full-color Claude and change the mark's identity between themes.
+        // Near-black marks (Copilot, Cursor) are the exception: at rail opacity they vanish on
+        // the dark surface, and their white variants keep the same silhouette.
+        var darkVariant = this.isDark && LogoImages.IsDarkMark(descriptor.Branding.GlyphKey);
+        FrameworkElement logo = LogoImages.Get(descriptor.Branding.GlyphKey, darkBackground: darkVariant) is { } source
             ? new Image { Source = source, Width = 27, Height = 27 }
             : LogoImages.IconGlyph(LogoImages.StatisticsGlyph, 24);
         var shadow = new DropShadowEffect
@@ -287,6 +372,9 @@ public sealed class StatisticsWindow : Window
         };
         logo.Effect = shadow;
         logo.Opacity = selected ? 1 : 0.58;
+        var logoScale = new ScaleTransform(1, 1);
+        logo.RenderTransform = logoScale;
+        logo.RenderTransformOrigin = new Point(0.5, 0.5);
         content.Children.Add(logo);
 
         var name = new TextBlock
@@ -323,35 +411,70 @@ public sealed class StatisticsWindow : Window
             ToolTip = descriptor.Metadata.DisplayName,
             Template = CreateProviderButtonTemplate(),
         };
-        button.Tag = new ProviderButtonVisual(descriptor.Id, logo, nameHost, nameWidth, nameTranslate, shadow);
+        var railTranslate = new TranslateTransform();
+        button.RenderTransform = railTranslate;
+        button.Tag = new ProviderButtonVisual(
+            descriptor.Id,
+            logo,
+            logoScale,
+            nameHost,
+            nameWidth,
+            nameTranslate,
+            railTranslate,
+            shadow);
         ToolTipService.SetInitialShowDelay(button, 250);
         ToolTipService.SetBetweenShowDelay(button, 80);
         void AnimateLogo(
             double opacity,
-            double blurRadius,
-            double shadowOpacity,
-            double shadowDepth,
+            double scale,
             int milliseconds)
         {
             if (!SystemParameters.ClientAreaAnimation)
             {
                 logo.Opacity = opacity;
-                shadow.BlurRadius = blurRadius;
-                shadow.Opacity = shadowOpacity;
-                shadow.ShadowDepth = shadowDepth;
+                logoScale.ScaleX = scale;
+                logoScale.ScaleY = scale;
                 return;
             }
 
             var duration = TimeSpan.FromMilliseconds(milliseconds);
             var easing = new QuadraticEase { EasingMode = EasingMode.EaseOut };
-            logo.BeginAnimation(OpacityProperty, new DoubleAnimation(logo.Opacity, opacity, duration) { EasingFunction = easing });
-            shadow.BeginAnimation(DropShadowEffect.BlurRadiusProperty, new DoubleAnimation(shadow.BlurRadius, blurRadius, duration) { EasingFunction = easing });
-            shadow.BeginAnimation(DropShadowEffect.OpacityProperty, new DoubleAnimation(shadow.Opacity, shadowOpacity, duration) { EasingFunction = easing });
-            shadow.BeginAnimation(DropShadowEffect.ShadowDepthProperty, new DoubleAnimation(shadow.ShadowDepth, shadowDepth, duration) { EasingFunction = easing });
+            var startOpacity = logo.Opacity;
+            var startScale = logoScale.ScaleX;
+            logo.BeginAnimation(OpacityProperty, null);
+            logoScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            logoScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            logo.Opacity = opacity;
+            logoScale.ScaleX = scale;
+            logoScale.ScaleY = scale;
+            logo.BeginAnimation(
+                OpacityProperty,
+                new DoubleAnimation(startOpacity, opacity, duration)
+                {
+                    EasingFunction = easing,
+                    FillBehavior = FillBehavior.Stop,
+                },
+                HandoffBehavior.SnapshotAndReplace);
+            logoScale.BeginAnimation(
+                ScaleTransform.ScaleXProperty,
+                new DoubleAnimation(startScale, scale, duration)
+                {
+                    EasingFunction = easing,
+                    FillBehavior = FillBehavior.Stop,
+                },
+                HandoffBehavior.SnapshotAndReplace);
+            logoScale.BeginAnimation(
+                ScaleTransform.ScaleYProperty,
+                new DoubleAnimation(startScale, scale, duration)
+                {
+                    EasingFunction = easing,
+                    FillBehavior = FillBehavior.Stop,
+                },
+                HandoffBehavior.SnapshotAndReplace);
         }
 
-        void HighlightLogo() => AnimateLogo(1, 13, 0.42, 3, 83);
-        void RestoreLogo() => AnimateLogo(selected ? 1 : 0.58, selected ? 12 : 9, selected ? 0.38 : 0.24, selected ? 3 : 2, 120);
+        void HighlightLogo() => AnimateLogo(1, LogoHoverScale, 90);
+        void RestoreLogo() => AnimateLogo(descriptor.Id == this.selectedProvider ? 1 : 0.58, 1, 120);
 
         button.MouseEnter += (_, _) => HighlightLogo();
         button.MouseLeave += (_, _) =>
@@ -374,14 +497,24 @@ public sealed class StatisticsWindow : Window
 
     private void SelectProvider(ProviderId provider, Button targetButton)
     {
-        if (provider == this.selectedProvider || this.providerTransitioning)
+        if (provider == this.selectedProvider && !this.providerTransitioning)
         {
             return;
         }
 
-        var current = this.providerTabs.Children.OfType<Button>()
-            .Select(button => button.Tag)
-            .OfType<ProviderButtonVisual>()
+        if (this.providerTransitioning)
+        {
+            this.pendingProvider = provider;
+            return;
+        }
+
+        var visuals = this.providerTabs.Children.OfType<Button>()
+            .Select(button => (Button: button, Visual: button.Tag as ProviderButtonVisual))
+            .Where(item => item.Visual is not null)
+            .Select(item => (item.Button, Visual: item.Visual!))
+            .ToArray();
+        var current = visuals
+            .Select(item => item.Visual)
             .FirstOrDefault(visual => visual.Provider == this.selectedProvider);
         if (!SystemParameters.ClientAreaAnimation ||
             targetButton.Tag is not ProviderButtonVisual target ||
@@ -392,52 +525,111 @@ public sealed class StatisticsWindow : Window
         }
 
         this.providerTransitioning = true;
-        var duration = TimeSpan.FromMilliseconds(190);
-        var easing = new QuadraticEase { EasingMode = EasingMode.EaseInOut };
-        current.NameHost.Width = current.NameHost.ActualWidth;
-        current.NameHost.BeginAnimation(
-            WidthProperty,
-            new DoubleAnimation(current.NameHost.ActualWidth, 0, duration) { EasingFunction = easing });
-        current.NameHost.BeginAnimation(
-            OpacityProperty,
-            new DoubleAnimation(current.NameHost.Opacity, 0, duration) { EasingFunction = easing });
-        current.NameTranslate.BeginAnimation(
-            TranslateTransform.XProperty,
-            new DoubleAnimation(current.NameTranslate.X, -2, duration) { EasingFunction = easing });
-        current.Logo.BeginAnimation(
-            OpacityProperty,
-            new DoubleAnimation(current.Logo.Opacity, 0.58, duration) { EasingFunction = easing });
-        current.Shadow.BeginAnimation(
-            DropShadowEffect.OpacityProperty,
-            new DoubleAnimation(current.Shadow.Opacity, 0.24, duration) { EasingFunction = easing });
+        this.pendingProvider = null;
+        var oldPositions = visuals.ToDictionary(
+            item => item.Visual.Provider,
+            item => item.Button.TranslatePoint(new Point(0, 0), this.providerTabs).X);
+        var oldLogoOpacities = visuals.ToDictionary(
+            item => item.Visual.Provider,
+            item => item.Visual.Logo.Opacity);
+        foreach (var item in visuals)
+        {
+            ApplyProviderButtonState(item.Button, item.Visual, item.Visual.Provider == provider);
+        }
 
-        target.NameHost.Width = 0;
-        target.NameHost.Opacity = 0;
-        target.NameTranslate.BeginAnimation(
-            TranslateTransform.XProperty,
-            new DoubleAnimation(target.NameTranslate.X, 0, duration) { EasingFunction = easing });
-        target.Logo.BeginAnimation(
-            OpacityProperty,
-            new DoubleAnimation(target.Logo.Opacity, 1, duration) { EasingFunction = easing });
-        target.Shadow.BeginAnimation(
-            DropShadowEffect.OpacityProperty,
-            new DoubleAnimation(target.Shadow.Opacity, 0.38, duration) { EasingFunction = easing });
+        // Set the final selected-name width once, then animate only render transforms. The old
+        // Width animation forced the full calendar and dashboard through layout on every frame.
+        this.providerTabs.UpdateLayout();
+        var duration = TimeSpan.FromMilliseconds(165);
+        var easing = new QuadraticEase { EasingMode = EasingMode.EaseInOut };
+        foreach (var item in visuals)
+        {
+            var newPosition = item.Button.TranslatePoint(new Point(0, 0), this.providerTabs).X;
+            var offset = oldPositions[item.Visual.Provider] - newPosition;
+            item.Visual.RailTranslate.BeginAnimation(
+                TranslateTransform.XProperty,
+                new DoubleAnimation(offset, 0, duration)
+                {
+                    EasingFunction = easing,
+                    FillBehavior = FillBehavior.Stop,
+                },
+                HandoffBehavior.SnapshotAndReplace);
+            item.Visual.Logo.BeginAnimation(
+                OpacityProperty,
+                new DoubleAnimation(oldLogoOpacities[item.Visual.Provider], item.Visual.Logo.Opacity, duration)
+                {
+                    EasingFunction = easing,
+                    FillBehavior = FillBehavior.Stop,
+                },
+                HandoffBehavior.SnapshotAndReplace);
+        }
+
         target.NameHost.BeginAnimation(
             OpacityProperty,
-            new DoubleAnimation(0, 1, duration) { EasingFunction = easing });
-        var expand = new DoubleAnimation(0, target.NameWidth, duration) { EasingFunction = easing };
-        expand.Completed += (_, _) => this.CommitProviderSelection(provider);
-        target.NameHost.BeginAnimation(WidthProperty, expand);
+            new DoubleAnimation(0, 1, duration)
+            {
+                EasingFunction = easing,
+                FillBehavior = FillBehavior.Stop,
+            },
+            HandoffBehavior.SnapshotAndReplace);
+        target.NameTranslate.BeginAnimation(
+            TranslateTransform.XProperty,
+            new DoubleAnimation(-4, 0, duration)
+            {
+                EasingFunction = easing,
+                FillBehavior = FillBehavior.Stop,
+            },
+            HandoffBehavior.SnapshotAndReplace);
+        var completion = new DoubleAnimation(0, 1, duration) { FillBehavior = FillBehavior.Stop };
+        completion.Completed += (_, _) => this.CommitProviderSelection(provider);
+        this.BeginAnimation(ProviderTransitionProperty, completion, HandoffBehavior.SnapshotAndReplace);
     }
 
     private void CommitProviderSelection(ProviderId provider)
     {
         this.SetProviderSelection(provider);
-        this.Refresh();
+        // Clear the flag before refreshing so a rail rebuilt during the transition (provider list
+        // changed) receives the final selection state instead of waiting for the next store update.
         this.providerTransitioning = false;
+        this.Refresh();
         var selected = this.providerTabs.Children.OfType<Button>()
             .FirstOrDefault(button => button.Tag is ProviderButtonVisual visual && visual.Provider == provider);
         _ = selected?.Focus();
+        if (this.pendingProvider is { } pending && pending != this.selectedProvider)
+        {
+            this.pendingProvider = null;
+            var pendingButton = this.providerTabs.Children.OfType<Button>()
+                .FirstOrDefault(button => button.Tag is ProviderButtonVisual visual && visual.Provider == pending);
+            if (pendingButton is not null)
+            {
+                _ = this.Dispatcher.BeginInvoke(() => this.SelectProvider(pending, pendingButton));
+            }
+        }
+    }
+
+    private static void ApplyProviderButtonState(Button button, ProviderButtonVisual visual, bool selected)
+    {
+        // A hovered or focused logo keeps its highlight: resetting it here would snap the mark
+        // the user is pointing at back to resting size, only for the hover handler to re-grow it.
+        var highlighted = button.IsMouseOver || button.IsKeyboardFocused;
+        var scale = highlighted ? LogoHoverScale : 1;
+        visual.Logo.BeginAnimation(OpacityProperty, null);
+        visual.LogoScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+        visual.LogoScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+        visual.NameHost.BeginAnimation(WidthProperty, null);
+        visual.NameHost.BeginAnimation(OpacityProperty, null);
+        visual.NameTranslate.BeginAnimation(TranslateTransform.XProperty, null);
+        visual.RailTranslate.BeginAnimation(TranslateTransform.XProperty, null);
+        visual.Logo.Opacity = selected || highlighted ? 1 : 0.58;
+        visual.LogoScale.ScaleX = scale;
+        visual.LogoScale.ScaleY = scale;
+        visual.NameHost.Width = selected ? visual.NameWidth : 0;
+        visual.NameHost.Opacity = selected ? 1 : 0;
+        visual.NameTranslate.X = selected ? 0 : -3;
+        visual.RailTranslate.X = 0;
+        visual.Shadow.BlurRadius = selected ? 12 : 9;
+        visual.Shadow.Opacity = selected ? 0.38 : 0.24;
+        visual.Shadow.ShadowDepth = selected ? 3 : 2;
     }
 
     private void SetProviderSelection(ProviderId provider)
@@ -446,12 +638,24 @@ public sealed class StatisticsWindow : Window
         this.selectedSeriesId = null;
     }
 
-    private void TransitionDashboard(Action update, Action? completed = null)
+    private void TransitionDashboard(Action update)
     {
+        var previousMode = this.viewMode;
         update();
         this.Refresh();
-        completed?.Invoke();
+        // Drilling in from a bar or calendar cell happens near the bottom of a scrolled dashboard;
+        // the new level's back button and heading must start in view. Previous/Next stay put.
+        if (this.viewMode != previousMode)
+        {
+            this.dashboardScroller.ScrollToTop();
+        }
     }
+
+    /// <summary>Breathing room between the dashboard and the vertical scrollbar when one is shown.</summary>
+    internal static Thickness DashboardScrollInset(Visibility verticalScrollBarVisibility) =>
+        verticalScrollBarVisibility == Visibility.Visible
+            ? new Thickness(0, 0, 10, 0)
+            : new Thickness(0);
 
     private UIElement BuildDashboard(
         PlanUsageSeries series,
@@ -461,7 +665,8 @@ public sealed class StatisticsWindow : Window
     {
         var descriptor = this.descriptors[this.selectedProvider];
         var rawAccent = Color.FromRgb(descriptor.Branding.R, descriptor.Branding.G, descriptor.Branding.B);
-        var accent = this.isDark ? Blend(rawAccent, Colors.White, 0.32) : rawAccent;
+        var providerInk = CalendarActivityInk(this.selectedProvider, rawAccent, this.isDark);
+        var accent = this.isDark ? Blend(providerInk, Colors.White, 0.32) : providerInk;
         var selected = activity.Day(this.selectedDate!.Value) ?? activity.Days[^1];
         var week = activity.WeekContaining(selected.Date);
         var month = activity.MonthContaining(this.selectedMonth!.Value);
@@ -471,19 +676,19 @@ public sealed class StatisticsWindow : Window
         switch (this.viewMode)
         {
             case ActivityViewMode.Overview:
-                root.Children.Add(this.BuildGeneralSummary(descriptor, series, activity, accent));
+                root.Children.Add(this.BuildGeneralSummary(series, activity));
                 root.Children.Add(this.BuildOverviewSection(series, activity, selected, accent));
                 break;
             case ActivityViewMode.Month:
-                root.Children.Add(this.BuildMonthSummary(descriptor, series, month, accent));
-                root.Children.Add(this.BuildMonthSection(series, month, selected.Date, accent));
+                root.Children.Add(this.BuildMonthSummary(series, month));
+                root.Children.Add(this.BuildMonthSection(series, activity, month, selected.Date, accent));
                 break;
             case ActivityViewMode.Week:
-                root.Children.Add(this.BuildWeekSummary(descriptor, series, activity, week, accent));
+                root.Children.Add(this.BuildWeekSummary(series, activity, week));
                 root.Children.Add(this.BuildWeekSection(series, activity, week, accent));
                 break;
             case ActivityViewMode.Day:
-                root.Children.Add(this.BuildDaySummary(descriptor, series, activity, selected, accent));
+                root.Children.Add(this.BuildDaySummary(series, activity, selected));
                 root.Children.Add(this.BuildDaySection(series, selected, accent));
                 break;
         }
@@ -493,13 +698,14 @@ public sealed class StatisticsWindow : Window
 
     private UIElement BuildControlRow(IReadOnlyList<PlanUsageSeries> series)
     {
-        var row = new Grid { Margin = new Thickness(0, 0, 0, 18), MinHeight = 36 };
+        var selected = series.FirstOrDefault(item => item.Id == this.selectedSeriesId) ?? series.FirstOrDefault();
+        var row = new Grid { Margin = new Thickness(0, 0, 0, 14), MinHeight = 36 };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var seriesGroup = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         seriesGroup.Children.Add(new TextBlock
         {
-            Text = "Limit",
+            Text = selected?.MetricKind == PlanUsageMetricKind.ActivityValue ? "Metric" : "Limit",
             Margin = new Thickness(0, 0, 10, 0),
             FontSize = 12,
             FontWeight = FontWeights.SemiBold,
@@ -509,10 +715,9 @@ public sealed class StatisticsWindow : Window
         seriesGroup.Children.Add(this.BuildSeriesTabs(series));
         row.Children.Add(seriesGroup);
 
-        var selected = series.FirstOrDefault(item => item.Id == this.selectedSeriesId) ?? series.FirstOrDefault();
         var measure = this.IconLabel(
-            selected?.WindowMinutes == 10080 ? CalendarGlyph : ClockGlyph,
-            selected is null ? "Local time" : $"{LimitName(selected)} · Local time",
+            SeriesGlyph(selected),
+            selected is null ? "Local time" : $"{LimitName(selected)} · {TimeBasis(selected)}",
             iconSize: 12);
         measure.Opacity = 0.82;
         measure.VerticalAlignment = VerticalAlignment.Center;
@@ -529,7 +734,7 @@ public sealed class StatisticsWindow : Window
         {
             var selected = item.Id == this.selectedSeriesId;
             var button = this.CreateTabButton(
-                this.IconLabel(item.WindowMinutes == 10080 ? CalendarGlyph : ClockGlyph, LimitName(item), selected),
+                this.IconLabel(SeriesGlyph(item), LimitName(item), selected),
                 selected,
                 compact: true);
             button.Click += (_, _) =>
@@ -554,7 +759,12 @@ public sealed class StatisticsWindow : Window
         ActivityWeek week,
         ActivityMonth month)
     {
-        var header = new Grid { Margin = new Thickness(0, 0, 0, 14) };
+        if (this.viewMode == ActivityViewMode.Overview)
+        {
+            return this.BuildYearCarouselHeader(availableYears);
+        }
+
+        var header = new Grid { Margin = new Thickness(0, 0, 0, 12) };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
@@ -569,7 +779,7 @@ public sealed class StatisticsWindow : Window
             };
             var back = this.CreateTabButton(this.IconLabel(BackGlyph, parentLabel, true), selected: false, compact: true);
             back.HorizontalAlignment = HorizontalAlignment.Left;
-            back.Margin = new Thickness(0, 0, 0, 9);
+            back.Margin = new Thickness(0, 0, 0, 7);
             back.Click += (_, _) => this.GoBack();
             AutomationProperties.SetName(back, $"Back to {parentLabel}");
             path.Children.Add(back);
@@ -633,21 +843,29 @@ public sealed class StatisticsWindow : Window
                     next.IsEnabled = month.StartsOn < maximumMonth;
                     previous.Click += (_, _) => this.NavigateMonth(month.StartsOn.AddMonths(-1));
                     next.Click += (_, _) => this.NavigateMonth(month.StartsOn.AddMonths(1));
+                    AutomationProperties.SetName(previous, "Previous month");
+                    AutomationProperties.SetName(next, "Next month");
                     break;
                 case ActivityViewMode.Week:
                     previous.IsEnabled = week.StartsOn.AddDays(-7) >= PlanStatisticsProjection.WeekStart(activity.StartsOn);
                     next.IsEnabled = week.StartsOn.AddDays(7) <= PlanStatisticsProjection.WeekStart(activity.EndsOn);
                     previous.Click += (_, _) => this.NavigateWeek(week.StartsOn.AddDays(-7));
                     next.Click += (_, _) => this.NavigateWeek(week.StartsOn.AddDays(7));
+                    AutomationProperties.SetName(previous, "Previous week");
+                    AutomationProperties.SetName(next, "Next week");
                     break;
                 case ActivityViewMode.Day:
                     previous.IsEnabled = selected.Date > activity.StartsOn;
                     next.IsEnabled = selected.Date < activity.EndsOn;
                     previous.Click += (_, _) => this.NavigateDay(selected.Date.AddDays(-1));
                     next.Click += (_, _) => this.NavigateDay(selected.Date.AddDays(1));
+                    AutomationProperties.SetName(previous, "Previous day");
+                    AutomationProperties.SetName(next, "Next day");
                     break;
             }
 
+            previous.Cursor = previous.IsEnabled ? Cursors.Hand : Cursors.Arrow;
+            next.Cursor = next.IsEnabled ? Cursors.Hand : Cursors.Arrow;
             navigation.Children.Add(previous);
             navigation.Children.Add(next);
             Grid.SetColumn(navigation, 1);
@@ -657,16 +875,176 @@ public sealed class StatisticsWindow : Window
         return header;
     }
 
-    private UIElement BuildGeneralSummary(
-        ProviderDescriptor descriptor,
-        PlanUsageSeries series,
-        ActivityOverview activity,
-        Color accent)
+    private UIElement BuildYearCarouselHeader(IReadOnlyList<int> availableYears)
+    {
+        var header = new Grid { Margin = new Thickness(0, 0, 0, 16) };
+        header.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        header.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        header.Children.Add(new TextBlock
+        {
+            Text = "All activity",
+            FontSize = 12,
+            Foreground = this.Brush("StatisticsMutedForeground"),
+        });
+
+        var previousYear = availableYears.LastOrDefault(year => year < this.selectedYear);
+        var nextYear = availableYears.FirstOrDefault(year => year > this.selectedYear);
+        // Fixed columns only: any extra width would pool on the right and push the selected year
+        // off the ledger's center line.
+        var carousel = new Grid
+        {
+            Margin = new Thickness(0, 5, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            RenderTransform = new TranslateTransform(),
+        };
+        carousel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(38) });
+        carousel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(76) });
+        carousel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(104) });
+        carousel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(76) });
+        carousel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(38) });
+
+        var previous = this.CreateYearArrowButton(BackGlyph, previousYear != 0);
+        previous.Click += (_, _) => this.NavigateYear(previousYear);
+        previous.ToolTip = previousYear != 0 ? $"Show {previousYear}" : "No earlier recorded year";
+        AutomationProperties.SetName(previous, previousYear != 0 ? $"Show {previousYear}" : "No earlier recorded year");
+        carousel.Children.Add(previous);
+
+        var previousPreview = this.YearPreview(previousYear, TextAlignment.Right);
+        Grid.SetColumn(previousPreview, 1);
+        carousel.Children.Add(previousPreview);
+
+        var activeYear = new TextBlock
+        {
+            Text = this.selectedYear.ToString(UiCulture),
+            FontFamily = DisplayFont,
+            FontSize = 31,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = this.Brush("StatisticsForeground"),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Typography.SetNumeralAlignment(activeYear, FontNumeralAlignment.Tabular);
+        AutomationProperties.SetName(activeYear, $"Selected year {this.selectedYear}");
+        Grid.SetColumn(activeYear, 2);
+        carousel.Children.Add(activeYear);
+
+        var nextPreview = this.YearPreview(nextYear, TextAlignment.Left);
+        Grid.SetColumn(nextPreview, 3);
+        carousel.Children.Add(nextPreview);
+
+        var next = this.CreateYearArrowButton("\uE72A", nextYear != 0);
+        next.Click += (_, _) => this.NavigateYear(nextYear);
+        next.ToolTip = nextYear != 0 ? $"Show {nextYear}" : "No later recorded year";
+        AutomationProperties.SetName(next, nextYear != 0 ? $"Show {nextYear}" : "No later recorded year");
+        Grid.SetColumn(next, 4);
+        carousel.Children.Add(next);
+
+        Grid.SetRow(carousel, 1);
+        header.Children.Add(carousel);
+        if (this.yearTransitionDirection != 0 && SystemParameters.ClientAreaAnimation)
+        {
+            var translate = (TranslateTransform)carousel.RenderTransform;
+            var offset = 18 * this.yearTransitionDirection;
+            translate.BeginAnimation(
+                TranslateTransform.XProperty,
+                new DoubleAnimation(offset, 0, TimeSpan.FromMilliseconds(190))
+                {
+                    EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+                });
+            carousel.BeginAnimation(
+                OpacityProperty,
+                new DoubleAnimation(0.58, 1, TimeSpan.FromMilliseconds(190))
+                {
+                    EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+                });
+        }
+
+        this.yearTransitionDirection = 0;
+        return header;
+    }
+
+    private TextBlock YearPreview(int year, TextAlignment alignment)
+    {
+        var preview = new TextBlock
+        {
+            Text = year == 0 ? string.Empty : year.ToString(UiCulture),
+            FontFamily = DisplayFont,
+            FontSize = 16,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = this.Brush("StatisticsMutedForeground"),
+            Opacity = year == 0 ? 0 : 0.42,
+            TextAlignment = alignment,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Typography.SetNumeralAlignment(preview, FontNumeralAlignment.Tabular);
+        return preview;
+    }
+
+    private Button CreateYearArrowButton(string glyph, bool enabled)
+    {
+        var restingColor = Colors.Transparent;
+        var hoverColor = this.Brush("StatisticsHoverBackground").Color;
+        var background = new SolidColorBrush(restingColor);
+        var button = new Button
+        {
+            Width = 34,
+            Height = 34,
+            Content = LogoImages.IconGlyph(glyph, 14),
+            Padding = new Thickness(0),
+            Background = background,
+            BorderThickness = new Thickness(0),
+            Foreground = this.Brush("StatisticsMutedForeground"),
+            Cursor = enabled ? Cursors.Hand : Cursors.Arrow,
+            IsEnabled = enabled,
+            Template = CreateTabTemplate(),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        void AnimateBackground(Color target)
+        {
+            if (!SystemParameters.ClientAreaAnimation)
+            {
+                background.Color = target;
+                return;
+            }
+
+            background.BeginAnimation(
+                SolidColorBrush.ColorProperty,
+                new ColorAnimation(background.Color, target, TimeSpan.FromMilliseconds(115))
+                {
+                    EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+                });
+        }
+
+        button.MouseEnter += (_, _) =>
+        {
+            if (button.IsEnabled)
+            {
+                AnimateBackground(hoverColor);
+            }
+        };
+        button.MouseLeave += (_, _) =>
+        {
+            if (!button.IsKeyboardFocused)
+            {
+                AnimateBackground(restingColor);
+            }
+        };
+        button.GotKeyboardFocus += (_, _) => AnimateBackground(hoverColor);
+        button.LostKeyboardFocus += (_, _) =>
+        {
+            if (!button.IsMouseOver)
+            {
+                AnimateBackground(restingColor);
+            }
+        };
+        return button;
+    }
+
+    private UIElement BuildGeneralSummary(PlanUsageSeries series, ActivityOverview activity)
     {
         var current = CurrentLimit(series);
         return this.BuildSummary(
-            descriptor,
-            accent,
             current.Label,
             current.Value,
             current.Detail,
@@ -675,16 +1053,10 @@ public sealed class StatisticsWindow : Window
             ("\uE9D9", "Busiest day", activity.BusiestDay is { } day ? day.Date.ToString("MMM d", UiCulture) : "—", activity.BusiestDay is { } busiest ? FormatActivity(series, busiest.Value) : "no activity yet"));
     }
 
-    private UIElement BuildMonthSummary(
-        ProviderDescriptor descriptor,
-        PlanUsageSeries series,
-        ActivityMonth month,
-        Color accent)
+    private UIElement BuildMonthSummary(PlanUsageSeries series, ActivityMonth month)
     {
         var current = CurrentLimit(series);
         return this.BuildSummary(
-            descriptor,
-            accent,
             current.Label,
             current.Value,
             current.Detail,
@@ -694,37 +1066,29 @@ public sealed class StatisticsWindow : Window
     }
 
     private UIElement BuildWeekSummary(
-        ProviderDescriptor descriptor,
         PlanUsageSeries series,
         ActivityOverview activity,
-        ActivityWeek week,
-        Color accent)
+        ActivityWeek week)
     {
         var current = CurrentLimit(series);
         var previous = activity.WeekContaining(week.StartsOn.AddDays(-7));
         return this.BuildSummary(
-            descriptor,
-            accent,
             current.Label,
             current.Value,
             current.Detail,
             (CalendarGlyph, "Active days", week.ActiveDays.ToString(UiCulture), "of 7 days"),
-            ("\uE7BA", "Previous week", previous.CoveredDays > 0 ? Difference(series, week.Total, previous.Total) : "No comparison", "allowance consumed"),
+            ("\uE7BA", "Previous week", WeekComparison(series, week, previous, activity.EndsOn), "allowance consumed"),
             ("\uE9D9", "Busiest day", week.BusiestDay is { } day ? day.Date.ToString("ddd", UiCulture) : "—", week.BusiestDay is { } busiest ? FormatActivity(series, busiest.Value) : "no activity yet"));
     }
 
     private UIElement BuildDaySummary(
-        ProviderDescriptor descriptor,
         PlanUsageSeries series,
         ActivityOverview activity,
-        ActivityDay selected,
-        Color accent)
+        ActivityDay selected)
     {
         var current = CurrentLimit(series);
         var peak = selected.Hours.OrderByDescending(hour => hour.Value).FirstOrDefault();
         return this.BuildSummary(
-            descriptor,
-            accent,
             current.Label,
             current.Value,
             current.Detail,
@@ -734,23 +1098,21 @@ public sealed class StatisticsWindow : Window
     }
 
     private UIElement BuildSummary(
-        ProviderDescriptor descriptor,
-        Color accent,
         string primaryLabel,
         string primaryValue,
         string primaryDetail,
         params (string Icon, string Label, string Value, string Detail)[] facts)
     {
-        _ = descriptor;
-        _ = accent;
         var shell = new Border
         {
-            Margin = new Thickness(0, 2, 0, 26),
+            Margin = new Thickness(0, 2, 0, 22),
             Padding = new Thickness(0, 15, 0, 15),
             BorderBrush = this.Brush("StatisticsCardBorder"),
             BorderThickness = new Thickness(0, 1, 0, 1),
         };
-        var grid = new Grid { MinHeight = 58 };
+        // Tall enough for a fact value that wraps to two lines, so long lane names never change
+        // the ledger's height between providers.
+        var grid = new Grid { MinHeight = 72 };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.55, GridUnitType.Star), MinWidth = 230 });
         foreach (var _ in facts)
         {
@@ -806,6 +1168,7 @@ public sealed class StatisticsWindow : Window
                 FontSize = 14,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = this.Brush("StatisticsForeground"),
+                TextWrapping = TextWrapping.Wrap,
             };
             Typography.SetNumeralAlignment(factValue, FontNumeralAlignment.Tabular);
             panel.Children.Add(factValue);
@@ -833,14 +1196,16 @@ public sealed class StatisticsWindow : Window
         Color accent)
     {
         var stack = new StackPanel();
+        var hoverAction = this.HoverActionCue(
+            $"{CalendarScaleCaption(series)} · {TimeBasis(series)}",
+            "View month details",
+            accent);
         stack.Children.Add(this.SectionHeader(
             CalendarGlyph,
-            $"Observed {LimitName(series).ToLowerInvariant()} activity",
-            "Fixed weekly scale · Local time",
-            accent));
-        var detail = this.BuildInspectionLine(
-            $"{selected.Date.ToString("dddd, MMMM d", UiCulture)} · {FormatActivity(series, selected.Value)} · {selected.ActiveHours} active hours · {selected.ObservationCount} observations");
-        stack.Children.Add(detail);
+            $"Observed {LimitNameInSentence(series)} activity",
+            detail: null,
+            accent: accent,
+            trailing: hoverAction.Element));
         var calendar = new ActivityCalendarControl(
             activity.Days,
             selected.Date,
@@ -848,12 +1213,12 @@ public sealed class StatisticsWindow : Window
             activity.EndsOn,
             accent,
             this.isDark,
-            value => FormatActivity(series, value))
+            value => FormatActivityCompact(series, value))
         {
-            Margin = new Thickness(0, 8, 0, 6),
+            Margin = new Thickness(0, 10, 0, 6),
         };
         calendar.DateSelected += this.SelectMonth;
-        calendar.DateInspected += day => detail.Text = CalendarInspection(series, activity, day);
+        calendar.MonthHoverChanged += hoverAction.SetActive;
         stack.Children.Add(calendar);
 
         var legend = new Grid { Margin = new Thickness(30, 2, 0, 4) };
@@ -861,9 +1226,7 @@ public sealed class StatisticsWindow : Window
         legend.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         legend.Children.Add(new TextBlock
         {
-            Text = series.WindowMinutes == 300
-                ? "Fixed scale · 0–8 full sessions (weekly-equivalent reference)"
-                : "Fixed scale · 0–100% of the weekly limit",
+            Text = CalendarScaleLegend(series),
             FontSize = 11.5,
             Foreground = this.Brush("StatisticsMutedForeground"),
         });
@@ -877,13 +1240,11 @@ public sealed class StatisticsWindow : Window
                 Height = 12,
                 CornerRadius = new CornerRadius(2),
                 Margin = new Thickness(4, 1, 0, 0),
-                Background = new SolidColorBrush(this.IntensityColor(level / 4d)),
+                Background = new SolidColorBrush(ActivityCalendarControl.IntensityColor(level / 4d, accent)),
             });
         }
 
-        scale.Children.Add(this.LegendText(
-            series.WindowMinutes == 300 ? "8 sessions" : "100%",
-            new Thickness(6, 0, 0, 0)));
+        scale.Children.Add(this.LegendText(CalendarScaleMaximum(series), new Thickness(6, 0, 0, 0)));
         Grid.SetColumn(scale, 1);
         legend.Children.Add(scale);
         stack.Children.Add(legend);
@@ -892,6 +1253,7 @@ public sealed class StatisticsWindow : Window
 
     private UIElement BuildMonthSection(
         PlanUsageSeries series,
+        ActivityOverview activity,
         ActivityMonth month,
         DateOnly selectedDate,
         Color accent)
@@ -901,7 +1263,7 @@ public sealed class StatisticsWindow : Window
         var bars = month.Weeks.Select(week => new ActivityBar(
             week.StartsOn.ToString("MMM d", UiCulture),
             week.Total,
-            $"Week of {week.StartsOn.ToString("MMMM d", UiCulture)}: {FormatActivity(series, week.Total)} · {week.ActiveDays} active days",
+            $"Week of {week.StartsOn.ToString("MMMM d", UiCulture)}: {FormatActivity(series, week.Total)} · {StatisticsAccessibility.Count(week.ActiveDays, "active day")}",
             week.Days.Count > 0)).ToArray();
         var chart = new ActivityBarChart(
             bars,
@@ -909,21 +1271,13 @@ public sealed class StatisticsWindow : Window
             this.isDark,
             interactive: true,
             valueFormatter: value => FormatActivityCompact(series, value),
-            actionLabel: "Open week")
+            actionLabel: "View week details")
         {
             Margin = new Thickness(0, 8, 0, 12),
         };
         chart.BarSelected += index => this.SelectWeek(month.Weeks[index].StartsOn);
 
-        var inspector = new Border
-        {
-            MinWidth = 280,
-            Margin = new Thickness(28, 38, 0, 20),
-            Padding = new Thickness(26, 2, 0, 0),
-            BorderBrush = this.Brush("StatisticsCardBorder"),
-            BorderThickness = new Thickness(1, 0, 0, 0),
-            VerticalAlignment = VerticalAlignment.Stretch,
-        };
+        var inspector = this.CreateInspectorShell();
         var inspectorContent = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         var weekLabel = new TextBlock
         {
@@ -931,15 +1285,7 @@ public sealed class StatisticsWindow : Window
             FontWeight = FontWeights.SemiBold,
             Foreground = this.Brush("StatisticsMutedForeground"),
         };
-        var weekValue = new TextBlock
-        {
-            Margin = new Thickness(0, 4, 0, 0),
-            FontFamily = DisplayFont,
-            FontSize = 25,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = this.Brush("StatisticsForeground"),
-        };
-        Typography.SetNumeralAlignment(weekValue, FontNumeralAlignment.Tabular);
+        var weekValue = this.CreateInspectorHeadline();
         var weekDetail = new TextBlock
         {
             Margin = new Thickness(0, 3, 0, 12),
@@ -968,7 +1314,9 @@ public sealed class StatisticsWindow : Window
             }
 
             var week = month.Weeks[index];
-            var previous = index > 0 ? month.Weeks[index - 1] : null;
+            // The full previous calendar week, never the month-clipped bar before this one: a
+            // month's opening week may hold a single day and would inflate the delta.
+            var previous = activity.WeekContaining(week.StartsOn.AddDays(-7));
             weekLabel.Text = FormatWeekRange(week.StartsOn).ToUpperInvariant();
             weekValue.Text = FormatActivity(series, week.Total);
             weekDetail.Text = $"Week of {week.StartsOn.ToString("MMMM d", UiCulture)}";
@@ -979,9 +1327,7 @@ public sealed class StatisticsWindow : Window
             busiestValue.Text = week.BusiestDay is { } busiest
                 ? $"{busiest.Date.ToString("ddd", UiCulture)} · {FormatActivity(series, busiest.Value)}"
                 : "No activity";
-            comparisonValue.Text = previous is { CoveredDays: > 0 }
-                ? Difference(series, week.Total, previous.Total)
-                : "No comparison";
+            comparisonValue.Text = WeekComparison(series, week, previous, activity.EndsOn);
             AutomationProperties.SetName(
                 inspector,
                 $"{FormatWeekRange(week.StartsOn)}. {weekValue.Text}. {activeDaysValue.Text} active days. " +
@@ -997,11 +1343,16 @@ public sealed class StatisticsWindow : Window
             }
         }
 
-        var initialIndex = month.Weeks
+        var selectedIndex = month.Weeks
             .Select((week, index) => (week, index))
             .FirstOrDefault(item => selectedDate >= item.week.StartsOn && selectedDate <= item.week.StartsOn.AddDays(6))
             .index;
-        InspectWeek(initialIndex, animate: false);
+        var busiestIndex = month.BusiestWeek is { } busiestWeek
+            ? month.Weeks.ToList().IndexOf(busiestWeek)
+            : (int?)null;
+        InspectWeek(
+            InitialInspectionIndex(selectedIndex, month.Weeks.Select(week => week.ActiveDays > 0).ToArray(), busiestIndex),
+            animate: false);
         chart.BarInspected += index => InspectWeek(index, animate: true);
 
         var body = new Grid();
@@ -1025,20 +1376,109 @@ public sealed class StatisticsWindow : Window
         var bars = week.Days.Select(day => new ActivityBar(
             day.Date.ToString("ddd d", UiCulture),
             day.Value,
-            $"{day.Date.ToString("dddd, MMM d", UiCulture)}: {FormatActivity(series, day.Value)} · {day.ActiveHours} active hours",
-            day.Date <= activity.EndsOn)).ToArray();
+            $"{day.Date.ToString("dddd, MMM d", UiCulture)}: {FormatActivity(series, day.Value)} · {StatisticsAccessibility.Count(day.ActiveHours, "active hour")}",
+            day.Date >= activity.StartsOn && day.Date <= activity.EndsOn)).ToArray();
         var chart = new ActivityBarChart(
             bars,
             accent,
             this.isDark,
             interactive: true,
             valueFormatter: value => FormatActivityCompact(series, value),
-            actionLabel: "Open day")
+            actionLabel: "View day details")
         {
             Margin = new Thickness(0, 8, 0, 12),
         };
         chart.BarSelected += index => this.SelectDate(week.StartsOn.AddDays(index));
-        stack.Children.Add(chart);
+
+        var inspector = this.CreateInspectorShell();
+        var inspectorContent = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        var dayLabel = new TextBlock
+        {
+            FontSize = 11.5,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = this.Brush("StatisticsMutedForeground"),
+        };
+        var dayValue = this.CreateInspectorHeadline();
+        var dayDetail = new TextBlock
+        {
+            Margin = new Thickness(0, 3, 0, 12),
+            FontSize = 11.5,
+            Foreground = this.Brush("StatisticsMutedForeground"),
+        };
+        inspectorContent.Children.Add(dayLabel);
+        inspectorContent.Children.Add(dayValue);
+        inspectorContent.Children.Add(dayDetail);
+
+        var activeHoursValue = new TextBlock();
+        var busiestHourValue = new TextBlock();
+        var observationsValue = new TextBlock();
+        var comparisonValue = new TextBlock();
+        AddInspectorFact(inspectorContent, ClockGlyph, "Active hours", activeHoursValue);
+        AddInspectorFact(inspectorContent, "\uE9D9", "Busiest hour", busiestHourValue);
+        AddInspectorFact(inspectorContent, CalendarGlyph, "Observations", observationsValue);
+        AddInspectorFact(inspectorContent, "\uE7BA", "Previous day", comparisonValue);
+        inspector.Child = inspectorContent;
+
+        void InspectDay(int index, bool animate)
+        {
+            if (index < 0 || index >= week.Days.Count)
+            {
+                return;
+            }
+
+            var day = week.Days[index];
+            var busiestHour = day.Hours
+                .Where(hour => hour.Value > 0.001)
+                .OrderByDescending(hour => hour.Value)
+                .FirstOrDefault();
+            dayLabel.Text = day.Date.ToString("dddd, MMM d", UiCulture).ToUpperInvariant();
+            dayValue.Text = day.HasCoverage ? FormatActivity(series, day.Value) : "No observation";
+            dayDetail.Text = day.HasCoverage ? "Observed locally" : "No local reading for this day";
+            activeHoursValue.Text = $"{day.ActiveHours} of 24";
+            busiestHourValue.Text = busiestHour is not null
+                ? $"{busiestHour.Hour:00}:00 · {FormatActivity(series, busiestHour.Value)}"
+                : "No activity";
+            observationsValue.Text = StatisticsAccessibility.Count(day.ObservationCount, "local reading");
+            comparisonValue.Text = PreviousComparison(series, day, activity.Day(day.Date.AddDays(-1)));
+            AutomationProperties.SetName(
+                inspector,
+                $"{day.Date.ToString("dddd, MMMM d", UiCulture)}. {dayValue.Text}. " +
+                $"{activeHoursValue.Text} active hours. Busiest hour {busiestHourValue.Text}. " +
+                $"{observationsValue.Text}. Previous day {comparisonValue.Text}.");
+            if (animate && SystemParameters.ClientAreaAnimation)
+            {
+                inspector.BeginAnimation(
+                    OpacityProperty,
+                    new DoubleAnimation(0.72, 1, TimeSpan.FromMilliseconds(135))
+                    {
+                        EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+                    });
+            }
+        }
+
+        if (week.Days.Count > 0)
+        {
+            var selectedIndex = Math.Clamp(
+                (this.selectedDate ?? week.StartsOn).DayNumber - week.StartsOn.DayNumber,
+                0,
+                week.Days.Count - 1);
+            var busiestIndex = week.BusiestDay is { } busiestDay
+                ? busiestDay.Date.DayNumber - week.StartsOn.DayNumber
+                : (int?)null;
+            InspectDay(
+                InitialInspectionIndex(selectedIndex, week.Days.Select(day => day.Value > 0.001).ToArray(), busiestIndex),
+                animate: false);
+        }
+
+        chart.BarInspected += index => InspectDay(index, animate: true);
+
+        var body = new Grid();
+        body.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        body.Children.Add(chart);
+        Grid.SetColumn(inspector, 1);
+        body.Children.Add(inspector);
+        stack.Children.Add(body);
         return stack;
     }
 
@@ -1049,7 +1489,7 @@ public sealed class StatisticsWindow : Window
         var bars = selected.Hours.Select(hour => new ActivityBar(
             hour.Hour.ToString("00", UiCulture),
             hour.Value,
-            $"{hour.Hour:00}:00–{hour.Hour:00}:59: {FormatActivity(series, hour.Value)} · {hour.ObservationCount} observations")).ToArray();
+            $"{hour.Hour:00}:00–{hour.Hour:00}:59: {FormatActivity(series, hour.Value)} · {StatisticsAccessibility.Count(hour.ObservationCount, "observation")}")).ToArray();
         stack.Children.Add(new ActivityBarChart(
             bars,
             accent,
@@ -1091,6 +1531,123 @@ public sealed class StatisticsWindow : Window
         Grid.SetColumn(right, 2);
         header.Children.Add(right);
         return header;
+    }
+
+    private (UIElement Element, Action<bool> SetActive) HoverActionCue(
+        string restingText,
+        string actionText,
+        Color accent)
+    {
+        var host = new Grid { HorizontalAlignment = HorizontalAlignment.Right };
+        var resting = new TextBlock
+        {
+            Text = restingText,
+            FontSize = 11.5,
+            Foreground = this.Brush("StatisticsMutedForeground"),
+            VerticalAlignment = VerticalAlignment.Center,
+            TextAlignment = TextAlignment.Right,
+        };
+        var actionTranslate = new TranslateTransform(4, 0);
+        var action = new TextBlock
+        {
+            Text = $"{actionText}  →",
+            FontSize = 11.5,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(accent),
+            VerticalAlignment = VerticalAlignment.Center,
+            TextAlignment = TextAlignment.Right,
+            Opacity = 0,
+            RenderTransform = actionTranslate,
+            IsHitTestVisible = false,
+        };
+        host.Children.Add(resting);
+        host.Children.Add(action);
+        AutomationProperties.SetName(host, restingText);
+        var active = false;
+
+        void SetActive(bool value)
+        {
+            if (active == value)
+            {
+                return;
+            }
+
+            active = value;
+            AutomationProperties.SetName(host, value ? actionText : restingText);
+            var restingOpacity = value ? 0d : 1d;
+            var actionOpacity = value ? 1d : 0d;
+            var actionX = value ? 0d : 4d;
+            if (!SystemParameters.ClientAreaAnimation)
+            {
+                resting.Opacity = restingOpacity;
+                action.Opacity = actionOpacity;
+                actionTranslate.X = actionX;
+                return;
+            }
+
+            var easing = new QuadraticEase { EasingMode = EasingMode.EaseOut };
+            var duration = TimeSpan.FromMilliseconds(135);
+            resting.BeginAnimation(
+                OpacityProperty,
+                new DoubleAnimation(resting.Opacity, restingOpacity, duration) { EasingFunction = easing });
+            action.BeginAnimation(
+                OpacityProperty,
+                new DoubleAnimation(action.Opacity, actionOpacity, duration) { EasingFunction = easing });
+            actionTranslate.BeginAnimation(
+                TranslateTransform.XProperty,
+                new DoubleAnimation(actionTranslate.X, actionX, duration) { EasingFunction = easing });
+        }
+
+        return (host, SetActive);
+    }
+
+    // Sized so the seven-lane daily chart and the inspector share the 900px minimum window without
+    // pushing the inspector past the ledger edge.
+    private Border CreateInspectorShell() => new()
+    {
+        MinWidth = 264,
+        Margin = new Thickness(24, 38, 0, 20),
+        Padding = new Thickness(26, 2, 0, 0),
+        BorderBrush = this.Brush("StatisticsCardBorder"),
+        BorderThickness = new Thickness(1, 0, 0, 0),
+        VerticalAlignment = VerticalAlignment.Stretch,
+    };
+
+    private TextBlock CreateInspectorHeadline()
+    {
+        var headline = new TextBlock
+        {
+            Margin = new Thickness(0, 4, 0, 0),
+            FontFamily = DisplayFont,
+            FontSize = 25,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = this.Brush("StatisticsForeground"),
+            // Long lane names ("3.3% of Included plan limit") wrap instead of running under the
+            // scrollbar at narrow widths.
+            TextWrapping = TextWrapping.Wrap,
+        };
+        Typography.SetNumeralAlignment(headline, FontNumeralAlignment.Tabular);
+        return headline;
+    }
+
+    /// <summary>
+    /// The bar the inspector opens on before any hover: the selected period when it saw activity,
+    /// otherwise the busiest one, so a fresh drill-down never leads with an idle Sunday or an
+    /// unobserved day.
+    /// </summary>
+    internal static int InitialInspectionIndex(int selectedIndex, IReadOnlyList<bool> hasActivity, int? busiestIndex)
+    {
+        if (selectedIndex >= 0 && selectedIndex < hasActivity.Count && hasActivity[selectedIndex])
+        {
+            return selectedIndex;
+        }
+
+        if (busiestIndex is { } busiest && busiest >= 0 && busiest < hasActivity.Count)
+        {
+            return busiest;
+        }
+
+        return Math.Clamp(selectedIndex, 0, Math.Max(0, hasActivity.Count - 1));
     }
 
     private void AddInspectorFact(Panel parent, string icon, string label, TextBlock value)
@@ -1224,7 +1781,13 @@ public sealed class StatisticsWindow : Window
         presenter.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
         presenter.SetBinding(ContentPresenter.MarginProperty, TemplateBinding("Padding"));
         border.AppendChild(presenter);
-        return new ControlTemplate(typeof(ButtonBase)) { VisualTree = border };
+        var template = new ControlTemplate(typeof(ButtonBase)) { VisualTree = border };
+        // A disabled Previous/Next must look inert; without this trigger it renders identically
+        // to an enabled button.
+        var disabled = new Trigger { Property = IsEnabledProperty, Value = false };
+        disabled.Setters.Add(new Setter(OpacityProperty, 0.45, "border"));
+        template.Triggers.Add(disabled);
+        return template;
     }
 
     private static ControlTemplate CreateProviderButtonTemplate()
@@ -1246,23 +1809,6 @@ public sealed class StatisticsWindow : Window
         FontSize = 11,
         Foreground = this.Brush("StatisticsMutedForeground"),
     };
-
-    private TextBlock BuildInspectionLine(string text)
-    {
-        var line = new TextBlock
-        {
-            Text = text,
-            MinHeight = 22,
-            Margin = new Thickness(30, 5, 0, 0),
-            FontSize = 12,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = this.Brush("StatisticsMutedForeground"),
-            TextTrimming = TextTrimming.CharacterEllipsis,
-        };
-        Typography.SetNumeralAlignment(line, FontNumeralAlignment.Tabular);
-        AutomationProperties.SetLiveSetting(line, AutomationLiveSetting.Polite);
-        return line;
-    }
 
     private StackPanel IconLabel(string glyph, string text, bool strong = false, double iconSize = 12)
     {
@@ -1330,11 +1876,20 @@ public sealed class StatisticsWindow : Window
     {
         this.TransitionDashboard(() =>
         {
-            this.selectedDate = weekStart;
-            this.selectedMonth = new DateOnly(weekStart.Year, weekStart.Month, 1);
+            var anchor = WeekAnchorWithinYear(weekStart, this.selectedYear);
+            this.selectedDate = anchor;
+            this.selectedMonth = new DateOnly(anchor.Year, anchor.Month, 1);
             this.viewMode = ActivityViewMode.Week;
         });
     }
+
+    /// <summary>
+    /// The first day of a week that belongs to the selected calendar year. The year's opening week
+    /// can start in December of the previous year; anchoring on that date would fall outside the
+    /// year's range and snap the view back to the latest recorded week.
+    /// </summary>
+    internal static DateOnly WeekAnchorWithinYear(DateOnly weekStart, int year) =>
+        weekStart.Year < year ? new DateOnly(year, 1, 1) : weekStart;
 
     private void NavigateDay(DateOnly date)
     {
@@ -1365,8 +1920,10 @@ public sealed class StatisticsWindow : Window
             return;
         }
 
+        var direction = Math.Sign(year - this.selectedYear);
         this.TransitionDashboard(() =>
         {
+            this.yearTransitionDirection = direction;
             this.selectedYear = year;
             this.selectedMonth = null;
             this.selectedDate = null;
@@ -1374,16 +1931,26 @@ public sealed class StatisticsWindow : Window
         });
     }
 
-    private string ParentViewName() => this.viewMode switch
-    {
-        ActivityViewMode.Day => "week",
-        ActivityViewMode.Week => "month",
-        _ => "overview",
-    };
-
     private void OnStatisticsChanged()
     {
-        _ = this.Dispatcher.BeginInvoke(this.Refresh);
+        // Every provider poll records all snapshots, so one refresh cycle raises a burst of change
+        // notifications; a single queued rebuild covers them all.
+        if (Interlocked.Exchange(ref this.refreshQueued, 1) == 1)
+        {
+            return;
+        }
+
+        _ = this.Dispatcher.BeginInvoke(() =>
+        {
+            Interlocked.Exchange(ref this.refreshQueued, 0);
+            if (this.IsDashboardInteractive())
+            {
+                this.refreshDeferred = true;
+                return;
+            }
+
+            this.Refresh();
+        });
     }
 
     private SolidColorBrush Brush(string key) => (SolidColorBrush)this.Resources[key];
@@ -1401,6 +1968,11 @@ public sealed class StatisticsWindow : Window
 
     private static string FormatActivity(PlanUsageSeries series, double value)
     {
+        if (series.MetricKind == PlanUsageMetricKind.ActivityValue)
+        {
+            return $"{FormatMetricValue(series, value)} spent";
+        }
+
         if (series.WindowMinutes == 300)
         {
             var sessions = value / 100;
@@ -1409,15 +1981,23 @@ public sealed class StatisticsWindow : Window
 
         return series.Id == "weekly"
             ? $"{value:0.#}% of weekly limit"
-            : $"{value:0.#}% of {LimitName(series).ToLowerInvariant()}";
+            : $"{value:0.#}% of {LimitNameInSentence(series)}";
     }
 
-    private static string FormatActivityCompact(PlanUsageSeries series, double value) => series.WindowMinutes == 300
-        ? $"{value / 100:0.#} sessions"
-        : $"{value:0.#}% used";
+    private static string FormatActivityCompact(PlanUsageSeries series, double value) =>
+        series.MetricKind == PlanUsageMetricKind.ActivityValue
+            ? FormatMetricValue(series, value)
+            : series.WindowMinutes == 300
+                ? $"{value / 100:0.#} sessions"
+                : $"{value:0.#}% used";
 
     private static string LimitName(PlanUsageSeries series)
     {
+        if (series.MetricKind == PlanUsageMetricKind.ActivityValue)
+        {
+            return series.Title;
+        }
+
         if (series.Id == "weekly" || series.WindowMinutes == 10080 && series.Title.Equals("Weekly", StringComparison.OrdinalIgnoreCase))
         {
             return "Weekly limit";
@@ -1434,6 +2014,62 @@ public sealed class StatisticsWindow : Window
             : $"{series.Title} limit";
     }
 
+    /// <summary>
+    /// The limit name for use mid-sentence: generic leading words lose their capital while brand
+    /// names keep theirs ("Weekly limit" → "weekly limit", while "Fable 5" stays intact).
+    /// </summary>
+    internal static string LimitNameInSentence(PlanUsageSeries series)
+    {
+        var name = LimitName(series);
+        return name.StartsWith("Weekly", StringComparison.Ordinal) || name.StartsWith("Session", StringComparison.Ordinal)
+            ? char.ToLowerInvariant(name[0]) + name[1..]
+            : name;
+    }
+
+    /// <summary>
+    /// The calendar legend names the selected series' scale explicitly so a secondary weekly
+    /// limit (e.g. Fable 5) can never be misread as the primary weekly limit.
+    /// </summary>
+    internal static string CalendarScaleLegend(PlanUsageSeries series) =>
+        series.MetricKind == PlanUsageMetricKind.ActivityValue
+            ? $"Fixed scale · {FormatMetricValue(series, 0)}–{FormatMetricValue(series, series.ScaleMaximum ?? 100)} per day"
+            : series.WindowMinutes == 300
+                ? "Fixed scale · 0–8 full sessions (weekly-equivalent reference)"
+                : $"Fixed scale · 0–100% of {LimitNameInSentence(series)}";
+
+    /// <summary>
+    /// The calendar header's short scale note. The legend spells out the exact range; this names
+    /// the allowance period the fixed scale is anchored to, so a monthly, daily, or spend lane is
+    /// never captioned as a weekly one. Sessions keep "weekly" because their scale is the
+    /// weekly-equivalent session reference.
+    /// </summary>
+    internal static string CalendarScaleCaption(PlanUsageSeries series) =>
+        series.MetricKind == PlanUsageMetricKind.ActivityValue
+            ? "Fixed daily scale"
+            : series.WindowMinutes switch
+            {
+                300 or 10080 => "Fixed weekly scale",
+                43200 => "Fixed monthly scale",
+                1440 => "Fixed daily scale",
+                _ => "Fixed scale",
+            };
+
+    /// <summary>
+    /// The calendar's activity ink. Codex stays neutral in both themes. Brands drawn in near-black
+    /// (Copilot, Cursor) keep their grey on the light surface, but blended toward white for dark
+    /// mode they land on a mid grey that low daily intensities cannot lift off the dark background,
+    /// so dark mode gives them the same light neutral ink.
+    /// </summary>
+    internal static Color CalendarActivityInk(ProviderId provider, Color accent, bool isDark) =>
+        provider == ProviderId.Codex || (isDark && IsNearBlack(accent))
+            ? isDark
+                ? Color.FromRgb(238, 240, 244)
+                : Color.FromRgb(18, 20, 23)
+            : accent;
+
+    private static bool IsNearBlack(Color color) =>
+        ((0.2126 * color.R) + (0.7152 * color.G) + (0.0722 * color.B)) / 255 < 0.3;
+
     private static (string Label, string Value, string Detail) CurrentLimit(PlanUsageSeries series)
     {
         var latest = series.Samples
@@ -1446,8 +2082,23 @@ public sealed class StatisticsWindow : Window
             return (label, "—", "No local reading yet");
         }
 
+        if (series.MetricKind == PlanUsageMetricKind.ActivityValue)
+        {
+            return (
+                $"LATEST {series.Title.ToUpperInvariant()}",
+                FormatMetricValue(series, latest.UsedPercent),
+                $"Provider bucket for {PlanStatisticsProjection.BucketDate(series, latest).ToString("MMM d", UiCulture)}");
+        }
+
         return (label, $"{latest.UsedPercent:0.#}% used", ResetDescription(latest.ResetsAt));
     }
+
+    /// <summary>
+    /// Quota meters are read on this machine, so their activity lives in local time; provider
+    /// activity buckets (OpenAI daily costs) are UTC days and are shown as such.
+    /// </summary>
+    internal static string TimeBasis(PlanUsageSeries series) =>
+        series.MetricKind == PlanUsageMetricKind.ActivityValue ? "UTC days" : "Local time";
 
     private static string ResetDescription(DateTimeOffset? resetsAt)
     {
@@ -1481,12 +2132,23 @@ public sealed class StatisticsWindow : Window
             : $"{weekStart.ToString("MMM d", UiCulture)}–{end.ToString("MMM d", UiCulture)}";
     }
 
-    private static string CalendarInspection(PlanUsageSeries series, ActivityOverview activity, ActivityDay day)
+    /// <summary>
+    /// Week-over-week text that only compares like with like. A week clipped by the month or still
+    /// in progress is matched against the same weekdays of the previous week, so a one-day opening
+    /// week or a Tuesday-morning view never reads as a huge drop or jump against a full week.
+    /// </summary>
+    internal static string WeekComparison(
+        PlanUsageSeries series,
+        ActivityWeek week,
+        ActivityWeek previous,
+        DateOnly lastElapsedDate)
     {
-        var weekTotal = activity.WeekContaining(day.Date).Total;
-        return day.HasCoverage
-            ? $"{day.Date.ToString("dddd, MMMM d", UiCulture)} · {FormatActivity(series, day.Value)} · {day.ActiveHours} active hours · {day.ObservationCount} observations · Week {FormatActivity(series, weekTotal)}"
-            : $"{day.Date.ToString("dddd, MMMM d", UiCulture)} · No local observation · Week {FormatActivity(series, weekTotal)}";
+        var elapsed = week.Days.Where(day => day.Date <= lastElapsedDate).ToArray();
+        var weekdays = elapsed.Select(day => day.Date.DayOfWeek).ToHashSet();
+        var comparable = previous.Days.Where(day => weekdays.Contains(day.Date.DayOfWeek)).ToArray();
+        return elapsed.Length == 0 || !comparable.Any(day => day.HasCoverage)
+            ? "No comparison"
+            : Difference(series, elapsed.Sum(day => day.Value), comparable.Sum(day => day.Value));
     }
 
     private static string Difference(PlanUsageSeries series, double current, double previous)
@@ -1497,9 +2159,11 @@ public sealed class StatisticsWindow : Window
             return "About the same";
         }
 
-        var magnitude = series.WindowMinutes == 300
-            ? $"{Math.Abs(difference) / 100:0.#} sessions"
-            : $"{Math.Abs(difference):0.#}%";
+        var magnitude = series.MetricKind == PlanUsageMetricKind.ActivityValue
+            ? FormatMetricValue(series, Math.Abs(difference))
+            : series.WindowMinutes == 300
+                ? $"{Math.Abs(difference) / 100:0.#} sessions"
+                : $"{Math.Abs(difference):0.#}%";
         return difference > 0 ? $"+{magnitude}" : $"-{magnitude}";
     }
 
@@ -1516,17 +2180,12 @@ public sealed class StatisticsWindow : Window
             return "About the same";
         }
 
-        var magnitude = series.WindowMinutes == 300
-            ? $"{Math.Abs(difference) / 100:0.#} sessions"
-            : $"{Math.Abs(difference):0.#}%";
+        var magnitude = series.MetricKind == PlanUsageMetricKind.ActivityValue
+            ? FormatMetricValue(series, Math.Abs(difference))
+            : series.WindowMinutes == 300
+                ? $"{Math.Abs(difference) / 100:0.#} sessions"
+                : $"{Math.Abs(difference):0.#}%";
         return difference > 0 ? $"+{magnitude}" : $"-{magnitude}";
-    }
-
-    private Color IntensityColor(double intensity)
-    {
-        var alpha = (byte)Math.Round(255 * Math.Sqrt(Math.Clamp(intensity, 0, 1)));
-        var ink = this.isDark ? Color.FromRgb(238, 240, 244) : Color.FromRgb(18, 20, 23);
-        return Color.FromArgb(alpha, ink.R, ink.G, ink.B);
     }
 
     private static Color Blend(Color left, Color right, double amount) => Color.FromRgb(
@@ -1537,17 +2196,27 @@ public sealed class StatisticsWindow : Window
     private sealed record ProviderButtonVisual(
         ProviderId Provider,
         FrameworkElement Logo,
+        ScaleTransform LogoScale,
         Border NameHost,
         double NameWidth,
         TranslateTransform NameTranslate,
+        TranslateTransform RailTranslate,
         DropShadowEffect Shadow);
 
-    private static int ProviderOrder(ProviderId provider) => provider switch
-    {
-        ProviderId.Codex => 0,
-        ProviderId.Claude => 1,
-        _ => 2,
-    };
+    private static string SeriesGlyph(PlanUsageSeries? series) =>
+        series?.MetricKind == PlanUsageMetricKind.ActivityValue || series?.WindowMinutes == 10080
+            ? CalendarGlyph
+            : ClockGlyph;
+
+    private static string CalendarScaleMaximum(PlanUsageSeries series) =>
+        series.MetricKind == PlanUsageMetricKind.ActivityValue
+            ? FormatMetricValue(series, series.ScaleMaximum ?? 100)
+            : series.WindowMinutes == 300 ? "8 sessions" : "100%";
+
+    private static string FormatMetricValue(PlanUsageSeries series, double value) =>
+        string.Equals(series.Unit, "USD", StringComparison.OrdinalIgnoreCase)
+            ? $"${value:0.00}"
+            : $"{value:0.##} {series.Unit ?? "units"}";
 
     private static bool SystemAppsUseLightTheme()
     {

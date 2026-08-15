@@ -6,8 +6,8 @@ using CodexWinBar.Core.Providers;
 namespace CodexWinBar.Core.Statistics;
 
 /// <summary>
-/// Persists a bounded, hourly-coalesced history of provider rate-limit observations. The store records
-/// percentages and reset boundaries only; it never reads or writes prompts, completions, or credentials.
+/// Persists a bounded, hourly-coalesced history of provider quota observations and provider-supplied
+/// activity buckets. It never reads or writes prompts, completions, or credentials.
 /// </summary>
 public sealed class PlanStatisticsStore : IPlanStatisticsStore
 {
@@ -67,7 +67,7 @@ public sealed class PlanStatisticsStore : IPlanStatisticsStore
             {
                 if (seriesById.TryGetValue(incoming.Series.Id, out var prior))
                 {
-                    var updatedSamples = AddSample(prior.Samples, incoming.Sample);
+                    var updatedSamples = AddSample(prior.Samples, incoming.Sample, incoming.Series.MetricKind);
                     if (updatedSamples is null)
                     {
                         continue;
@@ -77,6 +77,9 @@ public sealed class PlanStatisticsStore : IPlanStatisticsStore
                     {
                         Title = incoming.Series.Title,
                         WindowMinutes = incoming.Series.WindowMinutes,
+                        MetricKind = incoming.Series.MetricKind,
+                        Unit = incoming.Series.Unit,
+                        ScaleMaximum = incoming.Series.ScaleMaximum,
                         Samples = updatedSamples,
                     };
                 }
@@ -124,10 +127,63 @@ public sealed class PlanStatisticsStore : IPlanStatisticsStore
 
     private static IEnumerable<IncomingSeries> EnumerateSeries(UsageSnapshot snapshot)
     {
+        foreach (var historical in snapshot.HistoricalUsage)
+        {
+            if (string.IsNullOrWhiteSpace(historical.SeriesId) ||
+                string.IsNullOrWhiteSpace(historical.SeriesTitle) ||
+                string.IsNullOrWhiteSpace(historical.Unit) ||
+                historical.Value < 0 ||
+                !double.IsFinite(historical.Value))
+            {
+                continue;
+            }
+
+            yield return new IncomingSeries(
+                new PlanUsageSeries
+                {
+                    Id = $"history:{historical.SeriesId}",
+                    Title = historical.SeriesTitle,
+                    WindowMinutes = 1440,
+                    MetricKind = PlanUsageMetricKind.ActivityValue,
+                    Unit = historical.Unit,
+                    ScaleMaximum = historical.Unit.Equals("USD", StringComparison.OrdinalIgnoreCase) ? 100 : null,
+                },
+                new PlanUsageSample
+                {
+                    CapturedAt = historical.CapturedAt.ToUniversalTime(),
+                    UsedPercent = historical.Value,
+                });
+        }
+
+        if (snapshot.Credits is
+            {
+                Kind: CreditsSnapshotKind.Credits,
+                Limit: > 0,
+            } credits &&
+            credits.Remaining >= 0 &&
+            double.IsFinite(credits.Remaining) &&
+            double.IsFinite(credits.Limit.Value))
+        {
+            yield return new IncomingSeries(
+                new PlanUsageSeries
+                {
+                    Id = "credits",
+                    Title = credits.Unit.Equals("credits", StringComparison.OrdinalIgnoreCase)
+                        ? "Credit balance"
+                        : $"{credits.Unit} balance",
+                    WindowMinutes = 0,
+                },
+                new PlanUsageSample
+                {
+                    CapturedAt = snapshot.UpdatedAt.ToUniversalTime(),
+                    UsedPercent = Math.Clamp((credits.Limit.Value - credits.Remaining) / credits.Limit.Value * 100, 0, 100),
+                });
+        }
+
         foreach (var item in CandidateWindows(snapshot))
         {
             var window = item.Window;
-            if (window.IsSyntheticPlaceholder || window.WindowMinutes is not > 0 || window.ResetsAt is null ||
+            if (window.IsSyntheticPlaceholder ||
                 double.IsNaN(window.UsedPercent) || double.IsInfinity(window.UsedPercent))
             {
                 continue;
@@ -144,34 +200,65 @@ public sealed class PlanStatisticsStore : IPlanStatisticsStore
                 {
                     Id = item.Id,
                     Title = item.Title,
-                    WindowMinutes = CanonicalWindowMinutes(window.WindowMinutes.Value),
+                    WindowMinutes = CanonicalWindowMinutes(window.WindowMinutes is > 0
+                        ? window.WindowMinutes.Value
+                        : item.DefaultWindowMinutes),
                 },
                 sample);
         }
     }
 
-    private static IEnumerable<(string Id, string Title, RateWindow Window)> CandidateWindows(UsageSnapshot snapshot)
+    private static IEnumerable<CandidateWindow> CandidateWindows(UsageSnapshot snapshot)
     {
         if (snapshot.Primary is { } primary)
         {
-            yield return ("session", "Session", primary);
+            yield return snapshot.Provider switch
+            {
+                ProviderId.Codex or ProviderId.Claude => new("session", "Session", primary, 300),
+                ProviderId.Copilot => new("premium-interactions", "Premium interactions", primary, 43200),
+                ProviderId.Gemini => new("pro", "Pro", primary, 1440),
+                ProviderId.OpenRouter => new("key-limit", "Key limit", primary, 0),
+                ProviderId.Zai => new("token-limit", "Token limit", primary, 0),
+                ProviderId.Cursor => new("included-plan", "Included plan", primary, 43200),
+                _ => new("primary", "Primary", primary, 0),
+            };
         }
 
         if (snapshot.Secondary is { } secondary)
         {
-            yield return ("weekly", "Weekly", secondary);
+            yield return snapshot.Provider switch
+            {
+                ProviderId.Codex or ProviderId.Claude => new("weekly", "Weekly", secondary, 10080),
+                ProviderId.Copilot => new("chat", "Chat", secondary, 43200),
+                ProviderId.Gemini => new("flash", "Flash", secondary, 1440),
+                ProviderId.Zai => new("time-limit", "Time limit", secondary, 0),
+                ProviderId.Cursor => new("auto-composer", "Auto + Composer", secondary, 43200),
+                _ => new("secondary", "Secondary", secondary, 0),
+            };
         }
 
         if (snapshot.Tertiary is { } tertiary)
         {
-            yield return ("tertiary", snapshot.Provider == ProviderId.Claude ? "Opus weekly" : "Model limit", tertiary);
+            yield return new CandidateWindow("tertiary", "Model limit", tertiary, DefaultWindowMinutes(snapshot.Provider));
         }
 
         foreach (var extra in snapshot.ExtraWindows.Where(item => item.UsageKnown))
         {
-            yield return ($"extra:{extra.Id}", extra.Title, extra.Window);
+            yield return new CandidateWindow(
+                $"extra:{extra.Id}",
+                extra.Title,
+                extra.Window,
+                DefaultWindowMinutes(snapshot.Provider));
         }
     }
+
+    private static int DefaultWindowMinutes(ProviderId provider) => provider switch
+    {
+        ProviderId.Codex or ProviderId.Claude => 10080,
+        ProviderId.Copilot or ProviderId.Cursor => 43200,
+        ProviderId.Gemini => 1440,
+        _ => 0,
+    };
 
     private static int CanonicalWindowMinutes(int value) => value switch
     {
@@ -182,7 +269,8 @@ public sealed class PlanStatisticsStore : IPlanStatisticsStore
 
     private static IReadOnlyList<PlanUsageSample>? AddSample(
         IReadOnlyList<PlanUsageSample> existing,
-        PlanUsageSample incoming)
+        PlanUsageSample incoming,
+        PlanUsageMetricKind metricKind)
     {
         var entries = existing.OrderBy(item => item.CapturedAt).ToList();
         var incomingHour = HourBucket(incoming.CapturedAt);
@@ -194,11 +282,15 @@ public sealed class PlanStatisticsStore : IPlanStatisticsStore
         var equivalent = sameHour.FirstOrDefault(item => EquivalentReset(item.sample.ResetsAt, incoming.ResetsAt));
         if (equivalent.sample is not null)
         {
-            var preferred = incoming.UsedPercent > equivalent.sample.UsedPercent ||
-                (Math.Abs(incoming.UsedPercent - equivalent.sample.UsedPercent) < 0.001 &&
-                    incoming.CapturedAt > equivalent.sample.CapturedAt)
-                ? incoming
-                : equivalent.sample;
+            var preferred = metricKind == PlanUsageMetricKind.ActivityValue
+                ? Math.Abs(incoming.UsedPercent - equivalent.sample.UsedPercent) >= 0.001
+                    ? incoming
+                    : equivalent.sample
+                : incoming.UsedPercent > equivalent.sample.UsedPercent ||
+                    (Math.Abs(incoming.UsedPercent - equivalent.sample.UsedPercent) < 0.001 &&
+                        incoming.CapturedAt > equivalent.sample.CapturedAt)
+                    ? incoming
+                    : equivalent.sample;
             if (preferred == equivalent.sample)
             {
                 return null;
@@ -233,6 +325,9 @@ public sealed class PlanStatisticsStore : IPlanStatisticsStore
     {
         "session" => 0,
         "weekly" => 1,
+        "premium-interactions" or "pro" or "key-limit" or "token-limit" or "included-plan" => 0,
+        "chat" or "flash" or "time-limit" or "auto-composer" => 1,
+        "history:api-spend" => 0,
         "tertiary" => 2,
         _ => 3,
     };
@@ -272,11 +367,13 @@ public sealed class PlanStatisticsStore : IPlanStatisticsStore
 
     private static IReadOnlyList<PlanUsageSeries> Sanitize(IReadOnlyList<PlanUsageSeries>? series) =>
         (series ?? [])
-            .Where(item => !string.IsNullOrWhiteSpace(item.Id) && item.WindowMinutes > 0)
+            .Where(item => !string.IsNullOrWhiteSpace(item.Id) && item.WindowMinutes >= 0)
             .Select(item => item with
             {
                 Samples = (item.Samples ?? [])
-                    .Where(sample => sample.UsedPercent is >= 0 and <= 100)
+                    .Where(sample => sample.UsedPercent >= 0 &&
+                        double.IsFinite(sample.UsedPercent) &&
+                        (item.MetricKind == PlanUsageMetricKind.ActivityValue || sample.UsedPercent <= 100))
                     .OrderBy(sample => sample.CapturedAt)
                     .TakeLast(MaxSamplesPerSeries)
                     .ToArray(),
@@ -360,4 +457,10 @@ public sealed class PlanStatisticsStore : IPlanStatisticsStore
     }
 
     private sealed record IncomingSeries(PlanUsageSeries Series, PlanUsageSample Sample);
+
+    private sealed record CandidateWindow(
+        string Id,
+        string Title,
+        RateWindow Window,
+        int DefaultWindowMinutes);
 }

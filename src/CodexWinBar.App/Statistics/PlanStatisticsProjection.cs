@@ -124,34 +124,51 @@ internal static class PlanStatisticsProjection
                 date => date,
                 date => new DayAccumulator(date));
 
-        foreach (var cycle in GroupByEquivalentReset(series.Samples))
+        if (series.MetricKind == PlanUsageMetricKind.ActivityValue)
         {
-            double? observedPeak = null;
-            foreach (var sample in cycle
+            foreach (var sample in series.Samples
                 .Where(item => item.CapturedAt <= now)
                 .OrderBy(item => item.CapturedAt))
             {
-                var local = sample.CapturedAt.LocalDateTime;
-                var date = DateOnly.FromDateTime(local.Date);
-                if (date < yearStart || date > selectableEnd || !buckets.TryGetValue(date, out var day))
+                var bucket = BucketTime(series, sample);
+                var date = DateOnly.FromDateTime(bucket.Date);
+                if (date >= yearStart && date <= selectableEnd && buckets.TryGetValue(date, out var day))
                 {
+                    day.Add(bucket.Hour, sample.UsedPercent);
+                }
+            }
+        }
+        else
+        {
+            foreach (var cycle in GroupByEquivalentReset(series.Samples))
+            {
+                double? observedPeak = null;
+                foreach (var sample in cycle
+                    .Where(item => item.CapturedAt <= now)
+                    .OrderBy(item => item.CapturedAt))
+                {
+                    var local = sample.CapturedAt.LocalDateTime;
+                    var date = DateOnly.FromDateTime(local.Date);
+                    if (date < yearStart || date > selectableEnd || !buckets.TryGetValue(date, out var day))
+                    {
+                        observedPeak = observedPeak is null
+                            ? sample.UsedPercent
+                            : Math.Max(observedPeak.Value, sample.UsedPercent);
+                        continue;
+                    }
+
+                    // The first value is a baseline: attributing it to its capture hour would claim that
+                    // all usage since the reset happened at the instant CodexWinBar started observing.
+                    // Later activity is counted only when the cycle reaches a new high, so provider
+                    // corrections and temporary dips cannot count the same allowance increase twice.
+                    var increment = observedPeak is null
+                        ? 0
+                        : Math.Max(0, sample.UsedPercent - observedPeak.Value);
+                    day.Add(local.Hour, increment);
                     observedPeak = observedPeak is null
                         ? sample.UsedPercent
                         : Math.Max(observedPeak.Value, sample.UsedPercent);
-                    continue;
                 }
-
-                // The first value is a baseline: attributing it to its capture hour would claim that
-                // all usage since the reset happened at the instant CodexWinBar started observing.
-                // Later activity is counted only when the cycle reaches a new high, so provider
-                // corrections and temporary dips cannot count the same allowance increase twice.
-                var increment = observedPeak is null
-                    ? 0
-                    : Math.Max(0, sample.UsedPercent - observedPeak.Value);
-                day.Add(local.Hour, increment);
-                observedPeak = observedPeak is null
-                    ? sample.UsedPercent
-                    : Math.Max(observedPeak.Value, sample.UsedPercent);
             }
         }
 
@@ -190,6 +207,20 @@ internal static class PlanStatisticsProjection
         return date.AddDays(-daysSinceSunday);
     }
 
+    /// <summary>
+    /// The calendar day a sample belongs to. Quota meters are observed on this machine and follow
+    /// local time. Provider-supplied activity buckets (OpenAI daily costs) are UTC days: converting
+    /// their midnight start to local time would file each day's spend under the previous local date
+    /// for every zone west of UTC.
+    /// </summary>
+    internal static DateOnly BucketDate(PlanUsageSeries series, PlanUsageSample sample) =>
+        DateOnly.FromDateTime(BucketTime(series, sample).Date);
+
+    private static DateTime BucketTime(PlanUsageSeries series, PlanUsageSample sample) =>
+        series.MetricKind == PlanUsageMetricKind.ActivityValue
+            ? sample.CapturedAt.UtcDateTime
+            : sample.CapturedAt.LocalDateTime;
+
     private static IReadOnlyList<IReadOnlyList<PlanUsageSample>> GroupByEquivalentReset(
         IReadOnlyList<PlanUsageSample> samples)
     {
@@ -211,6 +242,24 @@ internal static class PlanStatisticsProjection
             }
         }
 
+        List<PlanUsageSample>? resetless = null;
+        foreach (var sample in samples
+            .Where(item => item.ResetsAt is null)
+            .OrderBy(item => item.CapturedAt))
+        {
+            // Providers such as OpenRouter can expose a valid percentage without a reset instant.
+            // A material drop is the only observable reset boundary, so begin a new local cycle.
+            if (resetless is null || resetless[^1].UsedPercent - sample.UsedPercent > ActivityEpsilon)
+            {
+                resetless = [sample];
+                groups.Add(resetless);
+            }
+            else
+            {
+                resetless.Add(sample);
+            }
+        }
+
         return groups;
     }
 
@@ -221,9 +270,11 @@ internal static class PlanStatisticsProjection
             return 0;
         }
 
-        var maximum = series.WindowMinutes == 300
-            ? FullSessionWeeklyReference * 100
-            : 100;
+        var maximum = series.MetricKind == PlanUsageMetricKind.ActivityValue
+            ? series.ScaleMaximum is > ActivityEpsilon ? series.ScaleMaximum.Value : 100
+            : series.WindowMinutes == 300
+                ? FullSessionWeeklyReference * 100
+                : 100;
         return Math.Clamp(value / maximum, 0, 1);
     }
 

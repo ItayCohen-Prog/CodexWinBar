@@ -1,12 +1,68 @@
 using CodexWinBar.Core.Models;
 using CodexWinBar.Core.Providers;
 using CodexWinBar.Core.Statistics;
+using System.Text.Json;
 using Xunit;
 
 namespace CodexWinBar.Core.Tests;
 
 public sealed class PlanStatisticsStoreTests
 {
+    [Fact]
+    public void Default_directory_migrates_supported_legacy_history_to_durable_app_data()
+    {
+        using var temp = TempDir.Create();
+        var capturedAt = new DateTimeOffset(2026, 8, 12, 10, 15, 0, TimeSpan.Zero);
+        var legacyDirectory = Path.Combine(temp.Path, "CodexWinBar", "history");
+        Directory.CreateDirectory(legacyDirectory);
+        WriteDocument(
+            Path.Combine(legacyDirectory, "codex.json"),
+            ProviderId.Codex,
+            capturedAt,
+            62);
+
+        using var store = new PlanStatisticsStore(_ => { }, temp.Path);
+
+        var migratedPath = Path.Combine(temp.Path, "CodexWinBarData", "history", "codex.json");
+        Assert.True(File.Exists(migratedPath));
+        Assert.True(File.Exists(Path.Combine(legacyDirectory, "codex.json")));
+        Assert.Equal(62, Assert.Single(Assert.Single(store.Get(ProviderId.Codex).Series).Samples).UsedPercent);
+    }
+
+    [Fact]
+    public void Legacy_migration_never_overwrites_existing_durable_history()
+    {
+        using var temp = TempDir.Create();
+        var capturedAt = new DateTimeOffset(2026, 8, 12, 10, 15, 0, TimeSpan.Zero);
+        var legacyDirectory = Path.Combine(temp.Path, "CodexWinBar", "history");
+        var durableDirectory = Path.Combine(temp.Path, "CodexWinBarData", "history");
+        Directory.CreateDirectory(legacyDirectory);
+        Directory.CreateDirectory(durableDirectory);
+        WriteDocument(Path.Combine(legacyDirectory, "codex.json"), ProviderId.Codex, capturedAt, 62);
+        WriteDocument(Path.Combine(durableDirectory, "codex.json"), ProviderId.Codex, capturedAt, 37);
+
+        using var store = new PlanStatisticsStore(_ => { }, temp.Path);
+
+        Assert.Equal(37, Assert.Single(Assert.Single(store.Get(ProviderId.Codex).Series).Samples).UsedPercent);
+    }
+
+    [Fact]
+    public void Legacy_migration_ignores_malformed_and_provider_mismatched_files()
+    {
+        using var temp = TempDir.Create();
+        var capturedAt = new DateTimeOffset(2026, 8, 12, 10, 15, 0, TimeSpan.Zero);
+        var legacyDirectory = Path.Combine(temp.Path, "CodexWinBar", "history");
+        Directory.CreateDirectory(legacyDirectory);
+        File.WriteAllText(Path.Combine(legacyDirectory, "codex.json"), "not json");
+        WriteDocument(Path.Combine(legacyDirectory, "claude.json"), ProviderId.Codex, capturedAt, 62);
+
+        using var store = new PlanStatisticsStore(_ => { }, temp.Path);
+
+        Assert.Empty(store.Get(ProviderId.Codex).Series);
+        Assert.Empty(store.Get(ProviderId.Claude).Series);
+        Assert.False(Directory.Exists(Path.Combine(temp.Path, "CodexWinBarData", "history")));
+    }
+
     [Fact]
     public void Record_persists_and_reloads_provider_series()
     {
@@ -19,6 +75,8 @@ public sealed class PlanStatisticsStoreTests
                 primary: Window(36, capturedAt.AddHours(4), 300),
                 secondary: Window(62, capturedAt.AddDays(4), 10080)));
         }
+
+        Assert.True(File.Exists(Path.Combine(temp.Path, "CodexWinBarData", "history", "codex.json")));
 
         using var reloaded = new PlanStatisticsStore(_ => { }, temp.Path);
         var statistics = reloaded.Get(ProviderId.Codex);
@@ -252,4 +310,35 @@ public sealed class PlanStatisticsStoreTests
         ResetsAt = reset,
         WindowMinutes = minutes,
     };
+
+    private static void WriteDocument(
+        string path,
+        ProviderId provider,
+        DateTimeOffset capturedAt,
+        double usedPercent)
+    {
+        var document = new PlanStatisticsDocument
+        {
+            Provider = provider,
+            Series =
+            [
+                new PlanUsageSeries
+                {
+                    Id = "weekly",
+                    Title = "Weekly",
+                    WindowMinutes = 10080,
+                    Samples =
+                    [
+                        new PlanUsageSample
+                        {
+                            CapturedAt = capturedAt,
+                            UsedPercent = usedPercent,
+                        },
+                    ],
+                },
+            ],
+        };
+        using var stream = File.Create(path);
+        JsonSerializer.Serialize(stream, document);
+    }
 }

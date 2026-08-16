@@ -39,6 +39,16 @@ function Copy-DatFiles([string]$sourceDir, [string]$destDir) {
         [System.IO.File]::Copy($file, [System.IO.Path]::Combine($destDir, [System.IO.Path]::GetFileName($file)), $true)
     }
 }
+function Copy-JsonFiles([string]$sourceDir, [string]$destDir, [bool]$overwrite) {
+    if (-not [System.IO.Directory]::Exists($sourceDir)) { return }
+    [void][System.IO.Directory]::CreateDirectory($destDir)
+    foreach ($file in [System.IO.Directory]::GetFiles($sourceDir, '*.json')) {
+        $destination = [System.IO.Path]::Combine($destDir, [System.IO.Path]::GetFileName($file))
+        if ($overwrite -or -not [System.IO.File]::Exists($destination)) {
+            [System.IO.File]::Copy($file, $destination, $overwrite)
+        }
+    }
+}
 
 Write-Host 'Finding the latest CodexWinBar release...' -ForegroundColor Cyan
 $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers $headers
@@ -106,12 +116,22 @@ if ($expected) {
 
 $legacyCredentials = Join-Path $env:LOCALAPPDATA 'CodexWinBar\credentials'
 $safeCredentials = Join-Path $env:LOCALAPPDATA 'CodexWinBarData\credentials'
+$legacyHistory = Join-Path $env:LOCALAPPDATA 'CodexWinBar\history'
+$safeHistory = Join-Path $env:LOCALAPPDATA 'CodexWinBarData\history'
 $credentialBackup = $null
+$historyBackup = $null
 if (Test-Path -LiteralPath $legacyCredentials) {
     # Versions through 1.1.7 stored app-owned OAuth credentials inside Velopack's install root.
     # A version upgrade can replace that root, so preserve the encrypted files before setup runs.
     $credentialBackup = Join-Path $env:TEMP ("CodexWinBar-credentials-" + [guid]::NewGuid().ToString('N'))
     Copy-DatFiles $legacyCredentials $credentialBackup
+}
+if (Test-Path -LiteralPath $legacyHistory) {
+    # Version 1.1.22 stored real provider observations inside the Velopack install root.
+    # Setup replaces that root, so copy them to durable app data before setup runs.
+    $historyBackup = Join-Path $env:TEMP ("CodexWinBar-history-" + [guid]::NewGuid().ToString('N'))
+    Copy-JsonFiles $legacyHistory $historyBackup $true
+    Copy-JsonFiles $legacyHistory $safeHistory $false
 }
 
 $installed = $false
@@ -124,13 +144,21 @@ try {
         Copy-DatFiles $credentialBackup $safeCredentials
     }
 
+    if ($historyBackup -and [System.IO.Directory]::Exists($historyBackup)) {
+        Copy-JsonFiles $historyBackup $safeHistory $false
+    }
+
     $installed = $true
 }
 finally {
     if (-not $installed -and $credentialBackup -and [System.IO.Directory]::Exists($credentialBackup)) {
         Copy-DatFiles $credentialBackup $legacyCredentials
     }
+    if (-not $installed -and $historyBackup -and [System.IO.Directory]::Exists($historyBackup)) {
+        Copy-JsonFiles $historyBackup $legacyHistory $true
+    }
     Remove-PathQuiet $credentialBackup
+    Remove-PathQuiet $historyBackup
     Remove-PathQuiet $dest
 }
 

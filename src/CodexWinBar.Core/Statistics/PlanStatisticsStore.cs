@@ -26,8 +26,62 @@ public sealed class PlanStatisticsStore : IPlanStatisticsStore
     {
         this.log = log;
         var root = baseDirectory ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        this.directory = Path.Combine(root, "CodexWinBar", "history");
+        this.directory = Path.Combine(root, "CodexWinBarData", "history");
+        MigrateLegacyHistory(log, root);
         this.LoadExisting();
+    }
+
+    private static void MigrateLegacyHistory(Action<string> log, string root)
+    {
+        var legacyDirectory = Path.Combine(root, "CodexWinBar", "history");
+        var directory = Path.Combine(root, "CodexWinBarData", "history");
+        if (!Directory.Exists(legacyDirectory))
+        {
+            return;
+        }
+
+        foreach (var provider in ProviderIds.All)
+        {
+            var legacyPath = Path.Combine(legacyDirectory, $"{provider.ConfigId()}.json");
+            var destination = Path.Combine(directory, $"{provider.ConfigId()}.json");
+            if (!File.Exists(legacyPath) || File.Exists(destination))
+            {
+                continue;
+            }
+
+            try
+            {
+                using (var stream = File.OpenRead(legacyPath))
+                {
+                    var document = JsonSerializer.Deserialize(stream, CoreJsonContext.Default.PlanStatisticsDocument);
+                    if (document is null || document.Version != SchemaVersion || document.Provider != provider)
+                    {
+                        log($"Ignoring unsupported legacy statistics history for {provider.ConfigId()}.");
+                        continue;
+                    }
+                }
+
+                Directory.CreateDirectory(directory);
+                var tempPath = Path.Combine(directory, $".{provider.ConfigId()}.{Guid.NewGuid():N}.migration.tmp");
+                try
+                {
+                    File.Copy(legacyPath, tempPath);
+                    File.Move(tempPath, destination, false);
+                    log($"Migrated statistics history for {provider.ConfigId()} to durable app data.");
+                }
+                finally
+                {
+                    if (File.Exists(tempPath))
+                    {
+                        File.Delete(tempPath);
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+            {
+                log($"Failed to migrate statistics history for {provider.ConfigId()}. {ex.GetType().Name}: {ex.Message}");
+            }
+        }
     }
 
     /// <inheritdoc />

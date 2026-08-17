@@ -1,8 +1,8 @@
-# Created using wingetcreate 1.12.8.0
+# Created using wingetcreate 1.12.13.0
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: ItayCohen.CodexWinBar
-PackageVersion: 1.1.22
+PackageVersion: 1.1.24
 PackageLocale: en-US
 Publisher: Itay Cohen
 PublisherUrl: https://github.com/ItayCohen-Prog
@@ -13,7 +13,7 @@ License: MIT
 LicenseUrl: https://github.com/ItayCohen-Prog/CodexWinBar/blob/main/LICENSE
 Copyright: MIT — fork of steipete/CodexBar
 ShortDescription: Every AI coding limit, on your Windows 11 taskbar.
-Description: CodexWinBar puts your AI coding-provider usage limits directly on Windows 11 taskbars — positioned opposite the clock — with per-provider session and weekly windows, reset countdowns, credits, an optional usage-pace projection, and live provider-status incidents. Supports Codex, Claude, Copilot, Gemini, OpenRouter, OpenAI Admin, z.ai, and experimental Cursor.
+Description: CodexWinBar puts your AI coding-provider usage limits directly on the Windows 11 taskbar — embedded next to the system tray — with per-provider session and weekly windows, reset countdowns, credits, an optional usage-pace projection, and live provider-status incidents. Supports Codex, Claude, Copilot, OpenRouter, OpenAI Admin, z.ai, and Cursor.
 Moniker: codexwinbar
 Tags:
 - ai
@@ -23,6 +23,6 @@ Tags:
 - claude
 - cursor
 - developer-tools
-ReleaseNotesUrl: https://github.com/ItayCohen-Prog/CodexWinBar/releases/tag/v1.1.22
+ReleaseNotesUrl: https://github.com/ItayCohen-Prog/CodexWinBar/releases/tag/v1.1.24
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0

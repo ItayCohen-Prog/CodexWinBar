@@ -373,6 +373,9 @@ internal sealed record ClaudeCredentials(
 
 internal static class ClaudeUsageParser
 {
+    /// <summary>Cents per unit of currency, for the minor-unit amounts in "extra_usage".</summary>
+    private const double MinorUnitsPerMajorUnit = 100;
+
     public static UsageSnapshot Parse(string rawJson, DateTimeOffset now, string? subscriptionType, string? rateLimitTier)
     {
         using var document = JsonDocument.Parse(rawJson);
@@ -522,10 +525,16 @@ internal static class ClaudeUsageParser
             return null;
         }
 
+        // Claude reports these amounts in minor units (cents), the same as its web API, so both must be
+        // scaled before display — upstream does this unconditionally in normalizeClaudeExtraUsageAmounts
+        // (ClaudeUsageFetcher.swift). Skipping it rendered a $48.77-of-$50.00 spend cap as "4877 of 5000 USD".
+        var usedMajor = (used ?? 0) / MinorUnitsPerMajorUnit;
+        var limitMajor = limit / MinorUnitsPerMajorUnit;
+
         return new CreditsSnapshot
         {
-            Remaining = Math.Max(0, (limit ?? 0) - (used ?? 0)),
-            Limit = limit,
+            Remaining = Math.Max(0, (limitMajor ?? 0) - usedMajor),
+            Limit = limitMajor,
             Unit = ReadString(GetProperty(extra.Value, "currency")) ?? "credits",
             UpdatedAt = now.ToUniversalTime(),
         };

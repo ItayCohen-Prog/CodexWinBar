@@ -2018,9 +2018,25 @@ internal static class CreditDisplay
                 string.Create(CultureInfo.InvariantCulture, $"{credits.Remaining:0.##} {credits.Unit} spent"));
         }
 
+        // Currency amounts get a symbol and two decimals ("$48.77 of $50.00"); abstract units such as
+        // OpenRouter's "credits" keep the compact trailing-unit form ("12.5 of 20 credits").
+        var symbol = CurrencySymbol(credits.Unit);
         var value = credits.Limit is { } limit
-            ? string.Create(CultureInfo.InvariantCulture, $"{credits.Remaining:0.##} of {limit:0.##} {credits.Unit}")
-            : string.Create(CultureInfo.InvariantCulture, $"{credits.Remaining:0.##} {credits.Unit}");
+            ? symbol is null
+                ? string.Create(CultureInfo.InvariantCulture, $"{credits.Remaining:0.##} of {limit:0.##} {credits.Unit}")
+                : string.Create(CultureInfo.InvariantCulture, $"{symbol}{credits.Remaining:0.00} of {symbol}{limit:0.00}")
+            : symbol is null
+                ? string.Create(CultureInfo.InvariantCulture, $"{credits.Remaining:0.##} {credits.Unit}")
+                : string.Create(CultureInfo.InvariantCulture, $"{symbol}{credits.Remaining:0.00}");
         return new CreditPresentation("Credits", value);
     }
+
+    /// <summary>The symbol for a reported currency code, or null when the unit is not a currency.</summary>
+    private static string? CurrencySymbol(string unit) => unit.ToUpperInvariant() switch
+    {
+        "USD" => "$",
+        "EUR" => "€",
+        "GBP" => "£",
+        _ => null,
+    };
 }

@@ -16,7 +16,7 @@ public sealed class ClaudeParserTests
               "five_hour": {"utilization": 15.5, "resets_at": 1782673200},
               "seven_day": {"utilization": 45, "resets_at": "2026-07-11T10:00:00-07:00"},
               "seven_day_opus": {"utilization": 70, "resets_at": "1783267200000"},
-              "extra_usage": {"is_enabled": true, "used_credits": 3, "monthly_limit": 10, "currency": "USD"}
+              "extra_usage": {"is_enabled": true, "used_credits": 123, "monthly_limit": 5000, "currency": "USD"}
             }
             """);
 
@@ -29,8 +29,9 @@ public sealed class ClaudeParserTests
         Assert.Equal(10080, snapshot.Tertiary?.WindowMinutes);
         Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(1783267200000), snapshot.Tertiary?.ResetsAt);
         Assert.Equal("Max", snapshot.Identity?.Plan);
-        Assert.Equal(7, snapshot.Credits?.Remaining);
-        Assert.Equal(10, snapshot.Credits?.Limit);
+        // "extra_usage" amounts arrive in cents: 123/5000 is $1.23 spent of a $50.00 cap.
+        Assert.Equal(48.77, snapshot.Credits?.Remaining ?? 0, 2);
+        Assert.Equal(50, snapshot.Credits?.Limit);
         Assert.Equal("USD", snapshot.Credits?.Unit);
     }
 

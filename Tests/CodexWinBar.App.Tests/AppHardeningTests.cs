@@ -104,4 +104,18 @@ public sealed class AppHardeningTests
         Assert.Equal("Credits", presentation.Label);
         Assert.Equal("12.5 of 20 credits", presentation.Value);
     }
+
+    [Fact]
+    public void CreditDisplay_FormatsCurrencyAmountsAsMoney()
+    {
+        var presentation = CreditDisplay.For(new CreditsSnapshot
+        {
+            Remaining = 48.77,
+            Limit = 50,
+            Unit = "USD",
+        });
+
+        Assert.Equal("Credits", presentation.Label);
+        Assert.Equal("$48.77 of $50.00", presentation.Value);
+    }
 }
